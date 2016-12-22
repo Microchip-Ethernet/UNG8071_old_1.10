@@ -1,0 +1,48 @@
+#!/bin/sh
+#
+# Read from U-Boot environment and update /etc/network/interfaces.
+#
+
+
+FILE=/etc/network/interfaces
+
+update_interfaces() {
+    [ -x /sbin/fw_printenv ] || exit 1
+
+    ETHADDR=$(fw_printenv -n ethaddr 2> /dev/null)
+    IPADDR=$(fw_printenv -n ipaddr 2> /dev/null)
+    NETMASK=$(fw_printenv -n netmask 2> /dev/null)
+
+    MAC=$(ifconfig eth0 | grep HWaddr | cut -d"r" -f3 | cut -d" " -f2)
+    ETHADDR=$(echo $ETHADDR | tr 'a-f' 'A-F')
+    if [ ! -z "$ETHADDR" ] && [ "$MAC" != "$ETHADDR" ]; then
+        ifconfig eth0 hw ether $ETHADDR
+    fi
+
+    CUR=$(grep address $FILE | cut -d" " -f2)
+    if [ ! -z "$IPADDR" ] && [ "$CUR" != "$IPADDR" ]; then
+        sed -i "s/address $CUR/address $IPADDR/" $FILE
+    fi
+
+    CUR=$(grep netmask $FILE | cut -d" " -f2)
+    if [ ! -z "$NETMASK" ] && [ "$CUR" != "$NETMASK" ]; then
+        sed -i "s/netmask $CUR/netmask $NETMASK/" $FILE
+    fi
+}
+
+start() {
+    update_interfaces
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        ;;
+    *)
+        echo "Usage: $0 {start}"
+        exit 1
+esac
+
+exit $?
