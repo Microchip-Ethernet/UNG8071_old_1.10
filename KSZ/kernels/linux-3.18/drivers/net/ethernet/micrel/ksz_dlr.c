@@ -1497,8 +1497,9 @@ dbg_msg(" - ");
 #endif
 		return update;
 	} else if (cmp > 0) {
-dbg_msg("new %d %08x %02x:%02x:%02x:%02x:%02x:%02x  %02x:%02x:%02x:%02x:%02x:%02x\n",
+dbg_msg("new %d %d %08x %02x:%02x:%02x:%02x:%02x:%02x  %02x:%02x:%02x:%02x:%02x:%02x\n",
 cmp,
+beacon->data.beacon.precedence,
 beacon->hdr.ip_addr,
 attrib->active_super_addr.addr[0],
 attrib->active_super_addr.addr[1],
@@ -2758,6 +2759,9 @@ dbg_msg(" s linkLoss 2\n");
 	/* Apply only to supervisor. */
 	if (newValue) {
 		updateValues(info);
+#if 1
+		state->new_state = DLR_PREPARE_STATE;
+#endif
 	}
 	if (state->new_state) {
 		setupDir(info, -1);
@@ -3387,19 +3391,15 @@ static void dlr_timeout(struct ksz_dlr_info *info, int port)
 
 static void dlr_stop(struct ksz_dlr_info *info)
 {
-	int prev_node = info->node;
-
 	if (info->skip_beacon)
 		acceptBeacons_(info);
 	info->beacon_info[0].timeout =
 	info->beacon_info[1].timeout = 0;
 	info->node = DLR_BEACON_NODE;
 	disableSupervisor(info);
-	if (DLR_ACTIVE_SUPERVISOR == prev_node) {
-		enableBothPorts(info);
-		disableAnnounce(info);
-		disableSignOnTimer(info);
-	}
+	enableBothPorts(info);
+	disableAnnounce(info);
+	disableSignOnTimer(info);
 }  /* dlr_stop */
 
 static void dlr_update(struct ksz_dlr_info *info)
@@ -4179,6 +4179,10 @@ inside_state = 0;
 			super->beacon_interval = cfg->beacon_interval;
 			super->beacon_timeout = cfg->beacon_timeout;
 			super->vid = cfg->vid;
+			dlr->precedence = super->prec;
+			dlr->beacon_interval = super->beacon_interval;
+			dlr->beacon_timeout = super->beacon_timeout;
+			dlr->vid = super->vid;
 		}
 		proc_dlr_hw_access(dlr, DEV_CMD_PUT, DEV_DLR_UPDATE, 1, NULL);
 	} else if (super->enable) {
@@ -4198,17 +4202,19 @@ inside_state = 0;
 			super->prec = cfg->prec;
 			dlr->new_val = 1;
 		}
-		if (cfg->beacon_interval != super->beacon_interval) {
-			super->beacon_interval = cfg->beacon_interval;
-			dlr->new_val = 1;
-		}
-		if (cfg->beacon_timeout != super->beacon_timeout) {
-			super->beacon_timeout = cfg->beacon_timeout;
-			dlr->new_val = 1;
-		}
-		if (cfg->vid != super->vid) {
-			super->vid = cfg->vid;
-			dlr->new_val = 1;
+		if (DLR_ACTIVE_SUPERVISOR == dlr->node) {
+			if (cfg->beacon_interval != super->beacon_interval) {
+				super->beacon_interval = cfg->beacon_interval;
+				dlr->new_val = 1;
+			}
+			if (cfg->beacon_timeout != super->beacon_timeout) {
+				super->beacon_timeout = cfg->beacon_timeout;
+				dlr->new_val = 1;
+			}
+			if (cfg->vid != super->vid) {
+				super->vid = cfg->vid;
+				dlr->new_val = 1;
+			}
 		}
 	}
 	if (dlr->new_val)
@@ -4389,8 +4395,8 @@ static int dlr_dev_req(struct ksz_dlr_info *dlr, char *arg, void *info)
 		}
 		break;
 	case DEV_CMD_PUT:
-		if (chk_ioctl_size(len, len, 0, &req_size, &result,
-		    &req->param, data))
+		if (_chk_ioctl_size(len, len, 0, &req_size, &result,
+		    &req->param, data, info))
 			goto dev_ioctl_resp;
 		result = dlr_set_attrib(dlr, subcmd, len, &req_size, data,
 			&output);

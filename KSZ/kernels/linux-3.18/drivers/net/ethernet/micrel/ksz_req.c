@@ -60,8 +60,8 @@ static int write_user_data(void *kernel, void *user, size_t size, void *info)
 	return 0;
 }  /* write_user_data */
 
-static int chk_ioctl_size(int len, int size, int additional, int *req_size,
-	int *result, void *param, u8 *data)
+static int _chk_ioctl_size(int len, int size, int additional, int *req_size,
+	int *result, void *param, u8 *data, void *info)
 {
 	if (len < size) {
 		printk(KERN_INFO "wrong size: %d %d\n", len, size);
@@ -75,13 +75,21 @@ static int chk_ioctl_size(int len, int size, int additional, int *req_size,
 		return -1;
 	}
 	if (data) {
-		int err = read_user_data(data, param, size, data);
+		int err = read_user_data(data, param, size, info);
 
 		if (err) {
 			*result = -EFAULT;
 			return -1;
 		}
 	}
+	return 0;
+}  /* _chk_ioctl_size */
+
+static int chk_ioctl_size(int len, int size, int additional, int *req_size,
+	int *result, void *param, u8 *data)
+{
+	return _chk_ioctl_size(len, size, additional, req_size, result, param,
+		data, data);
 	return 0;
 }  /* chk_ioctl_size */
 

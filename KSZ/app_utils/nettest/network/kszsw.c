@@ -306,6 +306,13 @@ int get_cmd(FILE *fp)
 	rc = set_dlr_ip_addr(&dlrdev, &node, &err);
 	if (rc)
 		print_dlr_err(rc);
+	rc = get_dlr_super_cfg(fd, &cfg);
+	if (!rc) {
+		precedence = cfg.prec;
+		beacon_interval = cfg.beacon_interval;
+		beacon_timeout = cfg.beacon_timeout;
+		vid = cfg.vid;
+	}
 	do {
 		printf("> ");
 		if (fgets(line, 80, fp) == NULL)
@@ -1248,10 +1255,10 @@ int main(int argc, char *argv[])
 		}
 		printf("version=%d ports=0x%x\n", dlr_version, dlr_ports);
 		rc = get_cmd(stdin);
+		param[1].fTaskStop = TRUE;
 		rc = dlr_dev_exit(&dlrdev);
 		param[0].fTaskStop = TRUE;
 	}
-	param[1].fTaskStop = TRUE;
 
 	// wait for task to end
 	i = 0;
