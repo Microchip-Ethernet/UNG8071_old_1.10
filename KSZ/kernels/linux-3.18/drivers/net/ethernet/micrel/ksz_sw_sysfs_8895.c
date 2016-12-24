@@ -55,6 +55,12 @@ static ssize_t netlan_show(struct device *d, struct device_attribute *attr,
 	if (len)
 		goto netlan_show_done;
 
+#ifdef CONFIG_KSZ_STP
+	len = sw->ops->sysfs_stp_read(sw, proc_num, len, buf);
+	if (len)
+		goto netlan_show_done;
+#endif
+
 	/* Require hardware to be acquired first. */
 	sw->ops->acquire(sw);
 	len = sw->ops->sysfs_read_hw(sw, proc_num, len, buf);
@@ -88,6 +94,11 @@ static ssize_t netlan_store(struct device *d, struct device_attribute *attr,
 
 	if (sw->ops->sysfs_vlan_write(sw, proc_num, num))
 		goto netlan_store_done;
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->ops->sysfs_stp_write(sw, proc_num, num, buf))
+		goto netlan_store_done;
+#endif
 
 	sw->ops->acquire(sw);
 	sw->ops->sysfs_write(sw, proc_num, port, num, buf);
@@ -123,6 +134,12 @@ static ssize_t netsw_show(struct device *d, struct device_attribute *attr,
 	if (len)
 		goto netsw_show_done;
 
+#ifdef CONFIG_KSZ_STP
+	len = sw->ops->sysfs_stp_port_read(sw, num, port, len, buf);
+	if (len)
+		goto netsw_show_done;
+#endif
+
 	/* Require hardware to be acquired first. */
 	sw->ops->acquire(sw);
 	len = sw->ops->sysfs_port_read_hw(sw, num, port, len, buf);
@@ -156,10 +173,18 @@ static ssize_t netsw_store(struct device *d, struct device_attribute *attr,
 	proc_num = offset / sizeof(int);
 	ret = count;
 
+#ifdef CONFIG_KSZ_STP
+	if (sw->ops->sysfs_stp_port_write(sw, proc_num, port, num, buf))
+		goto netsw_store_done;
+#endif
+
 	sw->ops->acquire(sw);
 	sw->ops->sysfs_port_write(sw, proc_num, port, num, buf);
 	sw->ops->release(sw);
 
+#ifdef CONFIG_KSZ_STP
+netsw_store_done:
+#endif
 	up(proc_sem);
 	return ret;
 }
@@ -285,6 +310,17 @@ NETLAN_RD_ENTRY(dev_start);
 NETLAN_RD_ENTRY(vlan_start);
 NETLAN_RD_ENTRY(stp);
 
+#ifdef CONFIG_KSZ_STP
+NETLAN_RD_ENTRY(stp_br_info);
+NETLAN_WR_ENTRY(stp_br_on);
+NETLAN_WR_ENTRY(stp_br_prio);
+NETLAN_WR_ENTRY(stp_br_fwd_delay);
+NETLAN_WR_ENTRY(stp_br_hello_time);
+NETLAN_WR_ENTRY(stp_br_max_age);
+NETLAN_WR_ENTRY(stp_br_tx_hold);
+NETLAN_WR_ENTRY(stp_version);
+#endif
+
 NETLAN_WR_ENTRY(mac_fid);
 NETLAN_WR_ENTRY(mac_use_fid);
 NETLAN_WR_ENTRY(mac_override);
@@ -353,6 +389,19 @@ NETSW_WR_ENTRY(fw_unk_ucast_dest);
 NETSW_WR_ENTRY(fw_unk_mcast_dest);
 NETSW_WR_ENTRY(fw_inv_vid);
 NETSW_WR_ENTRY(fw_unk_ip_mcast_dest);
+
+#ifdef CONFIG_KSZ_STP
+NETSW_RD_ENTRY(stp_info);
+NETSW_WR_ENTRY(stp_on);
+NETSW_WR_ENTRY(stp_prio);
+NETSW_WR_ENTRY(stp_admin_path_cost);
+NETSW_WR_ENTRY(stp_path_cost);
+NETSW_WR_ENTRY(stp_admin_edge);
+NETSW_WR_ENTRY(stp_auto_edge);
+NETSW_WR_ENTRY(stp_mcheck);
+NETSW_WR_ENTRY(stp_admin_p2p);
+#endif
+
 NETSW_RD_ENTRY(duplex);
 NETSW_RD_ENTRY(speed);
 NETSW_WR_ENTRY(linkmd);
@@ -438,6 +487,17 @@ static struct attribute *lan_attrs[] = {
 	&lan_attr_vlan_index.attr,
 	&lan_attr_vlan_info.attr,
 
+#ifdef CONFIG_KSZ_STP
+	&lan_attr_stp_br_info.attr,
+	&lan_attr_stp_br_on.attr,
+	&lan_attr_stp_br_prio.attr,
+	&lan_attr_stp_br_fwd_delay.attr,
+	&lan_attr_stp_br_hello_time.attr,
+	&lan_attr_stp_br_max_age.attr,
+	&lan_attr_stp_br_tx_hold.attr,
+	&lan_attr_stp_version.attr,
+#endif
+
 	NULL
 };
 
@@ -495,6 +555,18 @@ static struct attribute *sw_attrs[] = {
 	&sw_attr_fw_inv_vid.attr,
 	&sw_attr_fw_unk_ip_mcast_dest.attr,
 	&sw_attr_mib.attr,
+
+#ifdef CONFIG_KSZ_STP
+	&sw_attr_stp_info.attr,
+	&sw_attr_stp_on.attr,
+	&sw_attr_stp_prio.attr,
+	&sw_attr_stp_admin_path_cost.attr,
+	&sw_attr_stp_path_cost.attr,
+	&sw_attr_stp_admin_edge.attr,
+	&sw_attr_stp_auto_edge.attr,
+	&sw_attr_stp_mcheck.attr,
+	&sw_attr_stp_admin_p2p.attr,
+#endif
 
 	&sw_attr_duplex.attr,
 	&sw_attr_speed.attr,

@@ -63,6 +63,9 @@ struct sw_dev_info {
 };
 
 
+#ifdef CONFIG_KSZ_STP
+#include "ksz_stp.h"
+#endif
 #ifdef CONFIG_KSZ_HSR
 #include "ksz_hsr.h"
 #endif
@@ -76,24 +79,6 @@ struct sw_dev_info {
 #define RX_TABLE_ENTRIES		128
 #define TX_TABLE_ENTRIES		8
 
-#define BLOCKED_RX_ENTRIES		8
-
-struct ksz_frame_table {
-	u32 crc;
-	int cnt;
-	int port;
-	unsigned long expired;
-};
-
-struct ksz_rx_table {
-	struct ksz_frame_table table[RX_TABLE_ENTRIES];
-	int cnt;
-};
-
-struct ksz_tx_table {
-	struct ksz_frame_table table[TX_TABLE_ENTRIES];
-	int cnt;
-};
 
 /**
  * struct ksz_mac_table - Static MAC table data structure
@@ -233,8 +218,6 @@ struct ksz_port_cfg {
  * @mac_addr:	Switch MAC address.
  * @broad_per:	Broadcast storm percentage.
  * @member:	Current port membership.  Used for STP.
- * @stp:	STP port membership.  Used for STP.
- * @stp_down:	STP port down membership.  Used for STP.
  * @phy_addr:	PHY address used by first port.
  */
 struct ksz_sw_info {
@@ -243,11 +226,10 @@ struct ksz_sw_info {
 	u32 mac_table_used;
 	int multi_net;
 	int multi_sys;
-	u8 blocked_rx[BLOCKED_RX_ENTRIES][ETH_ALEN];
-	int blocked_rx_cnt;
 	struct ksz_port_cfg port_cfg[TOTAL_PORT_NUM];
-	struct ksz_rx_table rx_table;
-	struct ksz_tx_table tx_table;
+#ifdef CONFIG_KSZ_STP
+	struct ksz_stp_info rstp;
+#endif
 #ifdef CONFIG_KSZ_HSR
 	struct ksz_hsr_info hsr;
 #endif
@@ -265,9 +247,6 @@ struct ksz_sw_info {
 
 	u8 broad_per;
 	u8 member;
-	u8 stp;
-	u8 stp_down;
-	u8 fwd_ports;
 	u8 phy_addr;
 };
 
@@ -314,6 +293,9 @@ struct ksz_port_info {
 	u32 status[3];
 	u32 length[3];
 	u8 mac_addr[ETH_ALEN];
+	u8 own_flow_ctrl;
+	u8 own_duplex;
+	u16 own_speed;
 	u8 phy_id;
 	u32 report:1;
 };
@@ -392,18 +374,9 @@ struct ksz_sw_net_ops {
 	struct sk_buff *(*final_skb)(struct ksz_sw *sw, struct sk_buff *skb,
 		struct net_device *dev, struct ksz_port *port);
 	int (*drv_rx)(struct ksz_sw *sw, struct sk_buff *skb, int port);
-
-#ifdef CONFIG_KSZ_STP
-	u8 (*get_port_state)(struct net_device *dev,
-		struct net_device **br_dev);
-
 	void (*set_multi)(struct ksz_sw *sw, struct net_device *dev,
 		struct ksz_port *priv);
-	int (*stp_rx)(struct ksz_sw *sw, struct net_device *dev,
-		struct sk_buff *skb, int port, int *forward);
-	int (*blocked_rx)(struct ksz_sw *sw, u8 *data);
-	void (*monitor_ports)(struct ksz_sw *sw);
-#endif
+
 };
 
 struct ksz_sw_ops {
@@ -448,6 +421,17 @@ struct ksz_sw_ops {
 	ssize_t (*sysfs_vlan_read)(struct ksz_sw *sw, int proc_num,
 		ssize_t len, char *buf);
 	int (*sysfs_vlan_write)(struct ksz_sw *sw, int proc_num, int num);
+
+#ifdef CONFIG_KSZ_STP
+	ssize_t (*sysfs_stp_read)(struct ksz_sw *sw, int proc_num, ssize_t len,
+		char *buf);
+	int (*sysfs_stp_write)(struct ksz_sw *sw, int proc_num, int num,
+		const char *buf);
+	ssize_t (*sysfs_stp_port_read)(struct ksz_sw *sw, int proc_num,
+		int port, ssize_t len, char *buf);
+	int (*sysfs_stp_port_write)(struct ksz_sw *sw, int proc_num, int port,
+		int num, const char *buf);
+#endif
 
 	void (*cfg_mac)(struct ksz_sw *sw, u8 index, u8 *dest, u32 ports,
 		int override, int use_fid, u16 fid);
@@ -520,7 +504,6 @@ struct ksz_sw_ops {
  * @monitor_timer_info:	Timer information for monitoring ports.
  * @counter:		Pointer to OS dependent MIB counter information.
  * @link_read:		Workqueue for link monitoring.
- * @stp_monitor:	Workqueue for STP monitoring.
  * @ops:		Switch function access.
  * @reg:		Switch register access.
  * @net_ops:		Network related switch function access.
@@ -544,6 +527,7 @@ struct ksz_sw {
 	void *phydev;
 	phy_interface_t interface;
 	u32 msg_enable;
+	wait_queue_head_t queue;
 	struct mutex *hwlock;
 	struct mutex *reglock;
 	struct mutex lock;
@@ -566,7 +550,6 @@ struct ksz_sw {
 	struct ksz_timer_info *monitor_timer_info;
 	struct ksz_counter_info *counter;
 	struct delayed_work *link_read;
-	struct delayed_work *stp_monitor;
 
 	const struct ksz_sw_ops *ops;
 	const struct ksz_sw_reg_ops *reg;
@@ -732,6 +715,17 @@ struct lan_attributes {
 	int vlan_index;
 	int vlan_info;
 
+#ifdef CONFIG_KSZ_STP
+	int stp_br_info;
+	int stp_br_on;
+	int stp_br_prio;
+	int stp_br_fwd_delay;
+	int stp_br_max_age;
+	int stp_br_hello_time;
+	int stp_br_tx_hold;
+	int stp_version;
+#endif
+
 };
 
 struct sw_attributes {
@@ -788,6 +782,18 @@ struct sw_attributes {
 	int fw_unk_mcast_dest;
 	int fw_inv_vid;
 	int fw_unk_ip_mcast_dest;
+
+#ifdef CONFIG_KSZ_STP
+	int stp_info;
+	int stp_on;
+	int stp_prio;
+	int stp_admin_path_cost;
+	int stp_path_cost;
+	int stp_admin_edge;
+	int stp_auto_edge;
+	int stp_mcheck;
+	int stp_admin_p2p;
+#endif
 
 	int duplex;
 	int speed;

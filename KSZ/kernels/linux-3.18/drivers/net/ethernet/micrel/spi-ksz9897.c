@@ -694,24 +694,6 @@ return;
 	HW_W32(sw->dev, reg, val);
 }
 
-#ifdef CONFIG_KSZ_STP_
-static u8 get_port_state(struct net_device *dev, struct net_device **br_dev)
-{
-	struct net_bridge_port *p;
-	u8 state;
-
-	/* This state is not defined in kernel. */
-	state = STP_STATE_SIMPLE;
-	if (br_port_exists(dev)) {
-		p = br_port_get_rcu(dev);
-		state = p->state;
-
-		/* Port is under bridge. */
-		*br_dev = p->br->dev;
-	}
-	return state;
-}  /* get_port_state */
-#endif
 
 static void link_update_work(struct work_struct *work);
 

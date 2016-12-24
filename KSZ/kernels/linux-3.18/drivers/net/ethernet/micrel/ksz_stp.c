@@ -253,7 +253,6 @@ static struct bpdu *chk_bpdu(u8 *data, u16 *size)
 #define agree			(p->vars.stp_var.agree_)
 #define agreed			(p->vars.stp_var.agreed_)
 #define designatedPriority	(p->vars.stp_var.desgPrio_)
-#define designatedVector	(p->vars.stp_var.desgVector_)
 #define designatedTimes		(p->vars.stp_var.desgTimes_)
 #define disputed		(p->vars.stp_var.disputed_)
 #define fdbFlush		(p->vars.stp_var.fdbFlush_)
@@ -271,7 +270,6 @@ static struct bpdu *chk_bpdu(u8 *data, u16 *size)
 #define portId			(p->vars.stp_var.portId_)
 #define PortPathCost		(p->vars.stp_var.PortPathCost_)
 #define portPriority		(p->vars.stp_var.portPrio_)
-#define portVector		(p->vars.stp_var.portVector_)
 #define portTimes		(p->vars.stp_var.portTimes_)
 #define proposed		(p->vars.stp_var.proposed_)
 #define proposing		(p->vars.stp_var.proposing_)
@@ -580,7 +578,6 @@ static void sw_cfg_forwarding(struct ksz_sw *sw, int port, int open)
 			if (member & (1 << port))
 				cnt++;
 		}
-		info->fwd_ports = cnt;
 
 		info->member = member;
 		bridge_change(sw);
@@ -711,12 +708,6 @@ dbg_msg("  recd: %d\n", ret);
 		ret = betterSamePriority(&designatedPriority, &portPriority);
 #ifdef DBG_STP_ROLE
 dbg_msg("  mine: %d\n", ret);
-#if 0
-if (!ret) {
-dbgPriority(&designatedPriority, NULL);
-dbgPriority(&portPriority, NULL);
-}
-#endif
 #endif
 #if 1
 	} else if (INFO_TYPE_MINE == newInfoIs && INFO_TYPE_AGED == infoIs) {
@@ -873,10 +864,6 @@ static u8 rcvInfo_(struct ksz_stp_port *p)
 	    prio >= 0)
 		return INFO_INFERIOR_ROOT_ALT;
 
-#if 0
-dbgPriority(&msgVector.prio, &msgVector.port_id);
-dbgPriority(&portVector.prio, &portVector.port_id);
-#endif
 	return INFO_OTHER;
 }
 
@@ -920,9 +907,6 @@ static void recordProposal_(struct ksz_stp_port *p)
 static void recordPriority_(struct ksz_stp_port *p)
 {
 	COPY(portPriority, msgPriority);
-#if 0
-	COPY_PRIO(portVector, msgPriority, portId);
-#endif
 }
 
 #define recordPriority()		recordPriority_(p)
@@ -1024,13 +1008,7 @@ static int stp_xmit(struct ksz_stp_info *stp, u8 port)
 	const struct net_device_ops *ops = stp->dev->netdev_ops;
 	struct llc *llc = (struct llc *) &frame[12];
 	struct ksz_port_info *info = &sw->port_info[port];
-#if 0
-	struct ksz_stp_port *p = NULL;
 
-	if (port < stp->br.port_cnt) {
-		p = &stp->br.ports[port];
-	}
-#endif
 	/* Do not send if network device is not ready. */
 	if (!netif_running(stp->dev) || !netif_carrier_ok(stp->dev))
 		return 0;
@@ -1292,10 +1270,6 @@ dbgPriority(root_Priority, &root_PortId);
 		COPY(designatedPriority.bridge_id, BridgeIdentifier);
 		COPY(designatedPriority.port_id, portId);
 
-#if 0
-		COPY_PRIO(designatedVector, designatedPriority, portId);
-#endif
-
 		COPY(designatedTimes, rootTimes);
 		designatedTimes.hello_time = BridgeTimes.hello_time;
 
@@ -1324,9 +1298,6 @@ p->dbg_tx = 2;
 		case INFO_TYPE_MINE:
 			selectedRole = ROLE_DESIGNATED;
 			prio = CMP(designatedPriority, portPriority);
-#if 0
-			prio = CMP(designatedVector, portVector);
-#endif
 			time = CMP(designatedTimes, portTimes);
 			if (prio || time)
 				updtInfo = TRUE;
@@ -1348,11 +1319,6 @@ p->dbg_tx = 1;
 			} else {
 				prio = CMP(designatedPriority, portPriority);
 				if (prio >= 0) {
-#if 0
-				prio = betterVector(&designatedVector,
-					&portVector);
-				if (!prio) {
-#endif
 					id = CMP(portPriority.bridge_id.addr,
 						BridgeIdentifier.addr);
 					if (id)
@@ -1614,10 +1580,6 @@ static int stp_proc_state(struct ksz_stp_port *p, struct ksz_stp_state *state,
 	if (state->new_state) {
 		state->new_state = 0;
 		state_init(p);
-#if 0
-		if (1 == state->change)
-			return 1;
-#endif
 	}
 	state_next(p, state);
 	return 0;
@@ -2301,9 +2263,6 @@ static void stp_info_update_init(struct ksz_stp_port *p)
 dbg_msg("  %s %d %d\n", __func__, agreed, synced);
 #endif
 	COPY(portPriority, designatedPriority);
-#if 0
-	COPY_PRIO(portVector, designatedPriority, portId);
-#endif
 	COPY(portTimes, designatedTimes);
 	updtInfo = FALSE;
 	infoIs = INFO_TYPE_MINE;
@@ -2416,9 +2375,6 @@ static void stp_info_not_init(struct ksz_stp_port *p)
 	if (agreed && role != ROLE_DESIGNATED) {
 dbgPriority(&rootPriority, &rootPortId);
 		COPY(portPriority, rootPriority);
-#if 0
-		COPY_PRIO(portVector, rootPriority, rootPortId);
-#endif
 		COPY(portTimes, rootTimes);
 	}
 #endif
@@ -3702,18 +3658,7 @@ static void stp_state_machines(struct ksz_stp_bridge *br)
 	int i;
 	int p;
 	struct ksz_stp_port *port;
-#if 0
-	int update_sec;
-	uint timers[SWITCH_PORT_NUM][8];
 
-	/* Remember last timer values. */
-	update_sec = 0;
-	for (p = 0; p < br->port_cnt; p++) {
-		port = &br->ports[p];
-		for (i = 0; i < 8; i++)
-			timers[p][i] = port->vars.timers[i];
-	}
-#endif
 	do {
 		changed = update = 0;
 		for (p = 0; p < br->port_cnt; p++) {
@@ -3724,10 +3669,6 @@ static void stp_state_machines(struct ksz_stp_bridge *br)
 				port->state_index = i;
 				changed = port_stms[i](port);
 				update |= (changed << (1 + i));
-#if 0
-				if (changed && !i)
-					update_sec |= (1 << p);
-#endif
 
 #ifdef DEBUG_MSG
 	dbg_print_work(&db.dbg_print);
@@ -3755,24 +3696,6 @@ static void stp_state_machines(struct ksz_stp_bridge *br)
 			}
 		}
 	} while (update);
-#if 0
-	if (update_sec)
-		return;
-	for (p = 0; p < br->port_cnt; p++) {
-		port = &br->ports[p];
-		for (i = 0; i < 8; i++) {
-			if (port->vars.timers[i] &&
-			    timers[p][i] != port->vars.timers[i]) {
-				struct ksz_stp_info *stp = br->parent;
-
-				if (stp->timer_tick < 800)
-					port->vars.timers[i]++;
-if (5 == i)
-dbg_msg(" t: %d %d\n", stp->timer_tick, port->vars.timers[i]);
-			}
-		}
-	}
-#endif
 }  /* stp_state_machines */
 
 static void proc_state_machines(struct work_struct *work)
@@ -4018,16 +3941,7 @@ static void port_timer_monitor(unsigned long ptr)
 {
 	struct ksz_stp_info *stp = (struct ksz_stp_info *) ptr;
 
-#if 0
-	if (stp->timer_tick)
-		stp->timer_tick -= STP_TICK;
-	if (!stp->timer_tick) {
-		stp->timer_tick = 1000;
-		stp_proc_tick(&stp->br);
-	}
-#else
-		stp_proc_tick(&stp->br);
-#endif
+	stp_proc_tick(&stp->br);
 
 	ksz_update_timer(&stp->port_timer_info);
 }  /* port_timer_monitor */
@@ -4684,9 +4598,8 @@ static void ksz_stp_init(struct ksz_stp_info *stp, struct ksz_sw *sw)
 
 	br = &stp->br;
 	br->parent = stp;
-#if 1
-	br->bridgeEnabled = TRUE;
-#endif
+	if (sw->stp)
+		br->bridgeEnabled = TRUE;
 
 	br->port_cnt = sw->mib_port_cnt;
 

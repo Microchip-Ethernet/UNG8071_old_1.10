@@ -223,8 +223,6 @@ struct stp_vars {
 	struct stp_times desgTimes_;
 	struct stp_times msgTimes_;
 	struct stp_times portTimes_;
-	struct stp_vector desgVector_;
-	struct stp_vector portVector_;
 };
 
 struct stp_port_vars {

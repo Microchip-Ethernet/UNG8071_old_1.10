@@ -199,6 +199,9 @@ static void setup_vlan_table(struct ksz_dlr_info *info, u16 vid, int set)
 	struct ksz_sw *sw = info->sw_dev;
 	u32 ports = 0;
 
+	/* Do not do anything for VID 0, which is priority tagged frame. */
+	if (0 == vid)
+		return;
 	if (set)
 		ports = sw->HOST_MASK | info->member;
 	sw->ops->cfg_vlan(sw, 0, vid, 0, ports);
@@ -344,16 +347,6 @@ static void sw_setup_dlr(struct ksz_sw *sw)
 	}
 #endif
 
-#ifdef PORT_VLAN_LOOKUP_VID_0
-	/* Need to create VLAN id 0 entry in the VLAN table. */
-	port_cfg(sw, dlr->ports[0], REG_PORT_LUE_CTRL, PORT_VLAN_LOOKUP_VID_0,
-		true);
-	port_cfg(sw, dlr->ports[1], REG_PORT_LUE_CTRL, PORT_VLAN_LOOKUP_VID_0,
-		true);
-	port_cfg(sw, sw->HOST_PORT, REG_PORT_LUE_CTRL, PORT_VLAN_LOOKUP_VID_0,
-		true);
-#endif
-
 #ifdef CONFIG_HAVE_ACL_HW
 	/* Need to receive beacon frame with changed VID. */
 	sw->ops->fwd_unk_vid(sw);
@@ -370,7 +363,7 @@ static void sw_setup_dlr(struct ksz_sw *sw)
 		false, false, 0);
 
 	/* Not 3-port switch and other ports are used. */
-	if (1 != sw->multi_dev && sw->phy_port_cnt > 2) {
+	if (1 != sw->multi_dev && sw->port_cnt > 2) {
 		u32 member = dlr->member | sw->HOST_MASK;
 
 		sw->ops->cfg_mac(sw, DLR_BEACON_ENTRY, MAC_ADDR_BEACON,
@@ -396,6 +389,7 @@ enum {
 	DEV_DLR_SETUP_TIMEOUT,
 	DEV_DLR_SETUP_VID,
 	DEV_DLR_FLUSH,
+	DEV_DLR_BLOCK,
 	DEV_DLR_STOP,
 	DEV_DLR_UPDATE,
 	DEV_DLR_RX,
@@ -819,6 +813,33 @@ dbg_msg(" %s.\n", __func__);
 #endif
 }
 
+static void blockOtherPorts(struct ksz_dlr_info *info, int block)
+{
+	int p;
+	struct ksz_sw *sw = info->sw_dev;
+	u8 member = sw->PORT_MASK;
+
+	/* Using multiple devices or having only 2 ports. */
+	if ((sw->multi_dev & 1) || sw->port_cnt <= 2)
+		return;
+	if (block == info->block)
+		return;
+
+	if (block)
+		member &= ~info->member;
+	sw->ops->acquire(sw);
+	for (p = 0; p < sw->mib_port_cnt; p++) {
+		if (p == sw->HOST_PORT)
+			continue;
+		if (p == info->ports[0] || p == info->ports[1])
+			continue;
+		sw_cfg_port_base_vlan(sw, p, member);
+	}
+	info->block = block;
+	info->req_block = 0;
+	sw->ops->release(sw);
+}  /* blockOtherPorts */
+
 static void enableOnePort(struct ksz_dlr_info *info)
 {
 	struct ksz_sw *sw = info->sw_dev;
@@ -956,7 +977,7 @@ dbg_msg("%s\n", __func__);
 	sw->ops->release(sw);
 	dlr_set_supervisor(info);
 	info->start = 0;
-	if (1 != sw->multi_dev && sw->phy_port_cnt > 2)
+	if (1 != sw->multi_dev && sw->port_cnt > 2)
 		member = info->member | sw->HOST_MASK;
 	sw->ops->cfg_mac(sw, DLR_ANNOUNCE_ENTRY, MAC_ADDR_ANNOUNCE, member,
 		false, false, 0);
@@ -2226,6 +2247,12 @@ dbg_msg("%s %d %d\n", __func__, info->node, port);
 	if (!memcmp(info->src_addr, vlan->h_dest, ETH_ALEN)) {
 dbg_msg(" to self!\n");
 		proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_CHK_HW, 0, NULL);
+	} else {
+		if (!info->block) {
+			info->req_block = 1;
+			proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_BLOCK, 1,
+				NULL);
+		}
 	}
 	if (DLR_SUPERVISOR <= info->node) {
 		if (!memcmp(info->src_addr, vlan->h_source, ETH_ALEN)) {
@@ -2637,6 +2664,8 @@ dbg_msg("to active\n");
 	if (oneBeaconTimeout && !oneBeaconRcvd) {
 		if (DLR_BEACON_NODE >= info->node)
 			state->new_state = DLR_IDLE_STATE;
+		else if (DLR_SUPERVISOR == info->node)
+			state->new_state = DLR_PREPARE_STATE;
 	}
 	if (linkDown) {
 dbg_msg(" s linkDown\n");
@@ -2728,6 +2757,7 @@ info->seqid_accept[1], info->seqid_last[1]);
 
 	flushMacTable(info);
 	dlr_set_state(info);
+	blockOtherPorts(info, false);
 }  /* dlr_normal_init */
 
 static void dlr_normal_next(struct ksz_dlr_info *info, struct dlr_state *state)
@@ -2792,6 +2822,7 @@ static void dlr_ann_normal_init(struct ksz_dlr_info *info,
 
 	flushMacTable(info);
 	disableNeighChkTimers(info);
+	blockOtherPorts(info, false);
 }  /* dlr_ann_normal_init */
 
 static void dlr_ann_normal_next(struct ksz_dlr_info *info,
@@ -2955,6 +2986,7 @@ dbg_ann = 4;
 	if (info->notifications & DLR_INFO_CFG_CHANGE)
 		proc_dlr_hw_access(info, DEV_CMD_INFO,
 			DEV_INFO_DLR_CFG, 2, NULL);
+	blockOtherPorts(info, false);
 dbg_bcn += 8;
 }  /* dlr_active_normal_init */
 
@@ -3078,6 +3110,7 @@ dbg_msg("  have beacon 0\n");
 dbg_msg("  have beacon 1\n");
 	}
 	if (oneBeaconRcvd || twoBeaconsRcvd) {
+		blockOtherPorts(info, true);
 		enableBothPorts(info);
 
 		/* If not updated in previous code. */
@@ -3347,6 +3380,11 @@ inside_state = inside;
 static void dlr_link_change(struct ksz_dlr_info *info, int link1, int link2)
 {
 	if (handleLinkChange(info, link1, link2)) {
+		if (info->block) {
+			info->req_block = 1;
+			proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_BLOCK,
+				0, NULL);
+		}
 		proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_UPDATE, 0, NULL);
 		if (info->notifications & DLR_INFO_LINK_LOST)
 			proc_dlr_hw_access(info, DEV_CMD_INFO,
@@ -3396,7 +3434,11 @@ static void dlr_stop(struct ksz_dlr_info *info)
 	info->beacon_info[0].timeout =
 	info->beacon_info[1].timeout = 0;
 	info->node = DLR_BEACON_NODE;
+
+	/* Notify others to block ports if necessary. */
+	dlr_tx_learning_update(info);
 	disableSupervisor(info);
+	blockOtherPorts(info, true);
 	enableBothPorts(info);
 	disableAnnounce(info);
 	disableSignOnTimer(info);
@@ -3561,6 +3603,10 @@ dbg_msg(" ignore drop: %d %d\n", parent->option, dlr->skip_beacon);
 		case DEV_DLR_FLUSH:
 			dlr_flush(dlr);
 			break;
+		case DEV_DLR_BLOCK:
+			if (dlr->req_block) {
+				blockOtherPorts(dlr, parent->option);
+			}
 			break;
 		case DEV_DLR_STOP:
 			dlr_stop(dlr);
@@ -3719,6 +3765,7 @@ static void prep_dlr(struct ksz_dlr_info *dlr, struct net_device *dev, u8 *src)
 	dlr->seqid = 0xffffffe0;
 #endif
 	dlr->seqid_beacon = 0;
+	dlr->block = 0;
 	dlr->state = DLR_BEGIN;
 	proc_dlr_hw_access(dlr, DEV_CMD_PUT, DEV_DLR_UPDATE, 0, NULL);
 	do {
@@ -5202,7 +5249,7 @@ static void sysfs_dlr_write(struct ksz_dlr_info *info, int proc_num, int num,
 	int node = DLR_ACTIVE_SUPERVISOR;
 	u32 member = 0;
 
-	if (1 != sw->multi_dev && sw->phy_port_cnt > 2)
+	if (1 != sw->multi_dev && sw->port_cnt > 2)
 		member = info->member | sw->HOST_MASK;
 	switch (proc_num) {
 	case PROC_SET_DLR_NODE:
@@ -5466,7 +5513,7 @@ dbg_bcn = 4;
 #ifdef CONFIG_HAVE_DLR_HW
 		if (netif_running(info->dev))
 			printk(KERN_ALERT "stop %s first", info->dev->name);
-		if (0 <= num && num < sw->phy_port_cnt &&
+		if (0 <= num && num < sw->port_cnt &&
 		    num != sw->HOST_PORT && num != info->ports[1])
 			info->ports[0] = (u8) num;
 		info->member = (1 << info->ports[0]) | (1 << info->ports[1]);
@@ -5476,7 +5523,7 @@ dbg_bcn = 4;
 #ifdef CONFIG_HAVE_DLR_HW
 		if (netif_running(info->dev))
 			printk(KERN_ALERT "stop %s first", info->dev->name);
-		if (0 <= num && num < sw->phy_port_cnt &&
+		if (0 <= num && num < sw->port_cnt &&
 		    num != sw->HOST_PORT && num != info->ports[0])
 			info->ports[1] = (u8) num;
 		info->member = (1 << info->ports[0]) | (1 << info->ports[1]);

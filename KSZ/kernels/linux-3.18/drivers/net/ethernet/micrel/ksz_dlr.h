@@ -157,7 +157,7 @@ struct dlr_work {
 	struct dlr_work *prev;
 };
 
-#define DLR_WORK_NUM			(1 << 4)
+#define DLR_WORK_NUM			(1 << 5)
 #define DLR_WORK_LAST			(DLR_WORK_NUM - 1)
 
 struct dlr_work_info {
@@ -236,6 +236,8 @@ struct ksz_dlr_info {
 	u32 reset_fault:1;
 	u32 start:1;
 	u32 chk_hw:1;
+	u32 block:1;
+	u32 req_block:1;
 
 	struct ksz_dlr_gateway_capable attrib;
 

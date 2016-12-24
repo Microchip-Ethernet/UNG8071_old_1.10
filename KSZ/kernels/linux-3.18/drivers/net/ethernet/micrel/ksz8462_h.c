@@ -355,7 +355,6 @@ struct dev_info {
 
 	struct delayed_work link_read;
 	struct work_struct mib_read;
-	struct delayed_work stp_monitor;
 	struct ksz_timer_info mib_timer_info;
 	struct ksz_timer_info monitor_timer_info;
 	struct ksz_counter_info counter[TOTAL_PORT_NUM];
@@ -798,25 +797,6 @@ static int ks_start_xmit(struct sk_buff *skb, struct net_device *dev);
 #define BANK_TOUT			1
 #define BANK_TEVT			2
 #define BANK_PTP			3
-#endif
-
-#ifdef CONFIG_KSZ_STP_
-static u8 get_port_state(struct net_device *dev, struct net_device **br_dev)
-{
-	struct net_bridge_port *p;
-	u8 state;
-
-	/* This state is not defined in kernel. */
-	state = STP_STATE_SIMPLE;
-	if (br_port_exists(dev)) {
-		p = br_port_get_rcu(dev);
-		state = p->state;
-
-		/* Port is under bridge. */
-		*br_dev = p->br->dev;
-	}
-	return state;
-}  /* get_port_state */
 #endif
 
 static void link_update_work(struct work_struct *work)
@@ -1330,18 +1310,6 @@ static void link_read_work(struct work_struct *work)
 #endif
 }  /* link_read_work */
 
-static void stp_work(struct work_struct *work)
-{
-#ifdef CONFIG_KSZ_STP_
-	struct delayed_work *dwork = to_delayed_work(work);
-	struct dev_info *hw_priv =
-		container_of(dwork, struct dev_info, stp_monitor);
-	struct ksz_sw *sw = &hw_priv->sw;
-
-	sw->net_ops->monitor_ports(sw);
-#endif
-}  /* stp_work */
-
 /*
  * Hardware monitoring
  */
@@ -1362,8 +1330,6 @@ static void dev_monitor(unsigned long ptr)
 
 	if (!(hw_priv->sw.features & STP_SUPPORT))
 		return;
-	if (hw_priv->sw.features & STP_SUPPORT)
-		schedule_delayed_work(&hw_priv->stp_monitor, 0);
 
 	ksz_update_timer(&hw_priv->monitor_timer_info);
 }  /* dev_monitor */
@@ -2162,23 +2128,6 @@ static int rx_proc(struct dev_info *hw_priv, struct sk_buff *skb,
 		if (!sw->net_ops->drv_rx(sw, skb, rx_port))
 			return 0;
 	}
-
-#ifdef CONFIG_KSZ_STP_
-	if (sw_is_switch(sw) && sw->net_ops->stp_rx(sw, dev, skb, rx_port,
-			&forward)) {
-		if (!forward) {
-			if (!sw->net_ops->blocked_rx(sw, skb->data))
-				dbg_msg(
-					"rxd%d=%02x:%02x:%02x:%02x:%02x:%02x\n",
-					rx_port,
-					skb->data[0], skb->data[1],
-					skb->data[2], skb->data[3],
-					skb->data[4], skb->data[5]);
-			dev_kfree_skb_irq(skb);
-			return 0;
-		}
-	}
-#endif
 
 #ifdef CONFIG_1588_PTP
 	ptr = ptp;
@@ -3139,10 +3088,8 @@ static void ks_set_rx_mode(struct net_device *dev)
 
 	/* Turn on/off all mcast mode. */
 	if (sw->dev_count > 1) {
-#ifdef CONFIG_KSZ_STP_
 		if ((flags & IFF_MULTICAST) && !netdev_mc_empty(dev))
 			sw->net_ops->set_multi(sw, dev, &priv->port);
-#endif
 		priv->multi_list_size = 0;
 
 		/* Do not update multi_list_size. */
@@ -4067,8 +4014,7 @@ static int ks846x_probe(struct platform_device *pdev)
 			goto err_frame_head;
 		}
 	}
-	sw->phy_port_cnt = cnt;
-	sw->port_cnt = sw->mib_port_cnt;
+	sw->port_cnt = cnt;
 	sw->PORT_MASK = (1 << TOTAL_PORT_NUM) - 1;
 	sw->HOST_PORT = SWITCH_PORT_NUM;
 	sw->HOST_MASK = (1 << sw->HOST_PORT);
@@ -4076,12 +4022,10 @@ static int ks846x_probe(struct platform_device *pdev)
 	init_waitqueue_head(&sw->queue);
 
 	INIT_DELAYED_WORK(&ks->link_read, link_read_work);
-	INIT_DELAYED_WORK(&ks->stp_monitor, stp_work);
 
 	sw->counter = ks->counter;
 	sw->monitor_timer_info = &ks->monitor_timer_info;
 	sw->link_read = &ks->link_read;
-	sw->stp_monitor = &ks->stp_monitor;
 
 	sw_init_mib(sw);
 

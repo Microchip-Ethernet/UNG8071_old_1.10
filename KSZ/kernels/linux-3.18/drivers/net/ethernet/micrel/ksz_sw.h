@@ -47,6 +47,22 @@
 /* Host port can only be last of them. */
 #define SWITCH_PORT_NUM			(TOTAL_PORT_NUM - 1)
 
+
+struct sw_dev_info {
+	void *sw;
+	unsigned int minor;
+	u8 *write_buf;
+	u8 *read_buf;
+	size_t read_max;
+	size_t read_len;
+	size_t write_len;
+	struct semaphore sem;
+	struct mutex lock;
+	wait_queue_head_t wait_msg;
+	struct sw_dev_info *next;
+};
+
+
 #ifdef CONFIG_KSZ_STP
 #include "ksz_stp.h"
 #endif
@@ -72,27 +88,6 @@
 #define SWITCH_MAC_TABLE_ENTRIES	16
 #define MULTI_MAC_TABLE_ENTRIES		40
 
-#define RX_TABLE_ENTRIES		128
-#define TX_TABLE_ENTRIES		8
-
-#define BLOCKED_RX_ENTRIES		8
-
-struct ksz_frame_table {
-	u32 crc;
-	int cnt;
-	int port;
-	unsigned long expired;
-};
-
-struct ksz_rx_table {
-	struct ksz_frame_table table[RX_TABLE_ENTRIES];
-	int cnt;
-};
-
-struct ksz_tx_table {
-	struct ksz_frame_table table[TX_TABLE_ENTRIES];
-	int cnt;
-};
 
 /**
  * struct ksz_mac_table - Static MAC table data structure
@@ -230,8 +225,6 @@ struct ksz_port_cfg {
  * @mac_addr:	Switch MAC address.
  * @broad_per:	Broadcast storm percentage.
  * @member:	Current port membership.  Used for STP.
- * @stp:	STP port membership.  Used for STP.
- * @stp_down:	STP port down membership.  Used for STP.
  * @phy_addr:	PHY address used by first port.
  */
 struct ksz_sw_info {
@@ -240,14 +233,10 @@ struct ksz_sw_info {
 	u32 mac_table_used;
 	int multi_net;
 	int multi_sys;
-	u8 blocked_rx[BLOCKED_RX_ENTRIES][ETH_ALEN];
-	int blocked_rx_cnt;
 	struct ksz_vlan_table vlan_table[VLAN_TABLE_ENTRIES];
 	u16 vlan_table_used;
 	u16 fid_used;
 	struct ksz_port_cfg port_cfg[TOTAL_PORT_NUM];
-	struct ksz_rx_table rx_table;
-	struct ksz_tx_table tx_table;
 #ifdef CONFIG_KSZ_STP
 	struct ksz_stp_info rstp;
 #endif
@@ -266,9 +255,6 @@ struct ksz_sw_info {
 
 	u8 broad_per;
 	u8 member;
-	u8 stp;
-	u8 stp_down;
-	u8 fwd_ports;
 	u8 phy_addr;
 };
 
@@ -317,6 +303,9 @@ struct ksz_port_info {
 	u32 status[3];
 	u32 length[3];
 	u8 mac_addr[ETH_ALEN];
+	u8 own_flow_ctrl;
+	u8 own_duplex;
+	u16 own_speed;
 	u8 phy_id;
 };
 
@@ -391,18 +380,9 @@ struct ksz_sw_net_ops {
 	struct sk_buff *(*final_skb)(struct ksz_sw *sw, struct sk_buff *skb,
 		struct net_device *dev, struct ksz_port *port);
 	int (*drv_rx)(struct ksz_sw *sw, struct sk_buff *skb, int port);
-
-#ifdef CONFIG_KSZ_STP
-	u8 (*get_port_state)(struct net_device *dev,
-		struct net_device **br_dev);
-
 	void (*set_multi)(struct ksz_sw *sw, struct net_device *dev,
 		struct ksz_port *priv);
-	int (*stp_rx)(struct ksz_sw *sw, struct net_device *dev,
-		struct sk_buff *skb, int port, int *forward);
-	int (*blocked_rx)(struct ksz_sw *sw, u8 *data);
-	void (*monitor_ports)(struct ksz_sw *sw);
-#endif
+
 };
 
 struct ksz_sw_ops {
@@ -527,12 +507,10 @@ struct ksz_sw_cached_regs {
  * @port_mib:		Port MIB information.
  * @mib_cnt:		Number of MIB counters this switch has.
  * @mib_port_cnt:	Number of ports with MIB counters.
- * @phy_port_cnt:	Number of ports with actual PHY.
  * @port_cnt:		Number of ports to support.
  * @monitor_timer_info:	Timer information for monitoring ports.
  * @counter:		Pointer to OS dependent MIB counter information.
  * @link_read:		Workqueue for link monitoring.
- * @stp_monitor:	Workqueue for STP monitoring.
  * @ops:		Switch function access.
  * @reg:		Switch register access.
  * @net_ops:		Network related switch function access.
@@ -573,13 +551,11 @@ struct ksz_sw {
 	struct ksz_port_mib port_mib[TOTAL_PORT_NUM];
 	int mib_cnt;
 	int mib_port_cnt;
-	int phy_port_cnt;
 	int dsa_port_cnt;
 	int port_cnt;
 	struct ksz_timer_info *monitor_timer_info;
 	struct ksz_counter_info *counter;
 	struct delayed_work *link_read;
-	struct delayed_work *stp_monitor;
 
 	const struct ksz_sw_ops *ops;
 	const struct ksz_sw_reg_ops *reg;

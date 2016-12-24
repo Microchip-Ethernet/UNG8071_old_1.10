@@ -458,25 +458,6 @@ static void sw_w32(struct ksz_sw *sw, unsigned reg, unsigned val)
 	HW_W32(sw->dev, reg, val);
 }
 
-#ifdef CONFIG_KSZ_STP_
-static u8 get_port_state(struct net_device *dev, struct net_device **br_dev)
-{
-	struct net_bridge_port *p;
-	u8 state;
-
-	/* This state is not defined in kernel. */
-	state = STP_STATE_SIMPLE;
-	if (br_port_exists(dev)) {
-		p = br_port_get_rcu(dev);
-		state = p->state;
-
-		/* Port is under bridge. */
-		*br_dev = p->br->dev;
-	}
-	return state;
-}  /* get_port_state */
-#endif
-
 static void link_update_work(struct work_struct *work)
 {
 	struct ksz_port *port =
@@ -1476,18 +1457,6 @@ static void link_read_work(struct work_struct *work)
 	}
 }  /* link_read_work */
 
-static void stp_work(struct work_struct *work)
-{
-#ifdef CONFIG_KSZ_STP_
-	struct delayed_work *dwork = to_delayed_work(work);
-	struct sw_priv *hw_priv =
-		container_of(dwork, struct sw_priv, stp_monitor);
-	struct ksz_sw *sw = &hw_priv->sw;
-
-	sw->net_ops->monitor_ports(sw);
-#endif
-}  /* stp_work */
-
 /*
  * Hardware monitoring
  */
@@ -1523,8 +1492,6 @@ static void ksz8895_dev_monitor(unsigned long ptr)
 	}
 	if (!hw_priv->intr_working)
 		schedule_delayed_work(&hw_priv->link_read, 0);
-	if (hw_priv->sw.features & STP_SUPPORT)
-		schedule_delayed_work(&hw_priv->stp_monitor, 0);
 
 	ksz_update_timer(&hw_priv->monitor_timer_info);
 }  /* ksz8895_dev_monitor */
@@ -1648,8 +1615,8 @@ static int ksz8895_probe(struct spi_device *spi)
 	sw->net_ops = &sw_net_ops;
 	sw->ops = &sw_ops;
 
+	init_waitqueue_head(&sw->queue);
 	INIT_DELAYED_WORK(&ks->link_read, link_read_work);
-	INIT_DELAYED_WORK(&ks->stp_monitor, stp_work);
 
 	for (pi = 0; pi < SWITCH_PORT_NUM; pi++) {
 		/*
@@ -1681,7 +1648,6 @@ static int ksz8895_probe(struct spi_device *spi)
 	sw->counter = ks->counter;
 	sw->monitor_timer_info = &ks->monitor_timer_info;
 	sw->link_read = &ks->link_read;
-	sw->stp_monitor = &ks->stp_monitor;
 
 	sw_init_mib(sw);
 
@@ -1690,6 +1656,9 @@ static int ksz8895_probe(struct spi_device *spi)
 
 	create_debugfs(ks);
 
+#ifdef CONFIG_KSZ_STP
+	ksz_stp_init(&sw->info->rstp, sw);
+#endif
 #ifdef CONFIG_KSZ_HSR
 	if (sw->features & HSR_HW)
 		ksz_hsr_init(&sw->info->hsr, sw);
@@ -1786,8 +1755,11 @@ static int ksz8895_remove(struct spi_device *spi)
 	exit_sw_sysfs(sw, &ks->sysfs, ks->dev);
 #endif
 	cancel_delayed_work_sync(&ks->link_read);
-	cancel_delayed_work_sync(&ks->stp_monitor);
 	delete_debugfs(ks);
+
+#ifdef CONFIG_KSZ_STP
+	ksz_stp_exit(&sw->info->rstp);
+#endif
 	kfree(sw->info);
 	ksz_mii_exit(ks);
 	kfree(ks->hw_dev);

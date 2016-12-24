@@ -394,25 +394,6 @@ static void sw_w32(struct ksz_sw *sw, unsigned reg, unsigned val)
 	HW_W32(sw->dev, reg, val);
 }
 
-#ifdef CONFIG_KSZ_STP_
-static u8 get_port_state(struct net_device *dev, struct net_device **br_dev)
-{
-	struct net_bridge_port *p;
-	u8 state;
-
-	/* This state is not defined in kernel. */
-	state = STP_STATE_SIMPLE;
-	if (br_port_exists(dev)) {
-		p = br_port_get_rcu(dev);
-		state = p->state;
-
-		/* Port is under bridge. */
-		*br_dev = p->br->dev;
-	}
-	return state;
-}  /* get_port_state */
-#endif
-
 static void link_update_work(struct work_struct *work)
 {
 	struct ksz_port *port =
@@ -1311,18 +1292,6 @@ static void link_read_work(struct work_struct *work)
 	}
 }  /* link_read_work */
 
-static void stp_work(struct work_struct *work)
-{
-#ifdef CONFIG_KSZ_STP_
-	struct delayed_work *dwork = to_delayed_work(work);
-	struct sw_priv *hw_priv =
-		container_of(dwork, struct sw_priv, stp_monitor);
-	struct ksz_sw *sw = &hw_priv->sw;
-
-	sw->net_ops->monitor_ports(sw);
-#endif
-}  /* stp_work */
-
 /*
  * Hardware monitoring
  */
@@ -1361,8 +1330,6 @@ static void ksz8863_dev_monitor(unsigned long ptr)
 #endif
 	if (!hw_priv->intr_working)
 		schedule_delayed_work(&hw_priv->link_read, 0);
-	if (hw_priv->sw.features & STP_SUPPORT)
-		schedule_delayed_work(&hw_priv->stp_monitor, 0);
 
 	ksz_update_timer(&hw_priv->monitor_timer_info);
 }  /* ksz8863_dev_monitor */
@@ -1440,7 +1407,7 @@ static int ksz8863_probe(struct i2c_client *i2c,
 
 	sw->mib_cnt = TOTAL_SWITCH_COUNTER_NUM;
 	sw->mib_port_cnt = TOTAL_PORT_NUM;
-	sw->port_cnt = TOTAL_PORT_NUM;
+	sw->port_cnt = SWITCH_PORT_NUM;
 	sw->PORT_MASK = (1 << sw->mib_port_cnt) - 1;
 	sw->HOST_PORT = SWITCH_PORT_NUM;
 	sw->HOST_MASK = (1 << sw->HOST_PORT);
@@ -1459,7 +1426,6 @@ static int ksz8863_probe(struct i2c_client *i2c,
 	sw->ops = &sw_ops;
 
 	INIT_DELAYED_WORK(&ks->link_read, link_read_work);
-	INIT_DELAYED_WORK(&ks->stp_monitor, stp_work);
 
 	ret = ksz_mii_init(ks);
 	if (ret)
@@ -1474,7 +1440,6 @@ static int ksz8863_probe(struct i2c_client *i2c,
 	sw->counter = ks->counter;
 	sw->monitor_timer_info = &ks->monitor_timer_info;
 	sw->link_read = &ks->link_read;
-	sw->stp_monitor = &ks->stp_monitor;
 
 	sw_init_mib(sw);
 
@@ -1511,28 +1476,13 @@ static int ksz8863_probe(struct i2c_client *i2c,
 	sw->interface = PHY_INTERFACE_MODE_MII;
 	for (i = 0; i <= SWITCH_PORT_NUM; i++) {
 		sw->phy[i] = ks->bus->phy_map[i];
-#if 0
-		phydev = sw->phy[i];
-		if (!phydev)
-			continue;
-		priv = phydev->priv;
-		port = priv->port;
-		port->port_cnt = port_count;
-		port->mib_port_cnt = mib_port_count;
-		port->first_port = 0;
-		port->flow_ctrl = PHY_FLOW_CTRL;
-
-		port->linked = &sw->port_info[port->first_port];
-#endif
 	}
-#if 1
 	phydev = sw->phy[0];
 	priv = phydev->priv;
 	port = priv->port;
 	port->port_cnt = port_count;
 	port->mib_port_cnt = mib_port_count;
 	port->flow_ctrl = PHY_FLOW_CTRL;
-#endif
 
 	INIT_WORK(&ks->mib_read, ksz8863_mib_read_work);
 
@@ -1599,7 +1549,6 @@ static int ksz8863_remove(struct i2c_client *i2c)
 	exit_sw_sysfs(sw, &ks->sysfs, ks->dev);
 #endif
 	cancel_delayed_work_sync(&ks->link_read);
-	cancel_delayed_work_sync(&ks->stp_monitor);
 	delete_debugfs(ks);
 	kfree(sw->info);
 	ksz_mii_exit(ks);

@@ -4124,22 +4124,6 @@ static inline int rx_proc(struct dev_info *hw_priv, struct ksz_hw *hw,
 	}
 #endif
 #if defined(CONFIG_KSZ_SWITCH)
-#ifdef CONFIG_KSZ_STP_
-	if (sw_is_switch(sw) && sw->net_ops->stp_rx(sw, dev, skb, rx_port,
-			&forward)) {
-		if (!forward) {
-			if (!sw->net_ops->blocked_rx(sw, skb->data))
-				dbg_msg(
-					"rxd%d=%02x:%02x:%02x:%02x:%02x:%02x\n",
-					rx_port,
-					skb->data[0], skb->data[1],
-					skb->data[2], skb->data[3],
-					skb->data[4], skb->data[5]);
-			dev_kfree_skb_irq(skb);
-			return 0;
-		}
-	}
-#endif
 	if (sw_is_switch(sw)) {
 
 #if 1
@@ -5103,11 +5087,9 @@ static void netdev_set_rx_mode(struct net_device *dev)
 
 #ifdef CONFIG_KSZ_SWITCH
 	if (sw_is_switch(hw_priv->sw) && hw_priv->sw->dev_count > 1) {
-#ifdef CONFIG_KSZ_STP
 		if ((flags & IFF_MULTICAST) && !netdev_mc_empty(dev))
 			hw_priv->sw->net_ops->set_multi(hw_priv->sw, dev,
 				&priv->port);
-#endif
 		priv->multi_list_size = 0;
 
 		/* Do not update multi_list_size. */

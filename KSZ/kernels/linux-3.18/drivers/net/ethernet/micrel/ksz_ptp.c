@@ -2220,27 +2220,6 @@ static int ptp_hwtstamp_ioctl(struct ptp_info *ptp, struct ifreq *ifr)
 		-EFAULT : 0;
 }
 
-#ifdef CONFIG_KSZ_STP_
-static int check_ptp_bcast_msg(u8 *data, u8 port, u16 tx_ports)
-{
-	u8 dst;
-	struct ptp_msg *msg;
-
-	msg = check_ptp_msg(data, NULL);
-	if (msg) {
-		dst = msg->hdr.reserved2;
-		if (3 == dst || 0 == dst)
-			return dst;
-		--dst;
-		if (dst + 1 != port && (tx_ports & (1 << dst)))
-			return 2;
-		else
-			return 1;
-	}
-	return 0;
-}  /* check_ptp_bcast_msg */
-#endif
-
 static int ptp_drop_pkt(struct ptp_info *ptp, struct sk_buff *skb, u32 vlan_id,
 	int *tag, int *ptp_tag)
 {

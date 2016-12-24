@@ -411,8 +411,12 @@ int get_cmd(FILE *fp)
 				rc = get_dlr_super_cfg(fd, &cfg);
 				if (rc)
 					print_dlr_err(rc);
-				else
+				else {
 					print_super_cfg(&cfg);
+					beacon_interval = cfg.beacon_interval;
+					beacon_timeout = cfg.beacon_timeout;
+					vid = cfg.vid;
+				}
 			}
 			break;
 		case 'F':
@@ -1122,11 +1126,8 @@ int main(int argc, char *argv[])
 	SocketInit(0);
 
 	if (argc < 2) {
-		printf("usage: %s <local_if> [-6[0..f]] [-p]",
+		printf("usage: %s <local_if>\n",
 			argv[0]);
-		printf(" [-u <dest_ip>] [-m (unicast socket)]\n\t");
-		printf("[-d[#] (debug rx)] [-l (multicast loop)]\n");
-		printf("\t[-r[#] (redundancy)] [-v reserved]\n");
 		return 1;
 	}
 	family = AF_INET;

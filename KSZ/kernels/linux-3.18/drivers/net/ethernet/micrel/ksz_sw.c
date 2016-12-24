@@ -175,8 +175,8 @@ enum {
 	PROC_SET_STP_ADMIN_P2P,
 #endif
 
-	PROC_GET_PORT_DUPLEX,
-	PROC_GET_PORT_SPEED,
+	PROC_SET_PORT_DUPLEX,
+	PROC_SET_PORT_SPEED,
 	PROC_SET_LINK_MD,
 
 	PROC_SET_PORT_MAC_ADDR,
@@ -3248,226 +3248,6 @@ static void sw_setup_stp(struct ksz_sw *sw)
 	alu->valid = 1;
 }
 
-#ifdef CONFIG_KSZ_STP_
-/**
- * sw_block_addr - block certain packets from the host port
- * @sw:		The switch instance.
- *
- * This routine blocks certain packets from reaching to the host port.
- */
-static void sw_block_addr(struct ksz_sw *sw)
-{
-	struct ksz_mac_table *entry;
-	int i;
-
-	for (i = BROADCAST_ENTRY; i <= IPV6_ADDR_ENTRY; i++) {
-		entry = &sw->info->mac_table[i];
-		entry->valid = 0;
-		sw_w_sta_mac_table(sw, i,
-			entry->mac_addr, entry->ports,
-			0, entry->valid,
-			entry->use_fid, entry->fid);
-	}
-}  /* sw_block_addr */
-
-static void sw_block_multi(struct ksz_sw *sw)
-{
-	struct ksz_mac_table *entry;
-	int i;
-
-	for (i = STATIC_MAC_TABLE_ENTRIES; i < MULTI_MAC_TABLE_ENTRIES; i++) {
-		entry = &sw->info->mac_table[i];
-		if (entry->ports)
-			entry->valid = 0;
-	}
-}  /* sw_block_multi */
-
-#ifdef CONFIG_1588_PTP
-static void sw_setup_ptp(struct ksz_sw *sw)
-{
-	struct ksz_mac_table *entry;
-	struct ksz_alu_table *alu;
-	int i;
-	u8 forward;
-	struct ksz_sw_info *info = sw->info;
-
-	i = info->multi_sys;
-	forward = FWD_MAIN_DEV;
-	forward |= FWD_VLAN_DEV;
-
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x01;
-	entry->mac_addr[1] = 0x00;
-	entry->mac_addr[2] = 0x5E;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x01;
-	entry->mac_addr[5] = 0x81;
-	entry->ports = sw->PORT_MASK;
-	alu = &info->alu_table[i];
-	alu->forward = forward;
-	alu->owner = 1;
-	alu->valid = 1;
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x01;
-	entry->mac_addr[1] = 0x00;
-	entry->mac_addr[2] = 0x5E;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x6B;
-	entry->ports = sw->PORT_MASK;
-	entry->override = 1;
-	alu = &info->alu_table[i];
-	alu->forward = forward | FWD_HOST_OVERRIDE;
-	alu->owner = 1;
-	alu->valid = 1;
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x33;
-	entry->mac_addr[1] = 0x33;
-	entry->mac_addr[2] = 0x00;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x01;
-	entry->mac_addr[5] = 0x81;
-	entry->ports = sw->PORT_MASK;
-	alu = &info->alu_table[i];
-	alu->forward = forward;
-	alu->owner = 1;
-	alu->valid = 1;
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x33;
-	entry->mac_addr[1] = 0x33;
-	entry->mac_addr[2] = 0x00;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x6B;
-	entry->ports = sw->PORT_MASK;
-	entry->override = 1;
-	alu = &info->alu_table[i];
-	alu->forward = forward | FWD_HOST_OVERRIDE;
-	alu->owner = 1;
-	alu->valid = 1;
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x01;
-	entry->mac_addr[1] = 0x1B;
-	entry->mac_addr[2] = 0x19;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x00;
-	entry->ports = sw->PORT_MASK;
-	alu = &info->alu_table[i];
-	alu->forward = forward;
-	alu->owner = 1;
-	alu->valid = 1;
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x01;
-	entry->mac_addr[1] = 0x80;
-	entry->mac_addr[2] = 0xC2;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x0E;
-	entry->ports = sw->HOST_MASK;
-	entry->override = 1;
-	alu = &info->alu_table[i];
-	alu->forward = forward | FWD_HOST_OVERRIDE;
-	alu->owner = 1;
-	alu->valid = 1;
-
-	info->multi_sys = i;
-}  /* sw_setup_ptp */
-#endif
-
-static void sw_setup_multi(struct ksz_sw *sw)
-{
-	struct ksz_mac_table *entry;
-	struct ksz_alu_table *alu;
-	int i;
-	u8 forward;
-	struct ksz_sw_info *info = sw->info;
-
-	i = MULTI_MAC_TABLE_ENTRIES;
-	forward = FWD_STP_DEV;
-	forward |= FWD_MAIN_DEV;
-
-	/* Used for V2 IGMP messages. */
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x01;
-	entry->mac_addr[1] = 0x00;
-	entry->mac_addr[2] = 0x5E;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x01;
-	entry->ports = sw->HOST_MASK;
-	alu = &info->alu_table[i];
-	alu->forward = forward;
-	alu->owner = sw->PORT_MASK;
-	alu->valid = 1;
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x33;
-	entry->mac_addr[1] = 0x33;
-	entry->mac_addr[2] = 0x00;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x01;
-	entry->ports = sw->HOST_MASK;
-	alu = &info->alu_table[i];
-	alu->forward = forward;
-	alu->owner = sw->PORT_MASK;
-	alu->valid = 1;
-
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x01;
-	entry->mac_addr[1] = 0x00;
-	entry->mac_addr[2] = 0x5E;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x02;
-	entry->ports = sw->HOST_MASK;
-	alu = &info->alu_table[i];
-	alu->forward = forward;
-	alu->owner = sw->PORT_MASK;
-	alu->valid = 1;
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x33;
-	entry->mac_addr[1] = 0x33;
-	entry->mac_addr[2] = 0x00;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x02;
-	entry->ports = sw->HOST_MASK;
-	alu = &info->alu_table[i];
-	alu->forward = forward;
-	alu->owner = sw->PORT_MASK;
-	alu->valid = 1;
-
-	/* Used for V3 IGMP messages. */
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x01;
-	entry->mac_addr[1] = 0x00;
-	entry->mac_addr[2] = 0x5E;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x16;
-	entry->ports = sw->HOST_MASK;
-	alu = &info->alu_table[i];
-	alu->forward = forward;
-	alu->owner = sw->PORT_MASK;
-	alu->valid = 1;
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x33;
-	entry->mac_addr[1] = 0x33;
-	entry->mac_addr[2] = 0x00;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x16;
-	entry->ports = sw->HOST_MASK;
-	alu = &info->alu_table[i];
-	alu->forward = forward;
-	alu->owner = sw->PORT_MASK;
-	alu->valid = 1;
-
-	info->multi_sys = i;
-}  /* sw_setup_multi */
-#endif
-
 #ifdef CONFIG_KSZ_STP
 static void bridge_change(struct ksz_sw *sw)
 {
@@ -3486,180 +3266,6 @@ static void bridge_change(struct ksz_sw *sw)
 			sw_cfg_port_base_vlan(sw, port, member);
 	}
 }  /* bridge_change */
-#endif
-
-#ifdef CONFIG_KSZ_STP_
-/**
- * sw_pass_addr - allow certain packets to the host port
- * @sw:		The switch instance.
- *
- * This routine allows certain packets to reach the host port.
- */
-static void sw_pass_addr(struct ksz_sw *sw)
-{
-	struct ksz_mac_table *entry;
-	int i;
-	struct ksz_sw_info *info = sw->info;
-
-	for (i = BROADCAST_ENTRY; i <= IPV6_ADDR_ENTRY; i++) {
-		entry = &sw->info->mac_table[i];
-		switch (i) {
-		case BROADCAST_ENTRY:
-			memset(entry->mac_addr, 0xFF, ETH_ALEN);
-			break;
-		case BRIDGE_ADDR_ENTRY:
-			memcpy(entry->mac_addr, info->br_addr, ETH_ALEN);
-			break;
-		case IPV6_ADDR_ENTRY:
-			memcpy(entry->mac_addr, info->br_addr, ETH_ALEN);
-			entry->mac_addr[0] = 0x33;
-			entry->mac_addr[1] = 0x33;
-			entry->mac_addr[2] = 0xFF;
-			break;
-		}
-		entry->ports = sw->HOST_MASK;
-		entry->override = 0;
-		entry->valid = 1;
-		sw_w_sta_mac_table(sw, i,
-			entry->mac_addr, entry->ports,
-			entry->override, entry->valid,
-			entry->use_fid, entry->fid);
-	}
-}  /* sw_pass_addr */
-
-static void sw_pass_multi(struct ksz_sw *sw)
-{
-	struct ksz_mac_table *entry;
-	int i;
-
-	for (i = STATIC_MAC_TABLE_ENTRIES; i < MULTI_MAC_TABLE_ENTRIES; i++) {
-		entry = &sw->info->mac_table[i];
-		if (entry->ports)
-			entry->valid = 1;
-	}
-}  /* sw_pass_multi */
-
-static void monitor_ports(struct ksz_sw *sw)
-{
-	int port;
-	struct net_device *bridge_dev = NULL;
-	struct ksz_sw_info *info = sw->info;
-	u8 member = info->member;
-	u8 stp = info->stp;
-	u8 prev_stp = info->stp;
-	u8 stp_down = 0;
-	u8 state;
-	u8 forwarding[SWITCH_PORT_NUM];
-
-	memset(forwarding, 0, SWITCH_PORT_NUM);
-	sw->ops->acquire(sw);
-	for (port = 0; port < SWITCH_PORT_NUM; port++) {
-		struct net_device *dev = sw->netdev[port + sw->dev_offset];
-
-		state = sw->net_ops->get_port_state(dev, &bridge_dev);
-		if (state != STP_STATE_SIMPLE) {
-			stp |= (1 << port);
-			if (STP_STATE_DISABLED == state)
-				stp_down |= (1 << port);
-		} else {
-			stp &= ~(1 << port);
-			state = sw->net_ops->get_state(dev);
-		}
-		if (stp != info->stp) {
-			info->stp = stp;
-
-			/* Device just removed from bridge. */
-			if (!(stp & (1 << port))) {
-				if (netif_running(dev))
-					state = STP_STATE_SIMPLE;
-			}
-		}
-		sw->net_ops->set_state(dev, state);
-
-		if (info->port_cfg[port].stp_state != state) {
-			if (STP_STATE_FORWARDING ==
-					info->port_cfg[port].stp_state)
-				member &= ~(1 << port);
-			if (STP_STATE_FORWARDING == state)
-				member |= (1 << port);
-
-			/* Try to set forwarding after the other states. */
-			if (STP_STATE_FORWARDING == state)
-				forwarding[port] = true;
-			else
-				port_set_stp_state(sw, port, state);
-			if (STP_STATE_LEARNING == state ||
-			    STP_STATE_BLOCKED == state)
-				sw_flush_dyn_mac_table(sw, port);
-		}
-	}
-	for (port = 0; port < SWITCH_PORT_NUM; port++) {
-		if (forwarding[port])
-			port_set_stp_state(sw, port, STP_STATE_FORWARDING);
-	}
-	sw->ops->release(sw);
-	if (prev_stp != info->stp && !info->stp)
-		memset(info->br_addr, 0, ETH_ALEN);
-	if (stp_down != info->stp_down || prev_stp != info->stp) {
-		struct ksz_mac_table *entry = &sw->info->mac_table[0];
-
-		if (stp_down == info->stp) {
-
-			/* Turn off STP only when it is already setup. */
-			if (prev_stp == info->stp) {
-				sw_w_sta_mac_table(sw, 0,
-					entry->mac_addr, entry->ports,
-					0, 0,
-					entry->use_fid, entry->fid);
-
-				/* No ports in forwarding state. */
-				sw->ops->acquire(sw);
-				port_set_stp_state(sw, SWITCH_PORT_NUM,
-					STP_STATE_SIMPLE);
-				sw->ops->release(sw);
-				sw_block_addr(sw);
-				sw_block_multi(sw);
-			}
-		} else if (info->stp_down == info->stp ||
-				(!prev_stp && info->stp))
-			sw_w_sta_mac_table(sw, 0,
-				entry->mac_addr, entry->ports,
-				entry->override, entry->valid,
-				entry->use_fid, entry->fid);
-
-		/* Update disabled ports when STP is settled down. */
-		if (prev_stp == info->stp)
-			info->stp_down = stp_down;
-	}
-
-	if (member != info->member) {
-		int cnt = 0;
-
-		for (port = 0; port < SWITCH_PORT_NUM; port++)
-			if (member & (1 << port))
-				cnt++;
-		info->fwd_ports = cnt;
-
-		/* Have first member. */
-		if (!info->member) {
-
-			/* Force to program bridge address. */
-			info->br_addr[0] = 0xFF;
-		}
-		info->member = member;
-		sw->ops->acquire(sw);
-		bridge_change(sw);
-		sw->ops->release(sw);
-	}
-
-	/* At least one port in forwarding state. */
-	if (info->member && bridge_dev && memcmp(bridge_dev->dev_addr,
-			info->br_addr, ETH_ALEN)) {
-		memcpy(info->br_addr, bridge_dev->dev_addr, ETH_ALEN);
-		sw_pass_addr(sw);
-		sw_pass_multi(sw);
-	}
-}  /* monitor_ports */
 #endif
 
 #ifdef CONFIG_KSZ_STP
@@ -3910,6 +3516,7 @@ static int port_get_link_speed(struct ksz_port *port)
 static void port_set_link_speed(struct ksz_port *port)
 {
 	struct ksz_sw *sw = port->sw;
+	struct ksz_port_info *info;
 	SW_D data;
 	SW_D cfg;
 	SW_D status;
@@ -3917,8 +3524,13 @@ static void port_set_link_speed(struct ksz_port *port)
 	int p;
 
 	for (i = 0, p = port->first_port; i < port->port_cnt; i++, p++) {
+		info = &sw->port_info[p];
 		if (sw->port_info[p].fiber)
 			continue;
+
+		info->own_flow_ctrl = port->flow_ctrl;
+		info->own_duplex = port->duplex;
+		info->own_speed = port->speed;
 
 		port_r(sw, p, P_PHY_CTRL, &data);
 		port_r(sw, p, P_LINK_STATUS, &status);
@@ -3971,11 +3583,17 @@ static void port_set_link_speed(struct ksz_port *port)
 static void port_force_link_speed(struct ksz_port *port)
 {
 	struct ksz_sw *sw = port->sw;
+	struct ksz_port_info *info;
 	SW_D data;
 	int i;
 	int p;
 
 	for (i = 0, p = port->first_port; i < port->port_cnt; i++, p++) {
+		info = &sw->port_info[p];
+		info->own_flow_ctrl = port->flow_ctrl;
+		info->own_duplex = port->duplex;
+		info->own_speed = port->speed;
+
 		port_r(sw, p, P_PHY_CTRL, &data);
 		data &= ~PORT_AUTO_NEG_ENABLE;
 		if (10 == port->speed)
@@ -4129,12 +3747,6 @@ static void sw_setup(struct ksz_sw *sw)
 	sw->info->multi_net = SWITCH_MAC_TABLE_ENTRIES;
 	if (sw->features & STP_SUPPORT) {
 		sw_setup_stp(sw);
-#ifdef CONFIG_KSZ_STP_
-		sw_setup_multi(sw);
-#ifdef CONFIG_1588_PTP
-		sw_setup_ptp(sw);
-#endif
-#endif
 	}
 #ifdef CONFIG_KSZ_DLR
 	sw_setup_dlr(sw);
@@ -5505,7 +5117,7 @@ static ssize_t sysfs_port_read(struct ksz_sw *sw, int proc_num, int port,
 	port_cfg = &sw->info->port_cfg[port];
 	port_info = &sw->port_info[port];
 	switch (proc_num) {
-	case PROC_GET_PORT_DUPLEX:
+	case PROC_SET_PORT_DUPLEX:
 		if (media_connected == port_info->state) {
 			if (1 == port_info->duplex)
 				len += sprintf(buf + len, "half-duplex\n");
@@ -5514,7 +5126,7 @@ static ssize_t sysfs_port_read(struct ksz_sw *sw, int proc_num, int port,
 		} else
 			len += sprintf(buf + len, "unlinked\n");
 		break;
-	case PROC_GET_PORT_SPEED:
+	case PROC_SET_PORT_SPEED:
 		if (media_connected == port_info->state)
 			len += sprintf(buf + len, "%u\n",
 				port_info->tx_rate / TX_RATE_UNIT);
@@ -5750,6 +5362,30 @@ static int sysfs_port_write(struct ksz_sw *sw, int proc_num, int port,
 	int processed = true;
 
 	switch (proc_num) {
+	case PROC_SET_PORT_DUPLEX:
+	case PROC_SET_PORT_SPEED:
+	{
+		struct ksz_port phy_port;
+		struct ksz_port_info *port_info = &sw->port_info[port];
+
+		if ((PROC_SET_PORT_DUPLEX == proc_num && num > 2) ||
+		    (PROC_SET_PORT_SPEED == proc_num &&
+		    num != 0 && num != 10 && num != 100))
+			break;
+
+		phy_port.sw = sw;
+		phy_port.port_cnt = 1;
+		phy_port.first_port = port;
+		phy_port.flow_ctrl = port_info->own_flow_ctrl;
+		phy_port.duplex = port_info->own_duplex;
+		phy_port.speed = port_info->own_speed;
+		if (PROC_SET_PORT_DUPLEX == proc_num)
+			phy_port.duplex = (u8) num;
+		else
+			phy_port.speed = (u16) num;
+		port_set_link_speed(&phy_port);
+		break;
+	}
 	case PROC_SET_PORT_MIB:
 	{
 		struct ksz_port_mib *mib = &sw->port_mib[port];
@@ -6337,7 +5973,6 @@ static void sw_set_port_addr(struct ksz_sw *sw, int p, u8 *addr)
 	port_set_addr(sw, p, addr);
 }
 
-#ifdef CONFIG_KSZ_STP_
 static void sw_set_multi(struct ksz_sw *sw, struct net_device *dev,
 	struct ksz_port *priv)
 {
@@ -6414,250 +6049,6 @@ static void sw_set_multi(struct ksz_sw *sw, struct net_device *dev,
 	}
 }  /* sw_set_multi */
 
-static void sw_add_frame(struct ksz_sw *sw, u32 crc, unsigned long now,
-	unsigned long expired, int num, int port, int max,
-	struct ksz_frame_table *table, int *cnt)
-{
-	struct ksz_frame_table *entry;
-	int i;
-
-	/* Table full. */
-	if (max == *cnt) {
-		for (i = 0; i < max; i++) {
-			entry = &table[i];
-			if (entry->expired &&
-					time_after(now, entry->expired)) {
-				entry->expired = 0;
-				--(*cnt);
-			}
-		}
-	}
-	for (i = 0; i < max; i++) {
-		entry = &table[i];
-		if (!entry->expired) {
-			entry->crc = crc;
-			entry->cnt = num;
-			entry->port = port;
-			if (0 == expired)
-				expired = 1;
-			entry->expired = expired;
-			++(*cnt);
-			break;
-		}
-	}
-}  /* sw_add_frame */
-
-static int sw_del_frame(struct ksz_sw *sw, u32 crc, unsigned long now,
-	int port, int max, struct ksz_frame_table *table, int *cnt)
-{
-	struct ksz_frame_table *entry;
-	int i;
-	int num = 0;
-
-	for (i = 0; i < max; i++) {
-		entry = &table[i];
-		if (!entry->expired)
-			continue;
-		if (crc == entry->crc && port != entry->port) {
-			if (time_after(now, entry->expired)) {
-				entry->expired = 0;
-				--(*cnt);
-				break;
-			}
-			--entry->cnt;
-
-			/* No need to retain the entry. */
-			if (!entry->cnt) {
-				entry->expired = 0;
-				--(*cnt);
-			}
-			return i + 1;
-		}
-		++num;
-		if (num == *cnt)
-			break;
-	}
-	return 0;
-}  /* sw_del_frame */
-
-static void sw_add_rx(struct ksz_sw *sw, u32 crc, unsigned long now,
-	unsigned long expired, int num, int port)
-{
-	struct ksz_rx_table *info = &sw->info->rx_table;
-
-	sw_add_frame(sw, crc, now, expired, num, port,
-		RX_TABLE_ENTRIES, info->table, &info->cnt);
-}  /* sw_add_rx */
-
-static int sw_del_rx(struct ksz_sw *sw, u32 crc, unsigned long now, int port)
-{
-	struct ksz_rx_table *info = &sw->info->rx_table;
-
-	return sw_del_frame(sw, crc, now, port, RX_TABLE_ENTRIES, info->table,
-		&info->cnt);
-}  /* sw_del_rx */
-
-static void sw_add_tx(struct ksz_sw *sw, u32 crc, unsigned long now,
-	unsigned long expired, int num, int port)
-{
-	struct ksz_tx_table *info = &sw->info->tx_table;
-
-	sw_add_frame(sw, crc, now, expired, num, port,
-		TX_TABLE_ENTRIES, info->table, &info->cnt);
-}  /* sw_add_tx */
-
-static int sw_del_tx(struct ksz_sw *sw, u32 crc, unsigned long now, int port)
-{
-	struct ksz_tx_table *info = &sw->info->tx_table;
-
-	return sw_del_frame(sw, crc, now, port, TX_TABLE_ENTRIES, info->table,
-		&info->cnt);
-}  /* sw_del_tx */
-
-static int sw_blocked_rx(struct ksz_sw *sw, u8 *data)
-{
-	int i;
-
-	for (i = 0; i < sw->info->blocked_rx_cnt; i++)
-		if (!memcmp(data, sw->info->blocked_rx[i], ETH_ALEN))
-			return true;
-	if (BLOCKED_RX_ENTRIES == i)
-		sw->info->blocked_rx_cnt = 0;
-	memcpy(sw->info->blocked_rx[sw->info->blocked_rx_cnt++], data,
-		ETH_ALEN);
-	return false;
-}  /* sw_blocked_rx */
-
-static int sw_block_rx(struct ksz_sw *sw, u8 *data, int len, int port)
-{
-	struct ksz_mac_table *entry;
-	struct ksz_alu_table *alu;
-	u32 crc;
-	int i;
-	int forward = 0;
-
-	for (i = 0; i < MULTI_MAC_TABLE_ENTRIES; i++) {
-
-		/*
-		 * Special case of checking the frame is forwarded to the host.
-		 * All entries before STATIC_MAC_TABLE_ENTRIES should have
-		 * FWD_HOST.
-		 */
-		if (!len && STATIC_MAC_TABLE_ENTRIES == i)
-			break;
-
-		entry = &sw->info->mac_table[i];
-		if (!entry->valid ||
-		    memcmp(data, entry->mac_addr, ETH_ALEN))
-			continue;
-
-		/* Block if received port is closed. */
-		if (len && !entry->override && !(sw->rx_ports & (1 << port)))
-			break;
-
-		alu = &sw->info->alu_table[i];
-		forward = alu->forward;
-
-		/* Allow to reach host as the frame is not forwarded. */
-		if (alu->forward & FWD_HOST)
-			break;
-
-		/* Remember the frame when forwarding to STP device. */
-		if ((alu->forward & FWD_STP_DEV) && sw->info->fwd_ports > 1) {
-			unsigned long now;
-
-			/* Port is zero-based. */
-			port++;
-			crc = ether_crc(len, data);
-			now = jiffies;
-			sw_add_rx(sw, crc, now, now + 1000 / HZ,
-				sw->info->fwd_ports - 1, port);
-		}
-		break;
-	}
-
-	/*
-	 * Check port state in case it is changed after processing arrived
-	 * BPDU.
-	 */
-	if (forward && len && !i)
-		schedule_delayed_work(sw->stp_monitor, 1);
-	return forward;
-}  /* sw_block_rx */
-
-static int sw_block_tx(struct ksz_sw *sw, u8 *data, int len, int port)
-{
-	struct ksz_mac_table *entry;
-	struct ksz_alu_table *alu;
-	int i;
-	u32 crc = 0;
-	unsigned long now = 0;
-	int block = false;
-	int forward = 0;
-
-	for (i = 0; i < MULTI_MAC_TABLE_ENTRIES; i++) {
-		entry = &sw->info->mac_table[i];
-		if (!entry->valid ||
-		    memcmp(data, entry->mac_addr, ETH_ALEN))
-			continue;
-
-		alu = &sw->info->alu_table[i];
-		forward = alu->forward;
-
-		/* No need to block. */
-		if (alu->forward & FWD_HOST)
-			break;
-
-		/* Check frame is not forwarded by software. */
-		if (port && (alu->forward & FWD_STP_DEV) &&
-		    sw->info->fwd_ports > 1) {
-			crc = ether_crc(len, data);
-			now = jiffies;
-			if (sw_del_rx(sw, crc, now, port)) {
-				if ((1 << (port - 1)) & sw->info->member) {
-					block = true;
-					forward = 0;
-				}
-			}
-		}
-		break;
-	}
-
-	/* Check duplicate frames sent by main and STP devices. */
-	if ((forward & (FWD_MAIN_DEV | FWD_STP_DEV)) ==
-	    (FWD_MAIN_DEV | FWD_STP_DEV)) {
-
-		/* Re-use CRC if already calculated. */
-		if (!now) {
-			crc = ether_crc(len, data);
-			now = jiffies;
-		}
-		if (sw_del_tx(sw, crc, now, !!port))
-			block = true;
-		else
-			sw_add_tx(sw, crc, now, now + 100 / HZ, 1, !!port);
-	}
-	return block;
-}  /* sw_block_tx */
-
-static int sw_stp_rx(struct ksz_sw *sw, struct net_device *dev,
-	struct sk_buff *skb, int port, int *forward)
-{
-	if ((sw->features & STP_SUPPORT) && br_port_exists(dev)) {
-		*forward = sw_block_rx(sw, skb->data, skb->len, port);
-		if (!*forward && sw->dev_offset && dev != sw->netdev[0]) {
-			dev = sw->netdev[0];
-			if ((dev->flags & IFF_PROMISC) ||
-			    ((dev->flags & IFF_ALLMULTI) &&
-			    (skb->data[0] & 1)))
-				*forward = FWD_MAIN_DEV;
-		}
-		return true;
-	}
-	return false;
-}  /* sw_stp_rx */
-#endif
-
 static struct net_device *sw_rx_dev(struct ksz_sw *sw, u8 *data, u32 *len,
 	int *tag, int *port)
 {
@@ -6727,15 +6118,6 @@ static struct net_device *sw_rx_dev(struct ksz_sw *sw, u8 *data, u32 *len,
 	if (proto == DLR_TAG_TYPE)
 		return dev;
 #endif
-	if (sw->dev_count > 1) {
-		u8 stp;
-
-		stp = sw->info->stp & sw->info->stp_down;
-		if (stp & (1 << *tag))
-			return NULL;
-		if (!netif_running(dev))
-			return NULL;
-	}
 	if (sw->features & VLAN_PORT_TAGGING) {
 		(*tag)++;
 		if (!(sw->vlan_id & (1 << *tag)))
@@ -7183,20 +6565,6 @@ static struct sk_buff *sw_check_skb(struct ksz_sw *sw, struct sk_buff *skb,
 		}
 		len = skb->len;
 		skb->data[len] = dest;
-#ifdef CONFIG_KSZ_STP_
-		if (!dest && (sw->features & STP_SUPPORT)) {
-			int forward = sw_block_rx(sw, skb->data, 0, 0);
-
-			/*
-			 * Need destination port if lookup is set to forward
-			 * to host.
-			 */
-			if (forward & FWD_HOST) {
-				port = sw->tx_ports & ~sw->HOST_MASK;
-				skb->data[len] = (u8) port;
-			}
-		}
-#endif
 		skb_put(skb, 1);
 	} else {
 		struct sock *sk;
@@ -7240,20 +6608,6 @@ static struct sk_buff *sw_check_tx(struct ksz_sw *sw, struct net_device *dev,
 	}
 #endif
 
-#ifdef CONFIG_KSZ_STP_
-	if (sw->features & STP_SUPPORT) {
-		int port = 0;
-
-		/* This device is associated with a switch port. */
-		if (1 == priv->port_cnt)
-			port = priv->first_port + 1;
-		if ((br_port_exists(dev) || !port) &&
-		    sw_block_tx(sw, skb->data, skb->len, port)) {
-			dev_kfree_skb_irq(skb);
-			return NULL;
-		}
-	}
-#endif
 	return sw_check_skb(sw, skb, priv, ptr, update_msg);
 }  /* sw_check_tx */
 
@@ -7512,10 +6866,7 @@ static void sw_open_port(struct ksz_sw *sw, struct net_device *dev,
 
 	/* Need to open the port in multiple device interfaces mode. */
 	if (sw->dev_count > 1 && (!sw->dev_offset || dev != sw->netdev[0])) {
-#ifdef CONFIG_KSZ_STP_
-		if (!br_port_exists(dev))
-#endif
-			*state = STP_STATE_SIMPLE;
+		*state = STP_STATE_SIMPLE;
 		if (sw->features & SW_VLAN_DEV) {
 			i = sw->info->port_cfg[port->first_port].index;
 			if (!(sw->eth_maps[i].proto & HSR_HW))
@@ -7563,29 +6914,6 @@ static void sw_close_port(struct ksz_sw *sw, struct net_device *dev,
 	if (sw->dev_count > 1 && (!sw->dev_offset || dev != sw->netdev[0])) {
 		sw->ops->acquire(sw);
 		port_set_stp_state(sw, port->first_port, STP_STATE_DISABLED);
-
-#ifdef CONFIG_KSZ_STP_
-		/* Port is closed.  Need to change bridge setting. */
-		if ((sw->features & STP_SUPPORT) && br_port_exists(dev)) {
-			int pi;
-
-			pi = 1 << port->first_port;
-			if (sw->info->member & pi) {
-				sw->info->member &= ~pi;
-
-				/* No ports in forwarding state. */
-				if (!sw->info->member) {
-					port_set_stp_state(sw, SWITCH_PORT_NUM,
-						STP_STATE_SIMPLE);
-					sw->ops->release(sw);
-					sw_block_addr(sw);
-					sw_block_multi(sw);
-					sw->ops->acquire(sw);
-				}
-				bridge_change(sw);
-			}
-		}
-#endif
 		sw->ops->release(sw);
 	}
 #ifdef CONFIG_KSZ_HSR
@@ -7623,7 +6951,6 @@ static void sw_close(struct ksz_sw *sw)
 {
 	ksz_stop_timer(sw->monitor_timer_info);
 	cancel_delayed_work_sync(sw->link_read);
-	cancel_delayed_work_sync(sw->stp_monitor);
 }  /* sw_close */
 
 static u8 sw_set_mac_addr(struct ksz_sw *sw, struct net_device *dev,
@@ -7741,13 +7068,6 @@ static void sw_setup_special(struct ksz_sw *sw, int *port_cnt,
 	sw->dev_offset = 0;
 	sw->phy_offset = 0;
 	if (sw->stp) {
-#if 0
-		sw->fast_aging = 1;
-		sw->multi_dev = 1;
-#ifdef CONFIG_1588_PTP
-		sw->multi_dev = 5;
-#endif
-#endif
 		sw->features |= STP_SUPPORT;
 	}
 	if (sw->fast_aging)
@@ -7844,6 +7164,27 @@ static int sw_setup_dev(struct ksz_sw *sw, struct net_device *dev,
 		prep_stp_mcast(dev);
 #endif
 
+	/* Point to port under netdev. */
+	if (phy_offset)
+		phy_id = port->first_port + phy_offset;
+	else
+		phy_id = 0;
+
+#ifndef NO_PHYDEV
+	/* Replace virtual port with one from network device. */
+	do {
+		struct phy_device *phydev;
+		struct phy_priv *priv;
+		struct sw_priv *hw_priv = container_of(sw, struct sw_priv, sw);
+
+		phydev = hw_priv->bus->phy_map[phy_id];
+		priv = phydev->priv;
+		priv->port = port;
+	} while (0);
+#endif
+	if (!phy_offset)
+		phy_offset = 1;
+
 	port->sw = sw;
 	port->linked = &sw->port_info[port->first_port];
 
@@ -7865,25 +7206,6 @@ static int sw_setup_dev(struct ksz_sw *sw, struct net_device *dev,
 	if (sw->features & SW_VLAN_DEV)
 		dev->hard_header_len += VLAN_HLEN;
 
-	phy_id = port->first_port + phy_offset;
-
-	/* Point to port under netdev. */
-	phy_id = port->first_port + phy_offset;
-
-#ifndef NO_PHYDEV
-	/* Replace virtual port with one from network device. */
-	do {
-		struct phy_device *phydev;
-		struct phy_priv *priv;
-		struct sw_priv *hw_priv = container_of(sw, struct sw_priv, sw);
-
-		phydev = hw_priv->bus->phy_map[phy_id];
-		priv = phydev->priv;
-		priv->port = port;
-	} while (0);
-#endif
-	if (!phy_offset)
-		phy_offset = 1;
 	return phy_id;
 }  /* sw_setup_dev */
 
@@ -8019,15 +7341,8 @@ static struct ksz_sw_net_ops sw_net_ops = {
 	.drop_icmp		= sw_drop_icmp,
 	.final_skb		= sw_final_skb,
 	.drv_rx			= sw_drv_rx,
-
-#ifdef CONFIG_KSZ_STP_
-	.get_port_state		= get_port_state,
-
 	.set_multi		= sw_set_multi,
-	.stp_rx			= sw_stp_rx,
-	.blocked_rx		= sw_blocked_rx,
-	.monitor_ports		= monitor_ports,
-#endif
+
 };
 
 static struct ksz_sw_ops sw_ops = {
