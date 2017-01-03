@@ -1,7 +1,7 @@
 /**
  * Microchip KSZ9897 SPI driver
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  * Copyright (c) 2013-2015 Micrel, Inc.
  *
  * Copyright 2009 Simtec Electronics
@@ -134,7 +134,7 @@
 #define KS9897MLI_DEV0			"ksz9897"
 #define KS9897MLI_DEV2			"ksz9897_2"
 
-#define DRV_RELDATE			"Dec 22, 2016"
+#define DRV_RELDATE			"Jan 3, 2017"
 
 /* -------------------------------------------------------------------------- */
 

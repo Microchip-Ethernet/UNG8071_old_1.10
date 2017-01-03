@@ -1,7 +1,7 @@
 /**
  * Microchip KSZ9897 switch common header
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2013-2015 Micrel, Inc.
@@ -61,6 +61,7 @@ struct sw_dev_info {
 };
 
 
+#include "ksz_sw_api.h"
 #include "ksz_stp.h"
 #ifdef CONFIG_KSZ_IBA
 #include "ksz_iba.h"

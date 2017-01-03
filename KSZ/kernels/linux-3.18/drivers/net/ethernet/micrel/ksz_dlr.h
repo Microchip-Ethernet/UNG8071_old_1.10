@@ -148,7 +148,7 @@ struct ksz_dlr_super_info {
 struct ksz_dlr_info;
 
 struct dlr_work {
-	struct sk_buff *skb;
+	void *ptr;
 	int cmd;
 	int subcmd;
 	int option;
@@ -164,7 +164,6 @@ struct dlr_work_info {
 	struct work_struct work;
 	int head;
 	int tail;
-int ready;
 	struct dlr_work works[DLR_WORK_NUM];
 };
 
@@ -226,20 +225,21 @@ struct ksz_dlr_info {
 	u32 ann_rcvd:1;
 	u32 ann_timeout:1;
 	u32 ann_delay:1;
+	u32 ann_first:1;
 	u32 signon_delay:1;
 	u32 signon_start:1;
 	u32 new_val:1;
 	u32 neigh_chk:1;
-	u32 state_change:1;
 	u32 wait_done:1;
 	u32 reset:1;
 	u32 reset_fault:1;
 	u32 start:1;
 	u32 chk_hw:1;
 	u32 block:1;
-	u32 req_block:1;
 
 	struct ksz_dlr_gateway_capable attrib;
+	struct ksz_dlr_super_cfg cfg;
+	struct ksz_dlr_active_node last_sup;
 
 	u32 beacon_interval;
 	u32 beacon_timeout;
@@ -252,10 +252,11 @@ struct ksz_dlr_info {
 	u8 precedence;
 	u8 ring_state;
 	u8 drop_beacon;
-	u8 skip_beacon;
+	u32 skip_beacon:1;
 	u8 LastBcnRcvPort;
 	struct ksz_dlr_beacon_info beacon_info[2];
 	u32 interval;
+	unsigned long ann_jiffies;
 
 	void *sw_dev;
 	struct net_device *dev;

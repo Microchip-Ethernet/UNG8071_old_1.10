@@ -70,8 +70,10 @@ typedef uint64_t u64;
 #define USE_DEV_IOCTL
 #endif
 
+#include "ksz_sw_api.c"
 #include "ksz_dlr_api.c"
 #else
+#include "ksz_sw_api.h"
 #include "ksz_dlr_api.h"
 #endif
 
@@ -107,7 +109,7 @@ SOCKET event_fd;
 
 SOCKET *sockptr;
 char devname[20];
-struct dev_info dlrdev;
+struct dev_info swdev;
 
 struct sockaddr_in event_addr;
 struct sockaddr_in client_addr;
@@ -210,7 +212,7 @@ static void print_node(struct ksz_dlr_active_node *node)
 		node->addr[3],
 		node->addr[4],
 		node->addr[5]);
-	printf("%u.%u.%u.%u\n",
+	printf("%3u.%3u.%3u.%3u\n",
 		(u8)(node->ip_addr),
 		(u8)(node->ip_addr >> 8),
 		(u8)(node->ip_addr >> 16),
@@ -244,7 +246,7 @@ static void print_dlr_msg(u8 err)
 	}
 }
 
-static void print_sw_help(void)
+static void print_dlr_help(void)
 {
 	printf("\tv\tRevision\n");
 	printf("\tc\tCapabilities\n");
@@ -267,11 +269,12 @@ static void print_sw_help(void)
 	printf("\tR\tClear Rapid Fault\n");
 	printf("\tS\tRestart SignOn\n");
 	printf("\tG\tClear Gateway Fault\n");
+	printf("\tsw\tswitch to sw\n");
 	printf("\th\thelp\n");
 	printf("\tq\tquit\n");
 }
 
-int get_cmd(FILE *fp)
+int get_dlr_cmd(FILE *fp)
 {
 	int count;
 	int hcount;
@@ -296,16 +299,16 @@ int get_cmd(FILE *fp)
 	char line[80];
 	int rc;
 	u8 precedence = 0;
-	u16 beacon_interval = 400;
-	u16 beacon_timeout = 1960;
+	u32 beacon_interval = 400;
+	u32 beacon_timeout = 1960;
 	u16 vid = 0;
-	void *fd = &dlrdev;
+	void *fd = &swdev;
 
 	node.ip_addr = (host_addr[0]) | (host_addr[1] << 8) |
 		(host_addr[2] << 16) | (host_addr[3] << 24);
-	rc = set_dlr_ip_addr(&dlrdev, &node, &err);
+	rc = set_dlr_ip_addr(fd, &node, &err);
 	if (rc)
-		print_dlr_err(rc);
+		print_sw_err(rc);
 	rc = get_dlr_super_cfg(fd, &cfg);
 	if (!rc) {
 		precedence = cfg.prec;
@@ -314,7 +317,7 @@ int get_cmd(FILE *fp)
 		vid = cfg.vid;
 	}
 	do {
-		printf("> ");
+		printf("dlr> ");
 		if (fgets(line, 80, fp) == NULL)
 			break;
 		cmd[0] = '\0';
@@ -328,6 +331,11 @@ int get_cmd(FILE *fp)
 			(unsigned int *) &hex[1],
 			(unsigned int *) &hex[2],
 			(unsigned int *) &hex[3]);
+		if (!strcmp(cmd, "sw"))
+			return 2;
+		else if (!strcmp(cmd, "dlr")) {
+			print_dlr_help();
+		} else
 		if ('b' == line[1]) {
 			switch (line[0]) {
 			case 'i':
@@ -364,35 +372,35 @@ int get_cmd(FILE *fp)
 		case 't':
 			rc = get_dlr_topology(fd, &topology);
 			if (rc)
-				print_dlr_err(rc);
+				print_sw_err(rc);
 			else
 				print_topology(topology);
 			break;
 		case 'n':
 			rc = get_dlr_network(fd, &network);
 			if (rc)
-				print_dlr_err(rc);
+				print_sw_err(rc);
 			else
 				print_network(network);
 			break;
 		case 'a':
 			rc = get_dlr_all(fd, &capable);
 			if (rc)
-				print_dlr_err(rc);
+				print_sw_err(rc);
 			else
 				print_all(&capable);
 			break;
 		case 'v':
 			rc = get_dlr_revision(fd, &rev);
 			if (rc)
-				print_dlr_err(rc);
+				print_sw_err(rc);
 			else
 				printf("revision: %u\n", rev);
 			break;
 		case 's':
 			rc = get_dlr_super_status(fd, &status);
 			if (rc)
-				print_dlr_err(rc);
+				print_sw_err(rc);
 			else
 				print_status(status);
 			break;
@@ -405,12 +413,12 @@ int get_cmd(FILE *fp)
 				cfg.vid = vid;
 				rc = set_dlr_super_cfg(fd, &cfg, &err);
 				if (rc)
-					print_dlr_err(rc);
+					print_sw_err(rc);
 				print_dlr_msg(err);
 			} else {
 				rc = get_dlr_super_cfg(fd, &cfg);
 				if (rc)
-					print_dlr_err(rc);
+					print_sw_err(rc);
 				else {
 					print_super_cfg(&cfg);
 					beacon_interval = cfg.beacon_interval;
@@ -424,12 +432,12 @@ int get_cmd(FILE *fp)
 				cnt = num[0];
 				rc = set_dlr_ring_fault_cnt(fd, cnt, &err);
 				if (rc)
-					print_dlr_err(rc);
+					print_sw_err(rc);
 				print_dlr_msg(err);
 			} else {
 				rc = get_dlr_ring_fault_cnt(fd, &cnt);
 				if (rc)
-					print_dlr_err(rc);
+					print_sw_err(rc);
 				else
 					printf("ring fault cnt: %u\n", cnt);
 			}
@@ -440,14 +448,14 @@ int get_cmd(FILE *fp)
 			port = num[0];
 			rc = get_dlr_active_node(fd, port, &node);
 			if (rc)
-				print_dlr_err(rc);
+				print_sw_err(rc);
 			else
 				print_node(&node);
 			break;
 		case 'r':
 			rc = get_dlr_ring_part_cnt(fd, &cnt);
 			if (rc)
-				print_dlr_err(rc);
+				print_sw_err(rc);
 			else
 				printf("ring part cnt: %u\n", cnt);
 			break;
@@ -455,7 +463,7 @@ int get_cmd(FILE *fp)
 			size = sizeof(nodes);
 			rc = get_dlr_ring_part_list(fd, nodes, &size, &err);
 			if (rc)
-				print_dlr_err(rc);
+				print_sw_err(rc);
 			else {
 				if (err) {
 					print_dlr_msg(err);
@@ -469,47 +477,167 @@ int get_cmd(FILE *fp)
 		case 'd':
 			rc = get_dlr_active_super_addr(fd, &node);
 			if (rc)
-				print_dlr_err(rc);
+				print_sw_err(rc);
 			else
 				print_node(&node);
 			break;
 		case 'p':
 			rc = get_dlr_active_super_prec(fd, &prec);
 			if (rc)
-				print_dlr_err(rc);
+				print_sw_err(rc);
 			else
 				printf("precedence: %u\n", prec);
 			break;
 		case 'c':
 			rc = get_dlr_cap(fd, &flags);
 			if (rc)
-				print_dlr_err(rc);
+				print_sw_err(rc);
 			else
 				print_cap(flags);
 			break;
 		case 'V':
 			rc = set_dlr_verify_fault(fd, &err);
 			if (rc)
-				print_dlr_err(rc);
+				print_sw_err(rc);
 			print_dlr_msg(err);
 			break;
 		case 'R':
 			rc = set_dlr_clear_rapid_fault(fd, &err);
 			if (rc)
-				print_dlr_err(rc);
+				print_sw_err(rc);
 			print_dlr_msg(err);
 			break;
 		case 'S':
 			rc = set_dlr_restart_sign_on(fd, &err);
 			if (rc)
-				print_dlr_err(rc);
+				print_sw_err(rc);
 			print_dlr_msg(err);
 			break;
 		case 'G':
 			rc = set_dlr_clear_gateway_fault(fd, &err);
 			if (rc)
-				print_dlr_err(rc);
+				print_sw_err(rc);
 			print_dlr_msg(err);
+			break;
+		case 'N':
+			if (count >= 2) {
+				rc = set_dlr_notify(&swdev, num[0]);
+				if (rc)
+					print_sw_err(rc);
+			}
+			break;
+		case 'h':
+			print_dlr_help();
+			break;
+		case 'q':
+			cont = 0;
+			break;
+		}
+	} while (cont);
+	return 0;
+}  /* get_dlr_cmd */
+
+static void print_sw_help(void)
+{
+	printf("\tl <p> [0,1]\tlearning\n");
+	printf("\tr <p> [0,1]\trx\n");
+	printf("\tt <p> [0,1]\ttx\n");
+	printf("\ts <p> [0,1]\tpower\n");
+	printf("\tdlr\tswitch to dlr\n");
+	printf("\th\t\thelp\n");
+	printf("\tq\t\tquit\n");
+}
+
+int get_cmd(FILE *fp)
+{
+	int count;
+	int hcount;
+	unsigned int num[8];
+	unsigned int hex[8];
+	int cont = 1;
+	u8 err = 0;
+	char cmd[80];
+	char line[80];
+	int get;
+	int rc;
+	void *fd = &swdev;
+
+	do {
+		printf("sw> ");
+		if (fgets(line, 80, fp) == NULL)
+			break;
+		cmd[0] = '\0';
+		count = sscanf(line, "%s %d %d %d %d", cmd,
+			(unsigned int *) &num[0],
+			(unsigned int *) &num[1],
+			(unsigned int *) &num[2],
+			(unsigned int *) &num[3]);
+		hcount = sscanf(line, "%s %x %x %x %x", cmd,
+			(unsigned int *) &hex[0],
+			(unsigned int *) &hex[1],
+			(unsigned int *) &hex[2],
+			(unsigned int *) &hex[3]);
+		if (!strcmp(cmd, "sw"))
+			print_dlr_help();
+		else if (!strcmp(cmd, "dlr")) {
+			return 1;
+		} else
+		switch (line[0]) {
+		case 'l':
+			if (count >= 3)
+				rc = set_port_learn(fd, num[0], !!num[1]);
+			else if (count >= 2)
+				rc = get_port_learn(fd, num[0], &get);
+			else
+				break;
+			if (rc)
+				print_sw_err(rc);
+			else if (count < 3)
+				printf("%d\n", get);
+			break;
+		case 'r':
+			if (count >= 3)
+				rc = set_port_rx(fd, num[0], !!num[1]);
+			else if (count >= 2)
+				rc = get_port_rx(fd, num[0], &get);
+			else
+				break;
+			if (rc)
+				print_sw_err(rc);
+			else if (count < 3)
+				printf("%d\n", get);
+			break;
+		case 't':
+			if (count >= 3)
+				rc = set_port_tx(fd, num[0], !!num[1]);
+			else if (count >= 2)
+				rc = get_port_tx(fd, num[0], &get);
+			else
+				break;
+			if (rc)
+				print_sw_err(rc);
+			else if (count < 3)
+				printf("%d\n", get);
+			break;
+		case 's':
+			if (count >= 3)
+				rc = set_port_power(fd, num[0],
+					!!num[1]);
+			else if (count >= 2)
+				rc = get_port_power(fd, num[0], &get);
+			else
+				break;
+			if (rc)
+				print_sw_err(rc);
+			else if (count < 3)
+				printf("%d\n", get);
+			break;
+		case 'N':
+			if (count >= 2) {
+				rc = set_sw_notify(&swdev, num[0]);
+				if (rc)
+					print_sw_err(rc);
+			}
 			break;
 		case 'h':
 			print_sw_help();
@@ -883,13 +1011,12 @@ static void handle_dlr_msg(u16 cmd, void *data, int len)
 
 	switch (cmd) {
 	case DEV_INFO_QUIT:
-		printf("quit\n");
 		break;
 	case DEV_INFO_DLR_LINK:
 	{
 
 		len -= 4;
-		printf("link status: %x\n", *dword);
+		printf("link status: x%x\n", *dword);
 		if (len >= 4 + sizeof(struct ksz_dlr_active_node)) {
 			struct ksz_dlr_active_node *active =
 				(struct ksz_dlr_active_node *)(dword + 1);
@@ -904,6 +1031,23 @@ static void handle_dlr_msg(u16 cmd, void *data, int len)
 	}
 }
 
+static void handle_sw_msg(u16 cmd, void *data, int len)
+{
+	u32 *dword = data;
+
+	switch (cmd) {
+	case DEV_INFO_QUIT:
+		break;
+	case DEV_INFO_SW_LINK:
+	{
+		break;
+	}
+	case DEV_INFO_SW_ACL:
+		printf("acl: %x\n", *dword);
+		break;
+	}
+}
+
 void *NotificationTask(void *param)
 {
 	int len;
@@ -912,11 +1056,15 @@ void *NotificationTask(void *param)
 
 	pTaskParam->fTaskStop = FALSE;
 	do {
-		len = dlr_recv(&dlrdev, data, MAX_REQUEST_SIZE);
+		len = sw_recv(&swdev, data, MAX_REQUEST_SIZE);
 		if (len > 0) {
 			struct ksz_resp_msg *msg = (struct ksz_resp_msg *)
 				data;
+
 			switch (msg->module) {
+			case DEV_MOD_BASE:
+				handle_sw_msg(msg->cmd, msg->resp.data, len);
+				break;
 			case DEV_MOD_DLR:
 				handle_dlr_msg(msg->cmd, msg->resp.data, len);
 				break;
@@ -1115,9 +1263,10 @@ int main(int argc, char *argv[])
 	int i;
 	struct ip_info info;
 	int multi_loop = 0;
+	int dlr_hw;
 
 #ifdef USE_DEV_IOCTL
-	if (dlr_init(&dlrdev)) {
+	if (sw_init(&swdev)) {
 		printf("cannot access device\n");
 		return 1;
 	}
@@ -1170,7 +1319,7 @@ int main(int argc, char *argv[])
 	if (host_ip != NULL)
 		*host_ip = 0;
 #ifdef USE_NET_IOCTL
-	strncpy(dlrdev.name, devname, sizeof(dlrdev.name));
+	strncpy(swdev.name, devname, sizeof(swdev.name));
 #endif
 
 	if (get_host_info(argv[1], &info)) {
@@ -1218,7 +1367,7 @@ int main(int argc, char *argv[])
 	}
 	sockptr = &event_fd;
 #ifdef USE_NET_IOCTL
-	dlrdev.sock = event_fd;
+	swdev.sock = event_fd;
 #endif
 
 	i = 0;
@@ -1249,23 +1398,53 @@ int main(int argc, char *argv[])
 	if ( !param[0].fTaskStop ) {
 		int rc;
 
-		rc = dlr_dev_init(&dlrdev, 0, &dlr_version, &dlr_ports);
+		rc = sw_dev_init(&swdev, 0, &sw_version, &sw_ports);
 		if (rc) {
-			print_dlr_err(rc);
-			return rc;
+			print_sw_err(rc);
+			param[0].fTaskStop = TRUE;
+			param[1].fTaskStop = TRUE;
+			goto done;
 		}
-		printf("version=%d ports=0x%x\n", dlr_version, dlr_ports);
-		rc = get_cmd(stdin);
+		rc = set_sw_notify(&swdev,
+			SW_INFO_LINK_CHANGE);
+		dlr_hw = 0;
+		rc = dlr_dev_init(&swdev, 0, &dlr_version, &dlr_ports);
+		if (!rc) {
+			printf("version=%d ports=0x%x\n",
+				dlr_version, dlr_ports);
+			dlr_hw = 1;
+			rc = set_dlr_notify(&swdev,
+				DLR_INFO_CFG_CHANGE | DLR_INFO_LINK_LOST);
+		}
+		rc = 0;
+		do {
+			switch (rc) {
+			case 1:
+				rc = 2;
+				if (!dlr_hw)
+					break;
+				rc = get_dlr_cmd(stdin);
+				break;
+			default:
+				rc = get_cmd(stdin);
+				break;
+			}
+			if (!rc)
+				break;
+		} while (1);
+
+		rc = dlr_dev_exit(&swdev);
 		param[1].fTaskStop = TRUE;
-		rc = dlr_dev_exit(&dlrdev);
+		rc = sw_dev_exit(&swdev);
 		param[0].fTaskStop = TRUE;
 	}
 
+done:
 	// wait for task to end
 	i = 0;
 
 #ifdef _SYS_SOCKET_H
-	Pthread_join( tid[i], &status );
+	Pthread_join(tid[0], &status);
 	Pthread_join(tid[1], &status);
 
 #elif defined( _WIN32 )
@@ -1284,7 +1463,7 @@ int main(int argc, char *argv[])
 	SocketExit();
 
 #ifdef USE_DEV_IOCTL
-	dlr_exit(&dlrdev);
+	sw_exit(&swdev);
 #endif
 
 	return 0;

@@ -1,7 +1,7 @@
 /**
  * Microchip gigabit switch common code
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2010-2015 Micrel, Inc.
@@ -6910,7 +6910,7 @@ static u8 sw_determine_flow_ctrl(struct ksz_sw *sw, struct ksz_port *port,
 		flow |= 0x01;
 	if (tx)
 		flow |= 0x02;
-#ifdef DEBUG
+#ifdef DBG_LINK
 	printk(KERN_INFO "pause: %d, %d; %04x %04x\n",
 		rx, tx, local, remote);
 #endif
@@ -7349,7 +7349,7 @@ get_cont1:
 		if (!(dbg_link & PORT_LINK_STATUS) &&
 		    dbg_link & PORT_AUTO_NEG_ACKNOWLEDGE)
 dbg_msg(" link? %d=%04x\n", p, dbg_link);
-#ifdef DEBUG
+#ifdef DBG_LINK
 		printk(KERN_INFO
 			"%d=advertised: %08X-%08X; partner: %08X-%08X"
 			"; link: %04X-%04X\n", p,
@@ -7373,7 +7373,7 @@ dbg_msg(" link? %d=%04x\n", p, dbg_link);
 				if ((sw->overrides & BAD_SPI) && !use_iba)
 					goto get_cont2;
 				port_r(sw, p, REG_PORT_STATUS_0, &flow_ctrl);
-#ifdef DEBUG
+#ifdef DBG_LINK
 				printk(KERN_INFO "flow_ctrl: "SW_SIZE_STR"\n",
 					flow_ctrl & (PORT_RX_FLOW_CTRL |
 					PORT_TX_FLOW_CTRL));
@@ -7460,7 +7460,7 @@ get_cont3:
 			schedule_work(&ptp->set_latency);
 	}
 #endif
-#ifdef DEBUG
+#ifdef DBG_LINK
 	if (change)
 		dbp_link(port, sw, change);
 #endif
@@ -12839,13 +12839,11 @@ static void sw_add_tail_tag(struct ksz_sw *sw, struct sk_buff *skb, int ports)
 		len--;
 	trailer = skb_put(skb, len);
 	memset(&tx_tag, 0, sizeof(struct ksz_sw_tx_tag));
-	tx_tag.ports = ports;
+	tx_tag.ports = ports & sw->PORT_MASK;
 	if (!tx_tag.ports)
 		tx_tag.ports = sw->TAIL_TAG_LOOKUP;
-#if 0
-	else
+	else if (ports & 0x80000000)
 		tx_tag.ports |= sw->TAIL_TAG_OVERRIDE;
-#endif
 	tx_tag.ports = htons(tx_tag.ports);
 	tag = (u8 *) &tx_tag;
 	memcpy(trailer, &tag[4 - ptp_len], ptp_len + 2);
@@ -13844,6 +13842,223 @@ static int sw_dev_release(struct inode *inode, struct file *filp)
 	return 0;
 }  /* sw_dev_release */
 
+static int sw_get_attrib(struct ksz_sw *sw, int subcmd, int size,
+	int *req_size, size_t *len, u8 *data, int *output)
+{
+	struct ksz_info_opt *opt = (struct ksz_info_opt *) data;
+	struct ksz_info_cfg *cfg = &opt->data.cfg;
+	int i;
+	int n;
+	int p;
+
+	*len = 0;
+	*output = 0;
+	switch (subcmd) {
+	case DEV_SW_CFG:
+		n = opt->num;
+		p = opt->port;
+		if (!n)
+			n = 1;
+		*len = 2 + n * sizeof(struct ksz_info_cfg);
+		break;
+	}
+	if (!*len)
+		return DEV_IOC_INVALID_CMD;
+	if (size < *len) {
+		*req_size = *len + SIZEOF_ksz_request;
+		return DEV_IOC_INVALID_LEN;
+	}
+	switch (subcmd) {
+	case DEV_SW_CFG:
+		sw->ops->acquire(sw);
+		for (i = 0; i < opt->num; i++, p++) {
+			cfg->on_off = 0;
+			if (cfg->set & SP_LEARN) {
+				if (!port_chk_dis_learn(sw, p))
+					cfg->on_off |= SP_LEARN;
+			}
+			if (cfg->set & SP_RX) {
+				if (port_chk_rx(sw, p))
+					cfg->on_off |= SP_RX;
+			}
+			if (cfg->set & SP_TX) {
+				if (port_chk_tx(sw, p))
+					cfg->on_off |= SP_TX;
+			}
+			if (p == sw->HOST_PORT)
+				continue;
+			if (cfg->set & SP_PHY_POWER) {
+				if (port_chk_power(sw, p))
+					cfg->on_off |= SP_PHY_POWER;
+			}
+			cfg++;
+		}
+		sw->ops->release(sw);
+		break;
+	}
+	return DEV_IOC_OK;
+}  /* sw_get_attrib */
+
+static int sw_set_attrib(struct ksz_sw *sw, int subcmd, int size,
+	int *req_size, u8 *data, int *output)
+{
+	struct ksz_info_opt *opt = (struct ksz_info_opt *) data;
+	struct ksz_info_cfg *cfg = &opt->data.cfg;
+	int len;
+	int i;
+	int n;
+	int p;
+
+	*output = 0;
+	switch (subcmd) {
+	case DEV_SW_CFG:
+		n = opt->num;
+		p = opt->port;
+		if (!n)
+			n = 1;
+		len = 2 + n * sizeof(struct ksz_info_cfg);
+		if (size < len)
+			goto not_enough;
+		sw->ops->acquire(sw);
+		for (i = 0; i < opt->num; i++, p++) {
+			if (cfg->set & SP_LEARN)
+				port_cfg_dis_learn(sw, p,
+					!(cfg->on_off & SP_LEARN));
+			if (cfg->set & SP_RX)
+				port_cfg_rx(sw, p,
+					!!(cfg->on_off & SP_RX));
+			if (cfg->set & SP_TX)
+				port_cfg_tx(sw, p,
+					!!(cfg->on_off & SP_TX));
+			if (p == sw->HOST_PORT)
+				continue;
+			if (cfg->set & SP_PHY_POWER)
+				port_cfg_power(sw, p,
+					!!(cfg->on_off & SP_PHY_POWER));
+			cfg++;
+		}
+		sw->ops->release(sw);
+		break;
+	default:
+		return DEV_IOC_INVALID_CMD;
+	}
+	return DEV_IOC_OK;
+
+not_enough:
+	*req_size = len + SIZEOF_ksz_request;
+	return DEV_IOC_INVALID_LEN;
+}  /* sw_set_attrib */
+
+static int base_dev_req(struct ksz_sw *sw, char *arg, void *info)
+{
+	struct ksz_request *req = (struct ksz_request *) arg;
+	int len;
+	int maincmd;
+	int req_size;
+	int subcmd;
+	int output;
+	size_t param_size;
+	u8 data[PARAM_DATA_SIZE];
+	struct ksz_resp_msg *msg = (struct ksz_resp_msg *) data;
+	int err = 0;
+	int result = 0;
+
+	get_user_data(&req_size, &req->size, info);
+	get_user_data(&maincmd, &req->cmd, info);
+	get_user_data(&subcmd, &req->subcmd, info);
+	get_user_data(&output, &req->output, info);
+	len = req_size - SIZEOF_ksz_request;
+
+	maincmd &= 0xffff;
+	switch (maincmd) {
+	case DEV_CMD_INFO:
+		switch (subcmd) {
+		case DEV_INFO_INIT:
+			req_size = SIZEOF_ksz_request + 4;
+			if (len >= 4) {
+				data[0] = 'M';
+				data[1] = 'i';
+				data[2] = 'c';
+				data[3] = 'r';
+				data[4] = 0;
+				err = write_user_data(data, req->param.data,
+					6, info);
+				if (err)
+					goto dev_ioctl_done;
+				sw->dev_info = info;
+			} else
+				result = DEV_IOC_INVALID_LEN;
+			break;
+		case DEV_INFO_EXIT:
+
+		/* fall through */
+		case DEV_INFO_QUIT:
+
+			/* Not called through char device. */
+			if (!info)
+				break;
+			msg->module = DEV_MOD_BASE;
+			msg->cmd = DEV_INFO_QUIT;
+			msg->resp.data[0] = 0;
+			sw_setup_msg(info, msg, 8, NULL, NULL);
+			sw->notifications = 0;
+			sw->dev_info = NULL;
+			break;
+		case DEV_INFO_NOTIFY:
+			if (len >= 4) {
+				uint *notify = (uint *) data;
+
+				_chk_ioctl_size(len, 4, 0, &req_size, &result,
+					&req->param, data, info);
+				sw->notifications = *notify;
+			}
+			break;
+		default:
+			result = DEV_IOC_INVALID_CMD;
+			break;
+		}
+		break;
+	case DEV_CMD_PUT:
+		if (_chk_ioctl_size(len, len, 0, &req_size, &result,
+		    &req->param, data, info))
+			goto dev_ioctl_resp;
+		result = sw_set_attrib(sw, subcmd, len, &req_size, data,
+			&output);
+		if (result)
+			goto dev_ioctl_resp;
+		put_user_data(&output, &req->output, info);
+		break;
+	case DEV_CMD_GET:
+		if (_chk_ioctl_size(len, len, 0, &req_size, &result,
+		    &req->param, data, info))
+			goto dev_ioctl_resp;
+		result = sw_get_attrib(sw, subcmd, len, &req_size,
+			&param_size, data, &output);
+		if (result)
+			goto dev_ioctl_resp;
+		err = write_user_data(data, req->param.data, param_size, info);
+		if (err)
+			goto dev_ioctl_done;
+		req_size = param_size + SIZEOF_ksz_request;
+		put_user_data(&output, &req->output, info);
+		break;
+	default:
+		result = DEV_IOC_INVALID_CMD;
+		break;
+	}
+
+dev_ioctl_resp:
+	put_user_data(&req_size, &req->size, info);
+	put_user_data(&result, &req->result, info);
+
+	/* Return ERESTARTSYS so that the system call is called again. */
+	if (result < 0)
+		err = result;
+
+dev_ioctl_done:
+	return err;
+}  /* base_dev_req */
+
 static int sw_dev_req(struct ksz_sw *sw, int start, char *arg,
 	struct sw_dev_info *info)
 {
@@ -13863,6 +14078,10 @@ static int sw_dev_req(struct ksz_sw *sw, int start, char *arg,
 	get_user_data(&maincmd, &req->cmd, info);
 	maincmd >>= 16;
 	switch (maincmd) {
+	case DEV_MOD_BASE:
+		err = base_dev_req(sw, arg, info);
+		result = 0;
+		break;
 #ifdef CONFIG_1588_PTP
 	case DEV_MOD_PTP:
 		if (sw->features & PTP_HW) {
