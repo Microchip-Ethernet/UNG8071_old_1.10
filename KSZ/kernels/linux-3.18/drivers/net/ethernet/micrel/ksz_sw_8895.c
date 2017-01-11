@@ -1,7 +1,7 @@
 /**
  * Microchip KSZ8895 switch common code
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -185,6 +185,10 @@ enum {
 	PROC_SET_UNKNOWN_VID_PORT,
 	PROC_SET_UNKNOWN_IP_MULTICAST_PORT,
 
+	PROC_SET_PORT_DUPLEX,
+	PROC_SET_PORT_SPEED,
+	PROC_SET_LINK_MD,
+
 #ifdef CONFIG_KSZ_STP
 	PROC_GET_STP_INFO,
 	PROC_SET_STP_ON,
@@ -196,10 +200,6 @@ enum {
 	PROC_SET_STP_MCHECK,
 	PROC_SET_STP_ADMIN_P2P,
 #endif
-
-	PROC_SET_PORT_DUPLEX,
-	PROC_SET_PORT_SPEED,
-	PROC_SET_LINK_MD,
 
 };
 
@@ -2799,6 +2799,16 @@ static void sw_init_vlan(struct ksz_sw *sw)
 	}
 }  /* sw_init_vlan */
 
+static void inc_mac_addr(u8 *dst, u8 *src, u8 inc)
+{
+	memcpy(dst, src, ETH_ALEN);
+	dst[5] += inc;
+	if (dst[5] < src[5])
+		dst[4]++;
+	if (dst[4] < src[4])
+		dst[3]++;
+}  /* inc_mac_addr */
+
 /**
  * sw_get_addr - get the switch MAC address.
  * @sw:		The switch instance.
@@ -2821,6 +2831,17 @@ static inline void sw_get_addr(struct ksz_sw *sw, u8 *mac_addr)
  */
 static void sw_set_addr(struct ksz_sw *sw, u8 *mac_addr)
 {
+	int p;
+	struct ksz_port_info *info;
+
+	for (p = 0; p < sw->mib_port_cnt; p++) {
+		info = &sw->port_info[p];
+#if 0
+		inc_mac_addr(info->mac_addr, mac_addr, p + 1);
+#else
+		inc_mac_addr(info->mac_addr, mac_addr, 0);
+#endif
+	}
 /**
  * THa  2015/07/17
  * Switch does not learn unicast address from port if the source address
@@ -3002,8 +3023,10 @@ static void sw_clr_sta_mac_table(struct ksz_sw *sw)
 	int i;
 
 	memset(&entry, 0, sizeof(struct ksz_mac_table));
+	sw->ops->release(sw);
 	for (i = 0; i < STATIC_MAC_TABLE_ENTRIES; i++)
 		sw_w_sta_mac_table(sw, i, &entry);
+	sw->ops->acquire(sw);
 }  /* sw_clr_sta_mac_table */
 
 /**
@@ -3026,7 +3049,9 @@ static void sw_setup_stp(struct ksz_sw *sw)
 	entry.use_fid = 0;
 	entry.override = 1;
 	entry.valid = 1;
+	sw->ops->release(sw);
 	sw_w_sta_mac_table(sw, STP_ENTRY, &entry);
+	sw->ops->acquire(sw);
 }  /* sw_setup_stp */
 
 #ifdef CONFIG_KSZ_STP
@@ -3669,7 +3694,7 @@ enum {
 #define LINK_AUTO_POLARITY		0x00040000
 
 #define CABLE_LEN_MAXIMUM		15000
-#define CABLE_LEN_MULTIPLIER		41
+#define CABLE_LEN_MULTIPLIER		40
 
 #define PHY_RESET_TIMEOUT		10
 
@@ -3769,8 +3794,9 @@ static void hw_get_link_md(struct ksz_sw *sw, int port)
 			len = data & PORT_CABLE_FAULT_COUNTER_H;
 			len <<= 16;
 			len |= link;
-			port_info->length[i] = len *
-				CABLE_LEN_MULTIPLIER;
+			len *= CABLE_LEN_MULTIPLER;
+			len /= 100;
+			port_info->length[i] = len;
 			if (data & PORT_CABLE_10M_SHORT)
 				port_info->length[i] = 1;
 			data >>= PORT_CABLE_DIAG_RESULT_S;
@@ -4474,8 +4500,12 @@ static ssize_t sysfs_sw_read(struct ksz_sw *sw, int proc_num,
 		break;
 	}
 	case PROC_GET_STP:
+#if 0
 		len += sprintf(buf + len, "%u\n",
 			!!(sw->features & STP_SUPPORT));
+#else
+		len += sprintf(buf + len, "0\n");
+#endif
 		break;
 	case PROC_SET_SW_FEATURES:
 		len += sprintf(buf + len, "%08x:\n", sw->features);
@@ -4965,6 +4995,11 @@ static ssize_t sysfs_port_read(struct ksz_sw *sw, int proc_num, int port,
 			port_info->length[0], port_info->status[0],
 			port_info->length[1], port_info->status[1],
 			port_info->length[2], port_info->status[2]);
+		if (sw->verbose)
+			len += sprintf(buf + len,
+				"(%d=unknown; %d=normal; %d=open; %d=short)\n",
+				CABLE_UNKNOWN, CABLE_GOOD, CABLE_OPEN,
+				CABLE_SHORT);
 		break;
 	case PROC_SET_PORT_BASED:
 		chk = port_cfg->port_prio;
@@ -6151,7 +6186,7 @@ static int sw_get_mtu(struct ksz_sw *sw)
 		need_tail_tag = true;
 	if (sw->features & VLAN_PORT_TAGGING)
 		need_tail_tag = true;
-	if (sw->features & DSA_SUPPORT)
+	if (sw->features & (STP_SUPPORT | DSA_SUPPORT))
 		need_tail_tag = true;
 	if (need_tail_tag)
 		mtu += 1;
@@ -6200,6 +6235,10 @@ static void sw_add_tail_tag(struct ksz_sw *sw, struct sk_buff *skb, int ports)
 	trailer = skb_put(skb, len);
 	if (!ports)
 		ports = TAIL_TAG_LOOKUP;
+	else if (ports & 0x80000000) {
+		ports &= ~0x80000000;
+		ports |= TAIL_TAG_OVERRIDE;
+	}
 	trailer[0] = (u8) ports;
 }  /* sw_add_tail_tag */
 
@@ -6313,6 +6352,10 @@ static struct sk_buff *sw_check_skb(struct ksz_sw *sw, struct sk_buff *skb,
 
 #ifdef CONFIG_NET_DSA_TAG_TAIL
 	if (skb->protocol == htons(ETH_P_TRAILER))
+		return skb;
+#endif
+#ifdef CONFIG_KSZ_STP
+	if (skb->protocol == htons(STP_TAG_TYPE))
 		return skb;
 #endif
 
@@ -6566,7 +6609,7 @@ static void sw_start(struct ksz_sw *sw, u8 *addr)
 			port_cfg_ins_tag(sw, sw->HOST_PORT, true);
 		need_vlan = true;
 	}
-	if (sw->features & DSA_SUPPORT)
+	if (sw->features & (STP_SUPPORT | DSA_SUPPORT))
 		need_tail_tag = true;
 	if (need_tail_tag) {
 		sw_cfg_tail_tag(sw, true);
@@ -6617,7 +6660,7 @@ static int sw_stop(struct ksz_sw *sw, int complete)
 	sw_init(sw);
 
 	/* Clean out static MAC table when the switch shutdown. */
-	if ((sw->features & STP_SUPPORT) && complete)
+	if (complete)
 		sw_clr_sta_mac_table(sw);
 	sw->ops->release(sw);
 	return reset;
@@ -6648,8 +6691,8 @@ static int sw_open_dev(struct ksz_sw *sw, struct net_device *dev, u8 *addr)
 
 	sw_init_mib(sw);
 
-	sw->net_ops->start(sw, addr);
 	sw->main_dev = dev;
+	sw->net_ops->start(sw, addr);
 	if (sw->dev_count > 1)
 		mode |= 1;
 	if (sw->features & DIFF_MAC_ADDR)
@@ -6762,44 +6805,47 @@ static void sw_close(struct ksz_sw *sw)
 static u8 sw_set_mac_addr(struct ksz_sw *sw, struct net_device *dev,
 	u8 promiscuous, int port)
 {
-	sw->ops->acquire(sw);
-	if (sw->dev_count > 1 && (!sw->dev_offset || dev != sw->netdev[0])) {
-		int c;
-		int p = get_first_port(sw);
 
-		if (sw->features & DIFF_MAC_ADDR) {
-			sw->features &= ~DIFF_MAC_ADDR;
-			--promiscuous;
-		}
-		for (c = 0, port = p; c < sw->port_cnt; c++, port++) {
-			if (memcmp(sw->port_info[port].mac_addr,
-					dev->dev_addr, ETH_ALEN)) {
-				sw->features |= DIFF_MAC_ADDR;
-				++promiscuous;
-				break;
-			}
-		}
-	} else {
+	/* See if different MAC addresses are used. */
+	if (sw->dev_count > 1) {
 		int i;
+		int dev_count = sw->dev_count + sw->dev_offset;
 
-		/* Make MAC address the same in all the ports. */
-		if (sw->dev_count > 1) {
-			int c;
-			int p = get_first_port(sw);
+		for (i = 0; i < dev_count; i++) {
+			if (dev == sw->netdev[i])
+				continue;
+			if (memcmp(sw->netdev[i]->dev_addr,
+			    dev->dev_addr, ETH_ALEN))
+				break;
+		}
+		if (sw->features & DIFF_MAC_ADDR) {
 
-			for (c = 0, i = p; c < sw->port_cnt; c++, i++) {
-				memcpy(sw->netdev[i + 1]->dev_addr,
-					dev->dev_addr, ETH_ALEN);
-			}
-			if (sw->features & DIFF_MAC_ADDR) {
+			/* All addresses the same. */
+			if (i == dev_count) {
 				sw->features &= ~DIFF_MAC_ADDR;
 				--promiscuous;
 			}
+		} else {
+			if (dev == sw->netdev[0] && i < dev_count) {
+
+				/* Make MAC address the same in all devices. */
+				for (i = 1; i < dev_count; i++) {
+					memcpy(sw->netdev[i]->dev_addr,
+						dev->dev_addr, ETH_ALEN);
+				}
+			} else {
+				if (i < dev_count) {
+					sw->features |= DIFF_MAC_ADDR;
+					++promiscuous;
+				}
+			}
 		}
-		if (dev == sw->netdev[0])
-			sw_set_addr(sw, dev->dev_addr);
 	}
-	sw->ops->release(sw);
+	if (dev == sw->netdev[0]) {
+		sw->ops->acquire(sw);
+		sw_set_addr(sw, dev->dev_addr);
+		sw->ops->release(sw);
+	}
 	return promiscuous;
 }  /* sw_set_mac_addr */
 
@@ -7354,8 +7400,6 @@ static void sw_setup_special(struct ksz_sw *sw, int *port_cnt,
 	sw->dev_offset = 0;
 	sw->phy_offset = 0;
 	if (sw->stp) {
-		sw->fast_aging = 1;
-		sw->multi_dev = 1;
 		sw->features |= STP_SUPPORT;
 	}
 	if (sw->fast_aging)

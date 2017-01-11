@@ -1,7 +1,7 @@
 /**
  * Microchip KSZ8863 SPI driver
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  * Copyright (c) 2010-2015 Micrel, Inc.
  *
  * Copyright 2009 Simtec Electronics
@@ -61,7 +61,7 @@
 #define KS8863MLI_DEV0			"ksz8863"
 #define KS8863MLI_DEV2			"ksz8863_2"
 
-#define DRV_RELDATE			"Dec 22, 2016"
+#define DRV_RELDATE			"Jan 8, 2017"
 
 /* -------------------------------------------------------------------------- */
 
@@ -336,6 +336,8 @@ static void delay_milli(uint millisec)
 	}
 }
 
+#include "ksz_req.c"
+
 #define USE_SHOW_HELP
 #include "ksz_common.c"
 
@@ -519,6 +521,14 @@ static void link_update_work(struct work_struct *work)
 		if (phydev->adjust_link)
 			phydev->adjust_link(phydev->attached_dev);
 	}
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->features & STP_SUPPORT) {
+		struct ksz_stp_info *stp = &sw->info->rstp;
+
+		stp->ops->link_change(stp, true);
+	}
+#endif
 }  /* link_update_work */
 
 #include "ksz_sw.c"
@@ -1364,10 +1374,6 @@ static void ksz8863_dev_monitor(unsigned long ptr)
 				schedule_work(&priv->port->link_update);
 		}
 	}
-#if 0
-	if (hw_priv->intr_working && !(hw_priv->sw.features & STP_SUPPORT))
-		return;
-#endif
 	if (!hw_priv->intr_working)
 		schedule_delayed_work(&hw_priv->link_read, 0);
 
@@ -1512,6 +1518,7 @@ static int ksz8863_probe(struct spi_device *spi)
 	sw_setup(sw);
 	sw_enable(sw);
 	sw->ops->release(sw);
+	sw->ops->init(sw);
 
 #ifndef CONFIG_KSZ_SWITCH_EMBEDDED
 	init_sw_sysfs(sw, &ks->sysfs, ks->dev);
@@ -1600,6 +1607,7 @@ static int ksz8863_remove(struct spi_device *spi)
 	ksz_stop_timer(&ks->mib_timer_info);
 	flush_work(&ks->mib_read);
 
+	sw->ops->exit(sw);
 	sysfs_remove_bin_file(&ks->dev->kobj, &kszsw_registers_attr);
 #ifndef CONFIG_KSZ_SWITCH_EMBEDDED
 	exit_sw_sysfs(sw, &ks->sysfs, ks->dev);

@@ -3467,12 +3467,6 @@ static int port_r_cnt(struct ksz_sw *sw, int port)
 	int cnt;
 	int i;
 
-#if defined(NO_DIRECT_ACCESS)
-if (!sw->info->iba.use_iba) {
-printk("%s\n", __func__);
-return 0;
-}
-#endif
 	/* First read in this interval. */
 	if (!mib->cnt_ptr) {
 		u8 interval;
@@ -3530,12 +3524,6 @@ static inline void port_init_cnt(struct ksz_sw *sw, int port)
 	int cnt;
 	int i;
 
-#if defined(NO_DIRECT_ACCESS)
-if (!sw->info->iba.use_iba) {
-printk("%s\n", __func__);
-return;
-}
-#endif
 	sw->ops->acquire(sw);
 	mib->cnt_ptr = 0;
 	mib->interval = 0;
@@ -6790,8 +6778,6 @@ static void sw_reset_setup(struct ksz_sw *sw)
 
 #define MAX_SW_LEN			1500
 
-/* Used by DLR for now. */
-#if defined(CONFIG_KSZ_DLR)
 static void sw_setup_msg(struct sw_dev_info *info, void *data, int len,
 	void (*func)(void *data, void *param), void *param)
 {
@@ -6818,7 +6804,6 @@ static void sw_setup_msg(struct sw_dev_info *info, void *data, int len,
 		mutex_unlock(&info->lock);
 	wake_up_interruptible(&info->wait_msg);
 }  /* sw_setup_msg */
-#endif
 
 #ifdef CONFIG_KSZ_STP
 #include "ksz_stp.c"
@@ -7148,7 +7133,7 @@ buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
 			SW_D flow_ctrl;
 
 			port_r(sw, p, REG_PORT_STATUS_0, &flow_ctrl);
-#ifdef DEBUG
+#ifdef DBG_LINK
 			printk(KERN_INFO "flow_ctrl: "SW_SIZE_STR"\n",
 				flow_ctrl & (PORT_RX_FLOW_CTRL |
 				PORT_TX_FLOW_CTRL));
@@ -8047,12 +8032,6 @@ static void sw_init(struct ksz_sw *sw)
 {
 	memset(sw->tx_pad, 0, 60);
 	sw->tx_start = 0;
-#if defined(NO_DIRECT_ACCESS)
-if (!sw->info->iba.use_iba) {
-printk("%s\n", __func__);
-return;
-}
-#endif
 	sw_init_cached_regs(sw);
 #ifdef SWITCH_PORT_PHY_ADDR_MASK
 	sw_init_phy_addr(sw);
@@ -8089,12 +8068,6 @@ static void sw_setup(struct ksz_sw *sw)
 
 	sw->port_intr_mask = sw->PORT_MASK;
 	sw->intr_mask = TRIG_TS_INT | APB_TIMEOUT_INT;
-#if defined(NO_DIRECT_ACCESS)
-if (!sw->info->iba.use_iba) {
-printk("%s\n", __func__);
-return;
-}
-#endif
 	sw_set_global_ctrl(sw);
 	sw_setup_reserved_multicast(sw);
 #if 0
@@ -8284,12 +8257,6 @@ return;
 
 static void sw_reset(struct ksz_sw *sw)
 {
-#if defined(NO_DIRECT_ACCESS)
-if (!sw->info->iba.use_iba) {
-printk("%s\n", __func__);
-return;
-}
-#endif
 	sw->overrides &= ~VLAN_SET;
 	sw_reset_setup(sw);
 	if (sw->features & NEW_CAP) {
@@ -10089,7 +10056,9 @@ static ssize_t sysfs_port_read(struct ksz_sw *sw, int proc_num, int port,
 			port_info->length[4], port_info->status[4]);
 		if (sw->verbose)
 			len += sprintf(buf + len,
-				"(0=unknown; 1=normal; 5=open; 6=short)\n");
+				"(%d=unknown; %d=normal; %d=open; %d=short)\n",
+				CABLE_UNKNOWN, CABLE_GOOD, CABLE_OPEN,
+				CABLE_SHORT);
 		break;
 	case PROC_SET_SQI:
 		chk = port_info->sqi;
@@ -12774,7 +12743,7 @@ static int sw_get_mtu(struct ksz_sw *sw)
 		need_tail_tag = true;
 	if (sw->features & VLAN_PORT_TAGGING)
 		need_tail_tag = true;
-	if (sw->features & DSA_SUPPORT)
+	if (sw->features & (STP_SUPPORT | DSA_SUPPORT))
 		need_tail_tag = true;
 	if (need_tail_tag) {
 		mtu += 2;
@@ -13019,12 +12988,14 @@ static struct sk_buff *sw_check_skb(struct ksz_sw *sw, struct sk_buff *skb,
 	if (skb->protocol == htons(ETH_P_TRAILER))
 		return skb;
 #endif
+#ifdef CONFIG_KSZ_STP
+	if (skb->protocol == htons(STP_TAG_TYPE))
+		return skb;
+#endif
 #ifdef CONFIG_KSZ_DLR
 	if (skb->protocol == htons(DLR_TAG_TYPE))
 		return skb;
 #endif
-	if (skb->protocol == htons(STP_TAG_TYPE))
-		return skb;
 #ifdef PROC_MRP
 	if (skb->protocol == htons(ETH_P_MSRP) ||
 	    skb->protocol == htons(ETH_P_MVRP) ||
@@ -13295,13 +13266,6 @@ static void sw_start(struct ksz_sw *sw, u8 *addr)
 		sw_setup(sw);
 	sw_enable(sw);
 
-#if defined(NO_DIRECT_ACCESS)
-if (!sw->info->iba.use_iba) {
-printk("%s\n", __func__);
-	sw->ops->release(sw);
-return;
-}
-#endif
 	sw_set_addr(sw, addr);
 
 	/* STP has its own mechanism to handle looping. */
@@ -13379,7 +13343,7 @@ return;
 			need_vlan = true;
 		}
 	}
-	if (sw->features & DSA_SUPPORT)
+	if (sw->features & (STP_SUPPORT | DSA_SUPPORT))
 		need_tail_tag = true;
 	if (sw->features & (DLR_HW | MRP_SUPPORT))
 		need_vlan = true;
@@ -13463,8 +13427,6 @@ dbg_msg("xmii: %04x\n", data);
 
 #if !defined(TEST_IBA)
 	/* Clean out static MAC table when the switch shutdown. */
-	if ((sw->features & STP_SUPPORT) && complete)
-		sw_clr_sta_mac_table(sw);
 	if (complete)
 		sw_clr_sta_mac_table(sw);
 #endif
@@ -13808,6 +13770,30 @@ static void free_sw_dev_info(struct sw_dev_info *info)
 			if (prev)
 				prev->next = info->next;
 		}
+		if (sw->dev_info == info) {
+			sw->dev_info = NULL;
+			sw->notifications = 0;
+		}
+#ifdef CONFIG_KSZ_MRP_
+		do {
+			struct mrp_info *mrp = &sw->mrp;
+
+			if (mrp->dev_info == info) {
+				mrp->dev_info = NULL;
+				mrp->notifications = 0;
+			}
+		} while (0);
+#endif
+#ifdef CONFIG_KSZ_DLR
+		do {
+			struct ksz_dlr_info *dlr = &sw->info->dlr;
+
+			if (dlr->dev_info == info) {
+				dlr->dev_info = NULL;
+				dlr->notifications = 0;
+			}
+		} while (0);
+#endif
 		kfree(info->read_buf);
 		kfree(info->write_buf);
 		kfree(info);
@@ -14114,10 +14100,6 @@ static int sw_dev_req(struct ksz_sw *sw, int start, char *arg,
 		break;
 #endif
 	default:
-#ifndef CONFIG_KSZ_DLR
-		/* A dummy call to avoid compiler warning. */
-		write_user_data(&maincmd, &req_size, 0, NULL);
-#endif
 		break;
 	}
 
@@ -14528,16 +14510,26 @@ static void sw_setup_zone(struct ksz_sw *sw)
 		features = 0;
 		s = eth_proto[p];
 		if (!strcmp(*s, "dlr")) {
+#ifdef CONFIG_KSZ_DLR
 			features = DLR_HW;
-			features |= VLAN_PORT;
-			sw->features |= VLAN_PORT | VLAN_PORT_TAGGING;
+#ifdef CONFIG_1588_PTP
+			if (sw->features & PTP_HW) {
+				features |= VLAN_PORT;
+				sw->features |= VLAN_PORT | VLAN_PORT_TAGGING;
+			}
+#endif
+#endif
 			limit = 2;
 			w = 1;
 		} else if (!strcmp(*s, "hsr")) {
 #ifdef CONFIG_KSZ_HSR
 			features = HSR_HW;
-			features |= VLAN_PORT;
-			sw->features |= VLAN_PORT | VLAN_PORT_TAGGING;
+#ifdef CONFIG_1588_PTP
+			if (sw->features & PTP_HW) {
+				features |= VLAN_PORT;
+				sw->features |= VLAN_PORT | VLAN_PORT_TAGGING;
+			}
+#endif
 #endif
 			limit = 2;
 			w = 1;
@@ -14546,8 +14538,10 @@ static void sw_setup_zone(struct ksz_sw *sw)
 			w = 1;
 		} else if (!p) {
 #ifdef CONFIG_1588_PTP
-			features |= VLAN_PORT;
-			sw->features |= VLAN_PORT | VLAN_PORT_TAGGING;
+			if (sw->features & PTP_HW) {
+				features |= VLAN_PORT;
+				sw->features |= VLAN_PORT | VLAN_PORT_TAGGING;
+			}
 #endif
 		}
 
@@ -16306,9 +16300,7 @@ static int ksz_probe_prep(struct sw_priv *ks, void *dev)
 #endif
 
 #ifdef CONFIG_KSZ_IBA
-#ifndef DBG_SPI_ACCESS
 	ksz_iba_init(&sw->info->iba, sw);
-#endif
 	INIT_DELAYED_WORK(&sw->set_ops, sw_set_ops);
 #endif
 
@@ -16351,7 +16343,6 @@ static int ksz_probe_next(struct sw_priv *ks)
 
 	/* simple check for a valid chip being connected to the bus */
 	sw->ops->acquire(sw);
-#if !defined(NO_DIRECT_ACCESS)
 	cfg = sw->reg->r8(sw, REG_SW_GLOBAL_SERIAL_CTRL_0);
 	if ((cfg & 0xc) == 0xc)
 		cfg >>= 5;
@@ -16361,9 +16352,6 @@ static int ksz_probe_next(struct sw_priv *ks)
 	/* Turn off SPI auto edge detection. */
 	sw->reg->w8(sw, REG_SW_GLOBAL_SERIAL_CTRL_0, 0);
 	id = sw->reg->r32(sw, REG_CHIP_ID0__1);
-#else
-	id = SIMULATED_ID;
-#endif
 	sw->ops->release(sw);
 	id1 = id;
 	id1 >>= 8;
@@ -16371,7 +16359,6 @@ static int ksz_probe_next(struct sw_priv *ks)
 	id2 = id1 & 0xff;
 	id1 >>= 8;
 dbg_msg("%02x %02x\n", id1, id2);
-#ifndef DBG_SPI_ACCESS
 	if (id1 != FAMILY_ID_95 && id1 != FAMILY_ID_98 &&
 	    id1 != FAMILY_ID_94 && id1 != FAMILY_ID_85 && id1 != 0x64) {
 		dev_err(ks->dev, "failed to read device ID(0x%x)\n", id);
@@ -16379,7 +16366,6 @@ dbg_msg("%02x %02x\n", id1, id2);
 		goto err_mii;
 	}
 	dev_info(ks->dev, "chip id 0x%08x\n", id);
-#endif
 
 	port_count = 1;
 	mib_port_count = 1;
@@ -16478,8 +16464,6 @@ dbg_msg("avb=%d  rr=%d  giga=%d\n",
 		sw->TAIL_TAG_LOOKUP = (1 << (3 + 3));
 		sw->TAIL_TAG_OVERRIDE = (1 << (3 + 2));
 	}
-	sw->port_cnt = mib_port_count;
-dbg_msg("port: %x %x %x\n", port_count, mib_port_count, phy_port_count);
 
 	sw->PORT_MASK = (1 << mib_port_count) - 1;
 	if (sw_host_port < 0 || sw_host_port > mib_port_count)
@@ -16524,12 +16508,18 @@ dbg_msg("fewer: %x %x\n", phy_port_count, mib_port_count);
 dbg_msg("mask: %x %x; %x %x\n", sw->HOST_MASK, sw->PORT_MASK,
 sw->TAIL_TAG_LOOKUP, sw->TAIL_TAG_OVERRIDE);
 
+#if 0
 	/* Host port not in the middle of working ports. */
 	if (sw->HOST_PORT == port_count - 1 || !sw->HOST_PORT ||
 	    (sw->features & USE_FEWER_PORTS)) {
+#else
+	if (sw->HOST_PORT >= port_count - 1) {
+#endif
 		port_count = port_count - 1;
 		mib_port_count = mib_port_count - 1;
 	}
+	sw->port_cnt = port_count;
+dbg_msg("port: %x %x %x\n", sw->port_cnt, sw->mib_port_cnt, sw->phy_port_cnt);
 
 	INIT_DELAYED_WORK(&ks->link_read, link_read_work);
 
@@ -16546,7 +16536,6 @@ sw->TAIL_TAG_LOOKUP, sw->TAIL_TAG_OVERRIDE);
 		info->phy_id = pi + 1;
 	}
 	sw->interface = PHY_INTERFACE_MODE_RGMII;
-#if !defined(DBG_SPI_ACCESS) && !defined(NO_DIRECT_ACCESS)
 	sw->ops->acquire(sw);
 	for (; cnt < sw->mib_port_cnt; cnt++, pi++) {
 		u16 data;
@@ -16693,13 +16682,10 @@ dbg_msg("xmii: %04x %02x %02x; %u %u\n", orig, *data_lo, *data_hi,
 info->tx_rate / TX_RATE_UNIT, info->duplex);
 	}
 	sw->ops->release(sw);
-#endif
 
-#ifndef DBG_SPI_ACCESS
 	ret = ksz_mii_init(ks);
 	if (ret)
 		goto err_mii;
-#endif
 
 	/* Try to enable different mode from one set in U-Boot. */
 	sw_setup_mode(sw, cfg);
@@ -16739,9 +16725,7 @@ info->tx_rate / TX_RATE_UNIT, info->duplex);
 	sw->link_read = &ks->link_read;
 
 	sw_setup_mib(sw);
-#if !defined(DBG_SPI_ACCESS) && !defined(NO_DIRECT_ACCESS)
 	sw_init_mib(sw);
-#endif
 
 	for (i = 0; i < TOTAL_PORT_NUM; i++)
 		init_waitqueue_head(&ks->counter[i].counter);
@@ -16761,7 +16745,6 @@ info->tx_rate / TX_RATE_UNIT, info->duplex);
 	if (sw->features & HSR_HW)
 		ksz_hsr_init(&sw->info->hsr, sw);
 #endif
-#if !defined(DBG_SPI_ACCESS) && !defined(NO_DIRECT_ACCESS)
 	sw->ops->acquire(sw);
 
 	/* Turn off PTP in case the feature is not enabled. */
@@ -16779,7 +16762,7 @@ info->tx_rate / TX_RATE_UNIT, info->duplex);
 	sw_setup(sw);
 	sw_enable(sw);
 	sw->ops->release(sw);
-#endif
+	sw->ops->init(sw);
 
 	init_sw_sysfs(sw, &ks->sysfs, ks->dev);
 #ifdef CONFIG_KSZ_DLR
@@ -16790,31 +16773,15 @@ info->tx_rate / TX_RATE_UNIT, info->duplex);
 		&kszsw_registers_attr);
 	sema_init(&ks->proc_sem, 1);
 
-#ifndef DBG_SPI_ACCESS
 	for (i = 0; i <= sw->mib_port_cnt; i++) {
 		sw->phy[i] = ks->bus->phy_map[i];
-#if 0
-		phydev = sw->phy[i];
-		if (!phydev)
-			continue;
-		priv = phydev->priv;
-		port = priv->port;
-		port->port_cnt = port_count;
-		port->mib_port_cnt = mib_port_count;
-		port->first_port = 0;
-		port->flow_ctrl = PHY_TX_ONLY;
-
-		port->linked = &sw->port_info[port->first_port];
-#endif
 	}
-#if 1
 	phydev = sw->phy[0];
 	priv = phydev->priv;
 	port = priv->port;
 	port->port_cnt = port_count;
 	port->mib_port_cnt = mib_port_count;
 	port->flow_ctrl = PHY_TX_ONLY;
-#endif
 
 #ifdef NO_ATTACHED_DEV
 	sw->ops->acquire(sw);
@@ -16823,7 +16790,6 @@ info->tx_rate / TX_RATE_UNIT, info->duplex);
 	port = priv->port;
 	port_set_link_speed(port);
 	sw->ops->release(sw);
-#endif
 #endif
 
 	INIT_WORK(&sw->set_addr, sw_delayed_set_addr);
@@ -16836,12 +16802,10 @@ info->tx_rate / TX_RATE_UNIT, info->duplex);
 	ksz_init_timer(&ks->monitor_timer_info, 100 * HZ / 1000,
 		ksz9897_dev_monitor, ks);
 
-#if !defined(DBG_SPI_ACCESS) && !defined(NO_DIRECT_ACCESS)
 	ksz_start_timer(&ks->mib_timer_info, ks->mib_timer_info.period);
 	if (!(sw->multi_dev & 1) && !sw->stp)
 		ksz_start_timer(&ks->monitor_timer_info,
 			ks->monitor_timer_info.period * 10);
-#endif
 
 	sw_device_present++;
 
@@ -16857,11 +16821,9 @@ info->tx_rate / TX_RATE_UNIT, info->duplex);
 		ptp->reg = &ptp_reg_ops;
 		ptp->ops = &ptp_ops;
 		ptp->parent = ks->dev;
-#if !defined(DBG_SPI_ACCESS) && !defined(NO_DIRECT_ACCESS)
 #ifdef NO_ATTACHED_DEV
 		ptp->ops->init(ptp, sw->info->mac_addr);
 		ptp->reg->start(ptp, true);
-#endif
 #endif
 		init_ptp_sysfs(&ks->ptp_sysfs, ks->dev);
 	}
@@ -16872,9 +16834,7 @@ info->tx_rate / TX_RATE_UNIT, info->duplex);
 
 		INIT_DELAYED_WORK(&sw->set_mrp, sw_set_mrp);
 		mrp->ops = &mrp_ops;
-#if !defined(DBG_SPI_ACCESS) && !defined(NO_DIRECT_ACCESS)
 		mrp->ops->init(mrp);
-#endif
 	}
 #endif
 
@@ -16882,19 +16842,6 @@ info->tx_rate / TX_RATE_UNIT, info->duplex);
 	ksz_dsa_init();
 #endif
 
-#ifdef DBG_SPI_ACCESS
-	sw->ops->acquire(sw);
-	for (i = 0; i < sw->phy_port_cnt; i++) {
-		u16 val = 0;
-
-		/* Disable EEE for now. */
-		port_mmd_write(sw, i, MMD_DEVICE_ID_EEE_ADV, MMD_EEE_ADV,
-			&val, 1);
-	}
-	sw->ops->release(sw);
-#endif
-
-#if !defined(DBG_SPI_ACCESS) && !defined(NO_DIRECT_ACCESS)
 	if (ks->irq <= 0)
 		return 0;
 	sw->ops->acquire(sw);
@@ -16915,14 +16862,11 @@ info->tx_rate / TX_RATE_UNIT, info->duplex);
 		sw_ena_intr(sw);
 		sw->ops->release(sw);
 	}
-#endif
 
 	return 0;
 
-#ifndef DBG_SPI_ACCESS
 err_mii:
 	kfree(sw->info);
-#endif
 
 	kfree(ks->hw_dev);
 	kfree(ks);
@@ -16964,6 +16908,7 @@ static int ksz_remove(struct sw_priv *ks)
 	ksz_stop_timer(&ks->mib_timer_info);
 	flush_work(&ks->mib_read);
 
+	sw->ops->exit(sw);
 	sysfs_remove_bin_file(&ks->dev->kobj, &kszsw_registers_attr);
 #ifndef CONFIG_KSZ_SWITCH_EMBEDDED
 #ifdef CONFIG_KSZ_DLR
@@ -16993,9 +16938,7 @@ static int ksz_remove(struct sw_priv *ks)
 	ksz_iba_exit(&sw->info->iba);
 #endif
 	kfree(sw->info);
-#ifndef DBG_SPI_ACCESS
 	ksz_mii_exit(ks);
-#endif
 	kfree(ks->hw_dev);
 	kfree(ks);
 

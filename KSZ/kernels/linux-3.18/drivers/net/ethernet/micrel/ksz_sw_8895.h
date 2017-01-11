@@ -1,7 +1,7 @@
 /**
  * Microchip KSZ8895 switch common header
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2010-2015 Micrel, Inc.
@@ -783,6 +783,10 @@ struct sw_attributes {
 	int fw_inv_vid;
 	int fw_unk_ip_mcast_dest;
 
+	int duplex;
+	int speed;
+	int linkmd;
+
 #ifdef CONFIG_KSZ_STP
 	int stp_info;
 	int stp_on;
@@ -794,10 +798,6 @@ struct sw_attributes {
 	int stp_mcheck;
 	int stp_admin_p2p;
 #endif
-
-	int duplex;
-	int speed;
-	int linkmd;
 
 };
 

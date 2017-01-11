@@ -10,13 +10,7 @@
 
 #include "ksz_common.h"
 
-#if defined(CONFIG_KSZ_DLR)
-#define USE_REQ
-#endif
-
-#ifdef USE_REQ
 #include "ksz_req.h"
-#endif
 
 #include "ksz8795.h"
 #include "ksz_sw_8795.h"

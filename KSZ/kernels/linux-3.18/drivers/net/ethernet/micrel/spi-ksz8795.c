@@ -1,7 +1,7 @@
 /**
  * Microchip KSZ8795 SPI driver
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  * Copyright (c) 2010-2015 Micrel, Inc.
  *
  * Copyright 2009 Simtec Electronics
@@ -86,7 +86,7 @@
 #define KS8795_DEV0			"ksz8795"
 #define KS8795_DEV2			"ksz8795_2"
 
-#define DRV_RELDATE			"Dec 22, 2016"
+#define DRV_RELDATE			"Jan 8, 2017"
 
 /* -------------------------------------------------------------------------- */
 
@@ -378,9 +378,7 @@ static void delay_milli(uint millisec)
 #define USE_SHOW_HELP
 #include "ksz_common.c"
 
-#ifdef USE_REQ
 #include "ksz_req.c"
-#endif
 
 #ifndef CONFIG_KSZ_SWITCH_EMBEDDED
 static inline void copy_old_skb(struct sk_buff *old, struct sk_buff *skb)
@@ -602,6 +600,14 @@ static void link_update_work(struct work_struct *work)
 		if (phydev->adjust_link)
 			phydev->adjust_link(phydev->attached_dev);
 	}
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->features & STP_SUPPORT) {
+		struct ksz_stp_info *stp = &sw->info->rstp;
+
+		stp->ops->link_change(stp, true);
+	}
+#endif
 
 #ifdef CONFIG_KSZ_HSR
 	if (sw->features & HSR_HW) {
@@ -1550,6 +1556,7 @@ static int ksz8795_probe(struct spi_device *spi)
 	struct sw_priv *ks;
 	struct ksz_sw *sw;
 	struct ksz_port *port;
+	struct ksz_port_info *info;
 	struct phy_device *phydev;
 	struct phy_priv *priv;
 	u16 id;
@@ -1653,16 +1660,24 @@ static int ksz8795_probe(struct spi_device *spi)
 	init_waitqueue_head(&sw->queue);
 	INIT_DELAYED_WORK(&ks->link_read, link_read_work);
 
+	mutex_lock(&ks->lock);
 	for (pi = 0; pi < SWITCH_PORT_NUM; pi++) {
+		SW_D remote;
+
 		/*
 		 * Initialize to invalid value so that link detection
 		 * is done.
 		 */
-		sw->port_info[pi].link = 0xFF;
-		sw->port_info[pi].state = media_disconnected;
-		sw->port_info[pi].report = true;
-		sw->port_info[pi].phy_id = pi + 1;
+		info = &sw->port_info[pi];
+		info->link = 0xFF;
+		info->state = media_disconnected;
+		info->report = true;
+		info->phy_id = pi + 1;
+		port_r(sw, pi, P_REMOTE_STATUS, &remote);
+		if (remote & PORT_FIBER_MODE)
+			info->fiber = true;
 	}
+	mutex_unlock(&ks->lock);
 	sw->interface = PHY_INTERFACE_MODE_MII;
 	mutex_lock(&ks->lock);
 	for (cnt = pi = sw->port_cnt; cnt < sw->mib_port_cnt; cnt++, pi++) {
@@ -1670,7 +1685,6 @@ static int ksz8795_probe(struct spi_device *spi)
 		u8 data;
 		int speed;
 		phy_interface_t phy;
-		struct ksz_port_info *info;
 
 		if (sw->features & USE_FEWER_PORTS)
 			pi = sw->HOST_PORT;
@@ -1784,6 +1798,7 @@ static int ksz8795_probe(struct spi_device *spi)
 	sw_setup(sw);
 	sw_enable(sw);
 	sw->ops->release(sw);
+	sw->ops->init(sw);
 
 #ifndef CONFIG_KSZ_SWITCH_EMBEDDED
 	init_sw_sysfs(sw, &ks->sysfs, ks->dev);
@@ -1872,6 +1887,7 @@ static int ksz8795_remove(struct spi_device *spi)
 	ksz_stop_timer(&ks->mib_timer_info);
 	flush_work(&ks->mib_read);
 
+	sw->ops->exit(sw);
 	sysfs_remove_bin_file(&ks->dev->kobj, &kszsw_registers_attr);
 #ifndef CONFIG_KSZ_SWITCH_EMBEDDED
 #ifdef CONFIG_KSZ_DLR
@@ -1901,6 +1917,7 @@ static int ksz8795_remove(struct spi_device *spi)
 static const struct of_device_id ksz8795_dt_ids[] = {
 	{ .compatible = "microchip,ksz8795" },
 	{ .compatible = "microchip,ksz8794" },
+	{ .compatible = "microchip,ksz8765" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, ksz8795_dt_ids);

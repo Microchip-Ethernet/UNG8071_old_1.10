@@ -1,7 +1,7 @@
 /**
  * Microchip switch common header
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2010-2015 Micrel, Inc.
@@ -63,6 +63,7 @@ struct sw_dev_info {
 };
 
 
+#include "ksz_sw_api.h"
 #ifdef CONFIG_KSZ_STP
 #include "ksz_stp.h"
 #endif
@@ -386,6 +387,11 @@ struct ksz_sw_net_ops {
 };
 
 struct ksz_sw_ops {
+	void (*init)(struct ksz_sw *sw);
+	void (*exit)(struct ksz_sw *sw);
+	int (*dev_req)(struct ksz_sw *sw, int start, char *arg,
+		struct sw_dev_info *info);
+
 	int (*get_first_port)(struct ksz_sw *sw);
 
 	void (*acquire)(struct ksz_sw *sw);
@@ -569,6 +575,13 @@ struct ksz_sw {
 	u8 tx_pad[60];
 	int tx_start;
 	struct ksz_sw_cached_regs cached;
+
+	int dev_major;
+	u8 *msg_buf;
+	struct sw_dev_info *dev_list[2];
+	struct sw_dev_info *dev_info;
+	uint notifications;
+	char dev_name[20];
 
 	int dev_count;
 	int id;
@@ -764,6 +777,13 @@ struct sw_attributes {
 	int fw_unk_dest;
 	int fw_inv_vid;
 
+	int duplex;
+	int speed;
+	int linkmd;
+	int macaddr;
+	int src_filter_0;
+	int src_filter_1;
+
 #ifdef CONFIG_KSZ_STP
 	int stp_info;
 	int stp_on;
@@ -775,13 +795,6 @@ struct sw_attributes {
 	int stp_mcheck;
 	int stp_admin_p2p;
 #endif
-
-	int duplex;
-	int speed;
-	int linkmd;
-	int macaddr;
-	int src_filter_0;
-	int src_filter_1;
 };
 
 struct static_mac_attributes {

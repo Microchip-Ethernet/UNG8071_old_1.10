@@ -33,12 +33,6 @@
 #endif
 
 #if 0
-#define DBG_SPI_ACCESS
-#endif
-#if 1
-#define CHK_SPI_ACCESS
-#endif
-#if 0
 #define NO_ATTACHED_DEV
 #endif
 
@@ -261,14 +255,6 @@ static void spi_wrreg(struct sw_priv *ks, u32 addr, void *txb, size_t txl)
 	if (ret < 0)
 		pr_alert("spi_sync() failed: %x %u\n", addr, txl);
 	spi_chk_regs(sw, addr, txb, txl);
-#ifdef DBG_SPI_ACCESS_
-	do {
-		u8 *byte = hw_priv->txd;
-		for (ret = 0; ret < xfer->len; ret++)
-			printk("%02x ", byte[ret]);
-		printk("\n");
-	} while (0);
-#endif
 }
 
 /**
@@ -437,14 +423,6 @@ static void spi_rdreg(struct sw_priv *ks, u32 addr, void *rxb, size_t rxl)
 		memcpy(rxb, trx + 4, rxl);
 	else
 		memcpy(rxb, trx, rxl);
-#ifdef DBG_SPI_ACCESS_
-	do {
-		u8 *byte = hw_priv->txd;
-		for (ret = 0; ret < 4; ret++)
-			printk("%02x ", byte[ret]);
-		printk("\n");
-	} while (0);
-#endif
 }
 
 /**
@@ -660,37 +638,21 @@ static void sw_w(struct ksz_sw *sw, unsigned reg, void *buf, size_t cnt)
 
 static void sw_w8(struct ksz_sw *sw, unsigned reg, unsigned val)
 {
-#if defined(NO_DIRECT_ACCESS)
-if (!sw->info->iba.use_iba)
-return;
-#endif
 	HW_W8(sw->dev, reg, val);
 }
 
 static void sw_w16(struct ksz_sw *sw, unsigned reg, unsigned val)
 {
-#if defined(NO_DIRECT_ACCESS)
-if (!sw->info->iba.use_iba)
-return;
-#endif
 	HW_W16(sw->dev, reg, val);
 }
 
 static void sw_w24(struct ksz_sw *sw, unsigned reg, unsigned val)
 {
-#if defined(NO_DIRECT_ACCESS)
-if (!sw->info->iba.use_iba)
-return;
-#endif
 	HW_W24(sw->dev, reg, val);
 }
 
 static void sw_w32(struct ksz_sw *sw, unsigned reg, unsigned val)
 {
-#if defined(NO_DIRECT_ACCESS)
-if (!sw->info->iba.use_iba)
-return;
-#endif
 	HW_W32(sw->dev, reg, val);
 }
 

@@ -2892,7 +2892,11 @@ static void prep_sw_dev(struct ksz_sw *sw, struct macb *bp, int i,
 
 	bp->phy_addr = sw->net_ops->setup_dev(sw, bp->dev, dev_name, &bp->port,
 		i, port_count, mib_port_count);
-	phy_mode = PHY_INTERFACE_MODE_RGMII_TXID;
+	phy_mode = bp->phy_interface;
+
+	/* Require RGMII_TXID at the switch. */
+	if (PHY_INTERFACE_MODE_RGMII == phy_mode)
+		phy_mode = PHY_INTERFACE_MODE_RGMII_TXID;
 	snprintf(bus_id, MII_BUS_ID_SIZE, "sw.%d", 0);
 	snprintf(phy_id, MII_BUS_ID_SIZE, PHY_ID_FMT, bus_id, bp->phy_addr);
 	bp->phy_dev = phy_attach(bp->dev, phy_id, phy_mode);
@@ -2990,8 +2994,6 @@ dev->dev_addr[5]++;
 
 	err = init_sw_sysfs(sw, &hw_priv->sysfs, &main_dev->dev);
 
-	sw->ops->init(sw);
-
 #ifdef CONFIG_1588_PTP
 	if (sw->features & PTP_HW) {
 		struct ptp_info *ptp = &sw->ptp_hw;
@@ -3029,7 +3031,6 @@ static void macb_sw_exit(struct macb *bp)
 		ptp->ops->exit(ptp);
 	}
 #endif
-	sw->ops->exit(sw);
 	exit_sw_sysfs(sw, &hw_priv->sysfs, &dev->dev);
 	for (i = 1; sw->dev_count + sw->dev_offset; i++) {
 		dev = sw->netdev[i];

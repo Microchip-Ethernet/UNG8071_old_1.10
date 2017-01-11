@@ -578,28 +578,10 @@ static void ptp_rx_restart(struct ptp_info *ptp, u8 tsi)
 	ptp_write_index(ptp, PTP_TSI_INDEX_S, tsi);
 	ctrl = sw_r32(sw, REG_PTP_CTRL_STAT__4);
 	ctrl &= ~(TRIG_RESET | TS_RESET);
-#ifdef CHK_SPI_ACCESS
-if ((ctrl & (TS_INT_ENABLE | TS_ENABLE)) != (TS_INT_ENABLE | TS_ENABLE)) {
-printk(" rx: %08x; %x\n", ctrl, sw_r32(sw, REG_PTP_UNIT_INDEX__4));
-#if 1
-ctrl |= TS_INT_ENABLE;
-#endif
-}
-#endif
 	ctrl &= ~TS_ENABLE;
 	sw_w32(sw, REG_PTP_CTRL_STAT__4, ctrl);
 	ctrl |= TS_ENABLE;
 	sw_w32(sw, REG_PTP_CTRL_STAT__4, ctrl);
-#ifdef CHK_SPI_ACCESS
-do {
-u32 status;
-status = sw_r32(sw, REG_PTP_CTRL_STAT__4);
-if ((status & (TS_INT_ENABLE | TS_ENABLE)) != (TS_INT_ENABLE | TS_ENABLE)) {
-printk(" rx: %s %08x %08x; %x\n", __func__, status, ctrl, sw_r32(sw, REG_PTP_UNIT_INDEX__4));
-	sw_w32(sw, REG_PTP_CTRL_STAT__4, ctrl);
-}
-} while (0);
-#endif
 }  /* ptp_rx_restart */
 
 static u32 ts_event_gpi(u8 gpi, u8 event)

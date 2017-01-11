@@ -39,18 +39,6 @@
 #endif
 
 
-#if 1
-/* Drop beacons in ring node. */
-#define DROP_BEACON_0
-#endif
-#if 1
-/* Drop beacons for supervisor. */
-#define DROP_BEACON_1	1
-#else
-#define DROP_BEACON_1	0
-#endif
-
-
 static u8 MAC_ADDR_BEACON[] = { 0x01, 0x21, 0x6C, 0x00, 0x00, 0x01 };
 static u8 MAC_ADDR_SIGNON[] = { 0x01, 0x21, 0x6C, 0x00, 0x00, 0x02 };
 static u8 MAC_ADDR_ANNOUNCE[] = { 0x01, 0x21, 0x6C, 0x00, 0x00, 0x03 };
@@ -122,6 +110,7 @@ static void setup_acl_beacon(struct ksz_dlr_info *info, int port)
 	acl->equal = 1;
 	acl->src = 1;
 	memcpy(acl->mac, info->attrib.active_super_addr.addr, ETH_ALEN);
+	memcpy(info->beacon_addr, acl->mac, ETH_ALEN);
 	acl->eth_type = DLR_TAG_TYPE;
 	sw_w_acl_rule(sw, port, i, acl);
 	i++;
@@ -147,7 +136,7 @@ static void setup_acl_beacon_timeout(struct ksz_dlr_info *info, int port)
 	struct ksz_sw *sw = info->sw_dev;
 	struct ksz_port_cfg *cfg = &sw->info->port_cfg[port];
 	struct ksz_acl_table *acl;
-	int i = DLR_TIMEOUT_ACL_ENTRY + 1;
+	int i;
 	int ruleset;
 	u8 *addr = MAC_ADDR_BEACON;
 
@@ -185,6 +174,20 @@ static void setup_acl_beacon_timeout(struct ksz_dlr_info *info, int port)
 	sw_w_acl_table(sw, port, i, acl);
 	mutex_unlock(&sw->acllock);
 }  /* setup_acl_beacon_timeout */
+
+static void disable_acl_beacon_timeout(struct ksz_dlr_info *info, int port)
+{
+	struct ksz_sw *sw = info->sw_dev;
+	struct ksz_port_cfg *cfg = &sw->info->port_cfg[port];
+	struct ksz_acl_table *acl;
+	int i = DLR_TIMEOUT_ACL_ENTRY + 1;
+
+	mutex_lock(&sw->acllock);
+	acl = &cfg->acl_info[i];
+	acl->ruleset = 0;
+	sw_w_acl_table(sw, port, i, acl);
+	mutex_unlock(&sw->acllock);
+}  /* disable_acl_beacon_timeout */
 
 static void setup_acl_beacon_drop(struct ksz_dlr_info *info, int drop)
 {
@@ -227,8 +230,12 @@ static void setup_vlan_table(struct ksz_dlr_info *info, u16 vid, int set)
 	struct ksz_sw *sw = info->sw_dev;
 	u32 ports = 0;
 
+#ifdef DBG_DLR_OPER
+	dbg_msg(" %s %d %d\n", __func__, vid, set);
+#endif
+
 	/* Do not do anything for VID 0, which is priority tagged frame. */
-	if (0 == vid)
+	if (1 >= vid)
 		return;
 	if (set)
 		ports = sw->HOST_MASK | info->member;
@@ -363,33 +370,12 @@ static void dlr_hw_set_vlan_id(struct ksz_sw *sw, u16 vid)
 
 static void sw_setup_dlr(struct ksz_sw *sw)
 {
-#if 0
-	int p;
-#endif
 	struct ksz_dlr_info *dlr = &sw->info->dlr;
 
 	/* Enable 802.1p priority to give highest priority to beacon frame. */
 	sw_ena_802_1p(sw, dlr->ports[0]);
 	sw_ena_802_1p(sw, dlr->ports[1]);
 	sw_ena_802_1p(sw, sw->HOST_PORT);
-
-#if 0
-	/* DLR ports only communicate with host port. */
-	sw_cfg_port_base_vlan(sw, dlr->ports[0], sw->HOST_MASK | dlr->member);
-	sw_cfg_port_base_vlan(sw, dlr->ports[1], sw->HOST_MASK | dlr->member);
-
-	for (p = 0; p < sw->mib_port_cnt; p++) {
-
-		/* The other ports should be setup properly. */
-		if (sw->features & SW_VLAN_DEV)
-			break;
-		if (p == sw->HOST_PORT)
-			continue;
-		if (p == dlr->ports[0] || p == dlr->ports[1])
-			continue;
-		sw_cfg_port_base_vlan(sw, p, sw->PORT_MASK & ~dlr->member);
-	}
-#endif
 
 #ifdef CONFIG_HAVE_ACL_HW
 	/* Need to receive beacon frame with changed VID. */
@@ -448,32 +434,6 @@ enum {
 	DEV_DLR_TX_FLUSH_TABLES,
 	DEV_DLR_TX_LEARNING_UPDATE,
 };
-
-#if 0
-static char *DLR_oper_names[] = {
-	"CHK_HW",
-	"CLR_SUPER",
-	"SETUP_DIR",
-	"SETUP_DROP",
-	"SETUP_TIMEOUT",
-	"SETUP_VID",
-	"FLUSH",
-	"BLOCK",
-	"STOP",
-	"UPDATE",
-	"RX",
-	"START_ANNOUNCE",
-	"TX_ANNOUNCE",
-	"TX_LOCATE",
-	"TX_SIGNON",
-	"TX_REQ",
-	"TX_RESP",
-	"TX_STATUS",
-	"TX_ADVERTISE",
-	"FLUSH_TABLES",
-	"LEARNING_UPDATE",
-};
-#endif
 
 static void wait_for_timeout(u32 microsec)
 {
@@ -586,22 +546,6 @@ static int prep_dlr_link_status(struct ksz_dlr_info *dlr, int neigh)
 	frame->data.status.port1_active = 1;
 	frame->data.status.port2_active = 1;
 
-#if 0
-	/* Link down has higher priority. */
-	if (dlr->p1_down || dlr->p2_down) {
-		frame->data.status.neighbor = 0;
-		if (dlr->p1_down)
-			frame->data.status.port1_active = 0;
-		if (dlr->p2_down)
-			frame->data.status.port2_active = 0;
-	} else {
-		frame->data.status.neighbor = 1;
-		if (dlr->p1_lost)
-			frame->data.status.port1_active = 0;
-		if (dlr->p2_lost)
-			frame->data.status.port2_active = 0;
-	}
-#endif
 	if (neigh) {
 		frame->data.status.neighbor = 1;
 		if (dlr->p1_lost)
@@ -907,8 +851,9 @@ static void blockOtherPorts(struct ksz_dlr_info *info, int block)
 		return;
 
 	/* No need to block if both DLR ports not not connected. */
-	if (block && (info->p1_down || info->p2_down))
+	if (1 == block && !info->both_open)
 		return;
+	block = !!block;
 	if (block == info->block)
 		return;
 
@@ -934,12 +879,14 @@ static void enableOnePort(struct ksz_dlr_info *info)
 	sw->ops->acquire(sw);
 	port_set_stp_state(sw, info->ports[block_port], STP_STATE_BLOCKED);
 	sw->ops->release(sw);
+	info->both_open = 0;
 }
 
 static void enableBothPorts(struct ksz_dlr_info *info)
 {
 	struct ksz_sw *sw = info->sw_dev;
 
+	info->both_open = 1;
 	sw->ops->acquire(sw);
 	port_set_stp_state(sw, info->ports[0], STP_STATE_FORWARDING);
 	port_set_stp_state(sw, info->ports[1], STP_STATE_FORWARDING);
@@ -1062,21 +1009,26 @@ static void disableSupervisor(struct ksz_dlr_info *info)
 #ifdef DBG_DLR_OPER
 	dbg_msg("%s\n", __func__);
 #endif
-	sw->ops->acquire(sw);
-	sw->ops->cfg_src_filter(sw, 1);
-	sw->ops->release(sw);
-	dlr_set_supervisor(info);
-	info->start = 0;
 	if (1 != sw->multi_dev && sw->port_cnt > 2)
 		member = info->member | sw->HOST_MASK;
-	sw->ops->cfg_mac(sw, DLR_ANNOUNCE_ENTRY, MAC_ADDR_ANNOUNCE, member,
-		false, false, 0);
+	dlr_set_supervisor(info);
+	info->start = 0;
+
+	/* Allow beacons to be forwarded. */
 	sw->ops->cfg_mac(sw, DLR_BEACON_ENTRY, MAC_ADDR_BEACON, member, false,
 		false, 0);
+	sw->ops->cfg_mac(sw, DLR_ANNOUNCE_ENTRY, MAC_ADDR_ANNOUNCE, member,
+		false, false, 0);
 	sw->ops->cfg_mac(sw, DLR_SIGNON_ENTRY, MAC_ADDR_SIGNON, sw->HOST_MASK,
 		false, false, 0);
 	sw->ops->cfg_mac(sw, DLR_LEARNING_ENTRY, MAC_ADDR_LEARNING_UPDATE,
 		member, false, false, 0);
+	sw->ops->acquire(sw);
+	sw->ops->cfg_src_filter(sw, 1);
+#ifdef CONFIG_HAVE_DLR_HW
+	dlr_hw_reset_seq_id(sw);
+#endif
+	sw->ops->release(sw);
 }  /* disableSupervisor */
 
 static void enableSupervisor(struct ksz_dlr_info *info)
@@ -1086,8 +1038,6 @@ static void enableSupervisor(struct ksz_dlr_info *info)
 	/* Do not need to process Announce. */
 	sw->ops->cfg_mac(sw, DLR_ANNOUNCE_ENTRY, MAC_ADDR_ANNOUNCE, 0, true,
 		false, 0);
-	sw->ops->cfg_mac(sw, DLR_BEACON_ENTRY, MAC_ADDR_BEACON, sw->HOST_MASK,
-		!DROP_BEACON_1, false, 0);
 
 	/* Force to receive messages as port will be closed. */
 	sw->ops->cfg_mac(sw, DLR_SIGNON_ENTRY, MAC_ADDR_SIGNON, sw->HOST_MASK,
@@ -1100,15 +1050,22 @@ static void enableSupervisor(struct ksz_dlr_info *info)
 	sw->ops->cfg_mac(sw, DLR_LEARNING_ENTRY, MAC_ADDR_LEARNING_UPDATE, 0,
 		true, false, 0);
 	sw->ops->acquire(sw);
-	sw->ops->cfg_src_filter(sw, 0);
 #ifdef CONFIG_HAVE_DLR_HW
-	dlr_hw_reset_seq_id(sw);
 	dlr_hw_set_precedence(sw, info->precedence);
 	dlr_hw_set_interval(sw, info->beacon_interval);
 	dlr_hw_set_timeout(sw, info->beacon_timeout);
 	dlr_hw_set_vlan_id(sw, info->vid);
 	dlr_hw_set_ip_addr(sw, ntohl(info->ip_addr));
 #endif
+	sw->ops->release(sw);
+
+	/* Beacons will only be forwarded to self. */
+	sw->ops->cfg_mac(sw, DLR_BEACON_ENTRY, MAC_ADDR_BEACON, sw->HOST_MASK,
+		false, false, 0);
+
+	/* Allow receiving beacons sent by self. */
+	sw->ops->acquire(sw);
+	sw->ops->cfg_src_filter(sw, 0);
 	sw->ops->release(sw);
 	info->start = 1;
 	dlr_set_supervisor(info);
@@ -1122,9 +1079,6 @@ static void disableAnnounce(struct ksz_dlr_info *info)
 	cancel_delayed_work_sync(&info->announce_tx);
 }
 
-static int proc_dlr_hw_access(struct ksz_dlr_info *dlr, int cmd, int subcmd,
-	int option, void *ptr);
-
 static void startAnnounce(struct ksz_dlr_info *info)
 {
 #ifdef DBG_DLR_OPER
@@ -1135,8 +1089,7 @@ static void startAnnounce(struct ksz_dlr_info *info)
 	if (!info->ann_first)
 		dlr_tx_announce(info);
 	else
-		proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_TX_ANNOUNCE,
-			0, NULL);
+		info->tx_announce = true;
 }  /* startAnnounce */
 
 static void enableAnnounce(struct ksz_dlr_info *info, int delay)
@@ -1187,61 +1140,65 @@ static int updateValues(struct ksz_dlr_info *info)
 {
 	struct ksz_dlr_gateway_capable *attrib = &info->attrib;
 	struct ksz_sw *sw = info->sw_dev;
+	int can_change = false;
 	int vid_change = false;
 	int prepare = false;
+	int cmp = memcmp(info->src_addr, attrib->active_super_addr.addr,
+		ETH_ALEN);
 
 #ifdef DBG_DLR_OPER
 	dbg_msg("%s\n", __func__);
 #endif
-	if (info->cfg.vid != attrib->super_cfg.vid) {
-		vid_change = true;
-		setup_vlan_table(info, info->cfg.vid, false);
-	}
 	sw->ops->acquire(sw);
-	if (info->cfg.prec != attrib->super_cfg.prec) {
-		info->cfg.prec = attrib->super_cfg.prec;
+	if (info->precedence != attrib->super_cfg.prec) {
 		info->precedence = attrib->super_cfg.prec;
 #ifdef CONFIG_HAVE_DLR_HW
 		dlr_hw_set_precedence(sw, info->precedence);
 #endif
 	}
+	sw->ops->release(sw);
 
 	/*
 	 * Changing precedence or MAC address can cause backup supervisor to
 	 * become active.
 	 */
-	if (DLR_SUPERVISOR == info->node) {
-		int cmp = memcmp(info->src_addr,
-			attrib->active_super_addr.addr, ETH_ALEN);
-
-		if (info->cfg.prec > attrib->active_super_prec ||
-		    (info->cfg.prec == attrib->active_super_prec &&
-		    cmp > 0)) {
-			prepare = true;
-		}
+	if (info->precedence > attrib->active_super_prec ||
+	    (info->precedence == attrib->active_super_prec &&
+	    cmp > 0)) {
+		can_change = true;
+		prepare = true;
+	} else if (!cmp)
+		can_change = true;
+	if (can_change && info->vid != attrib->super_cfg.vid) {
+		vid_change = true;
+		setup_vlan_table(info, info->vid, false);
 	}
-	if (info->cfg.beacon_interval != attrib->super_cfg.beacon_interval) {
+	sw->ops->acquire(sw);
+	if (can_change &&
+	    info->beacon_interval != attrib->super_cfg.beacon_interval) {
+#ifdef DBG_DLR_OPER
 		dbg_msg("interval %u %u\n",
-			info->cfg.beacon_interval,
+			info->beacon_interval,
 			attrib->super_cfg.beacon_interval);
-		info->cfg.beacon_interval = attrib->super_cfg.beacon_interval;
+#endif
 		info->beacon_interval = attrib->super_cfg.beacon_interval;
 #ifdef CONFIG_HAVE_DLR_HW
 		dlr_hw_set_interval(sw, info->beacon_interval);
 #endif
 	}
-	if (info->cfg.beacon_timeout != attrib->super_cfg.beacon_timeout) {
+	if (can_change &&
+	    info->beacon_timeout != attrib->super_cfg.beacon_timeout) {
+#ifdef DBG_DLR_OPER
 		dbg_msg("timeout %u %u\n",
-			info->cfg.beacon_timeout,
+			info->beacon_timeout,
 			attrib->super_cfg.beacon_timeout);
-		info->cfg.beacon_timeout = attrib->super_cfg.beacon_timeout;
+#endif
 		info->beacon_timeout = attrib->super_cfg.beacon_timeout;
 #ifdef CONFIG_HAVE_DLR_HW
 		dlr_hw_set_timeout(sw, info->beacon_timeout);
 #endif
 	}
-	if (info->cfg.vid != attrib->super_cfg.vid) {
-		info->cfg.vid = attrib->super_cfg.vid;
+	if (can_change && info->vid != attrib->super_cfg.vid) {
 		info->vid = attrib->super_cfg.vid;
 #ifdef CONFIG_HAVE_DLR_HW
 		dlr_hw_set_vlan_id(sw, info->vid);
@@ -1291,30 +1248,6 @@ static void setupDir(struct ksz_dlr_info *info, int port)
 #endif
 }
 
-static void proc_dlr_cmd(struct ksz_dlr_info *dlr, struct dlr_work *parent);
-
-static int proc_dlr_hw_access(struct ksz_dlr_info *dlr, int cmd, int subcmd,
-	int option, void *ptr)
-{
-	struct dlr_work *work;
-	int ret = 0;
-
-	work = &dlr->work_info.works[dlr->work_info.tail];
-	if (work->used) {
-		pr_alert("work full\n");
-		return -EFAULT;
-	}
-	work->ptr = ptr;
-	work->cmd = cmd;
-	work->subcmd = subcmd;
-	work->option = option;
-	work->used = true;
-	dlr->work_info.tail++;
-	dlr->work_info.tail &= DLR_WORK_LAST;
-	if (!work->prev->used)
-		schedule_work(&dlr->work_info.work);
-	return ret;
-}  /* proc_dlr_hw_access */
 
 #define announcedState		(info->ring_state)
 #define fromRingState		(RING_FAULT_STATE == info->ring_state ?	\
@@ -1334,7 +1267,7 @@ static int proc_dlr_hw_access(struct ksz_dlr_info *dlr, int cmd, int subcmd,
 #define linkStatus		(info->p1_lost || info->p2_lost)
 
 
-static void acceptBeacons_(struct ksz_dlr_info *dlr)
+static void acceptBeacons(struct ksz_dlr_info *dlr)
 {
 #ifdef DBG_DLR_BEACON
 	dbg_msg("%s\n", __func__);
@@ -1347,28 +1280,13 @@ static void acceptBeacons_(struct ksz_dlr_info *dlr)
 	/* Indicate in process of accepting beacons. */
 	dlr->drop_beacon++;
 #ifdef CONFIG_HAVE_ACL_HW
-#if (0 == DROP_BEACON_1)
-	if (dlr->node != DLR_ACTIVE_SUPERVISOR)
-#endif
 	setup_acl_beacon_drop(dlr, 0);
 #endif
 	dlr->drop_beacon = false;
-}  /* acceptBeacons_ */
-
-static void acceptBeacons(struct ksz_dlr_info *info)
-{
-#ifdef DBG_DLR_BEACON
-	dbg_msg("  %d %d; ",
-		info->beacon_info[0].timeout, info->beacon_info[1].timeout);
-	dbg_msg("%s\n", __func__);
-#endif
-	info->skip_beacon = false;
-	proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_SETUP_DROP, 0,
-		NULL);
-	info->drop_beacon = false;
+	memset(&dlr->last_beacon[0], 0, sizeof(struct ksz_dlr_tx_frame));
+	memset(&dlr->last_beacon[1], 0, sizeof(struct ksz_dlr_tx_frame));
 }  /* acceptBeacons */
 
-#ifdef DROP_BEACON_0
 static void dropBeacons(struct ksz_dlr_info *info)
 {
 	int drop = info->member;
@@ -1378,20 +1296,11 @@ static void dropBeacons(struct ksz_dlr_info *info)
 #endif
 	if (info->node == DLR_ACTIVE_SUPERVISOR)
 		drop = 0x8000;
-	proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_SETUP_DROP, drop,
-		NULL);
-	info->drop_beacon = true;
+#ifdef CONFIG_HAVE_ACL_HW
+	setup_acl_beacon_drop(info, drop);
+#endif
+	info->skip_beacon = !!drop;
 }  /* dropBeacons */
-#endif
-
-static void setupBeaconTimeout(struct ksz_dlr_info *info, int port)
-{
-#ifdef DBG_DLR_BEACON
-	dbg_msg("  setup timeout: %d\n", port);
-#endif
-	proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_SETUP_TIMEOUT, port,
-		NULL);
-}  /* setupBeanconTimeout */
 
 static int seq_ahead(u32 start, u32 num)
 {
@@ -1443,7 +1352,7 @@ static void dlr_print(struct ksz_dlr_info *info, char *msg)
 }
 #endif
 
-static void dlr_chk_beacon_timeout(struct ksz_dlr_info *info, int p,
+static int dlr_chk_beacon_timeout(struct ksz_dlr_info *info, int p,
 	struct ksz_dlr_frame *beacon,
 	struct ksz_dlr_super_info *active,
 	struct ksz_dlr_super_info *super)
@@ -1453,6 +1362,7 @@ static void dlr_chk_beacon_timeout(struct ksz_dlr_info *info, int p,
 	struct ksz_dlr_super_info *next;
 	struct ksz_dlr_super_info *first = NULL;
 	struct ksz_dlr_super_info *found = NULL;
+	int accept = false;
 
 	crc = ether_crc(ETH_ALEN + 1, super->prec_addr);
 	for (i = 0; i < DLR_SUPERVISOR_NUM; i++) {
@@ -1498,13 +1408,14 @@ static void dlr_chk_beacon_timeout(struct ksz_dlr_info *info, int p,
 				ETH_ALEN + 1);
 		}
 		found->timeout[p] += interval;
-		if (found->timeout[p] > (10000 + interval) && !found->sent) {
+		if (found->timeout[p] > (10000 + 2 * interval) &&
+		    !found->sent) {
 dbg_msg("rogue: %u\n", found->timeout[p]);
 			found->sent = 1;
-			proc_dlr_hw_access(info, DEV_CMD_PUT,
-				DEV_DLR_TX_LEARNING_UPDATE, p, found);
+			accept = true;
 		}
 	}
+	return accept;
 }  /* dlr_chk_beacon_timeout */
 
 static void dbg_supervisor(struct ksz_dlr_info *info)
@@ -1553,16 +1464,90 @@ static void dlr_clr_supervisor(struct ksz_dlr_info *info)
 	}
 }  /* dlr_clr_supervisor */
 
-static int handleBeacon(struct ksz_dlr_info *info,
+static void update_vlan(struct ksz_dlr_info *info, u16 vid)
+{
+	if (info->vid == vid)
+		return;
+	setup_vlan_table(info, info->vid, false);
+	info->vid = vid;
+	setup_vlan_table(info, info->vid, true);
+	info->frame.vlan.h_vlan_TCI = htons((7 << VLAN_PRIO_SHIFT) | info->vid);
+	memcpy(info->signon_frame, &info->frame, sizeof(struct vlan_ethhdr));
+}  /* update_vlan */
+
+static void setup_dir(struct ksz_dlr_info *info, int port)
+{
+	info->rx_port = port;
+	info->tx_port = (port + 1) & 1;
+	setupDir(info, port);
+}  /* setup_dir */
+
+static void dlr_notify_link_lost(struct ksz_dlr_info *dlr, int port)
+{
+	if (dlr->dev_info) {
+		u8 buf[sizeof(struct ksz_resp_msg) +
+			sizeof(struct ksz_dlr_active_node)];
+		struct ksz_resp_msg *msg = (struct ksz_resp_msg *) buf;
+		struct ksz_dlr_active_node active;
+
+		msg->module = DEV_MOD_DLR;
+		msg->cmd = DEV_INFO_DLR_LINK;
+		msg->resp.data[0] = 0;
+		if (port) {
+			struct ksz_dlr_node_info *node;
+
+			node = &dlr->nodes[port - 1];
+			if (node->p1_down)
+				msg->resp.data[0] |= 0x01;
+			if (node->p2_down)
+				msg->resp.data[0] |= 0x02;
+			if (node->p1_lost)
+				msg->resp.data[0] |= 0x04;
+			if (node->p2_lost)
+				msg->resp.data[0] |= 0x08;
+			memcpy(&active, &node->signon,
+				sizeof(struct ksz_dlr_active_node));
+		} else {
+			if (dlr->p1_down)
+				msg->resp.data[0] |= 0x01;
+			if (dlr->p2_down)
+				msg->resp.data[0] |= 0x02;
+			if (dlr->p1_lost)
+				msg->resp.data[0] |= 0x04;
+			if (dlr->p2_lost)
+				msg->resp.data[0] |= 0x08;
+			dlr_set_addr(&active, dlr->ip_addr, dlr->src_addr);
+		}
+		memcpy(&msg->resp.data[1], &active,
+			sizeof(struct ksz_dlr_active_node));
+		sw_setup_msg(dlr->dev_info, msg, sizeof(struct ksz_resp_msg) +
+			sizeof(struct ksz_dlr_active_node), NULL, NULL);
+	}
+}  /* dlr_notify_link_lost */
+
+static void dlr_notify_cfg_change(struct ksz_dlr_info *dlr, int notify)
+{
+	if (dlr->dev_info) {
+		struct ksz_resp_msg msg;
+
+		msg.module = DEV_MOD_DLR;
+		msg.cmd = DEV_INFO_DLR_CFG;
+		msg.resp.data[0] = notify;
+		sw_setup_msg(dlr->dev_info, &msg, sizeof(struct ksz_resp_msg),
+			NULL, NULL);
+	}
+}  /* dlr_notify_cfg_change */
+
+static int checkBeacon(struct ksz_dlr_info *info,
 	struct ksz_dlr_rx_frame *frame, int port)
 {
 	struct ksz_dlr_super_info active;
 	struct ksz_dlr_super_info super;
 	u32 interval;
 	u32 timeout;
-	u16 vid;
 	int cmp = 0;
-	int update = false;
+	int accept = false;
+	struct ksz_dlr_tx_frame beacon_frame;
 	struct vlan_ethhdr *vlan = frame->vlan;
 	struct ksz_dlr_frame *beacon = frame->body;
 	u32 seqid = ntohl(beacon->hdr.seqid);
@@ -1581,7 +1566,7 @@ static int handleBeacon(struct ksz_dlr_info *info,
 
 	/* Announce node does not accept beacons. */
 	if (DLR_ANNOUNCE_NODE == info->node)
-		return update;
+		return accept;
 
 #if 1
 /*
@@ -1603,12 +1588,10 @@ static int handleBeacon(struct ksz_dlr_info *info,
 	 * self-address filtering.
 	 */
 	if (!memcmp(info->src_addr, vlan->h_source, ETH_ALEN)) {
-#if (1 == DROP_BEACON_1)
 		if (info->skip_beacon && info->drop_beacon && dbg_leak)
 			dbg_msg(" ^ ");
-#endif
 		if (!info->start)
-			return update;
+			return accept;
 	}
 
 	/* Determine precedence level. */
@@ -1632,9 +1615,10 @@ static int handleBeacon(struct ksz_dlr_info *info,
 	/* Ignore lower precedence beacon. */
 	if (cmp < 0) {
 		/* Simulate beacon timeout as hardware cannot catch that. */
-		dlr_chk_beacon_timeout(info, port, beacon, &active, &super);
+		accept = dlr_chk_beacon_timeout(info, port, beacon, &active,
+			&super);
 
-		return update;
+		return accept;
 	} else if (cmp > 0) {
 #ifdef DBG_DLR_SUPERVISOR
 		dbg_msg("new %d p:%d %08x A=%02x:%02x:%02x:%02x:%02x:%02x  "
@@ -1654,23 +1638,22 @@ static int handleBeacon(struct ksz_dlr_info *info,
 			vlan->h_source[3],
 			vlan->h_source[4],
 			vlan->h_source[5]);
-#endif
-		update = true;
-		dlr_set_addr(&attrib->active_super_addr,
-			beacon->hdr.ip_addr, vlan->h_source);
-		info->new_supervisor = 1;
-		info->p1_set = info->p2_set = 1;
-		info->p1_rcvd = info->p2_rcvd =
-		info->one_rcvd = info->both_rcvd = 0;
-		info->p1_timeout = info->p2_timeout =
-		info->one_timeout = info->both_timeout = 0;
-#ifdef DBG_DLR_SUPERVISOR
 		dbg_msg("  new prec: %d >= %d %d %d s:%d\n",
 			beacon->data.beacon.precedence,
 			attrib->active_super_prec, info->precedence,
 			attrib->super_cfg.prec,
 			beacon->data.beacon.ring_state);
 #endif
+		accept = true;
+		dlr_set_addr(&attrib->active_super_addr,
+			beacon->hdr.ip_addr, vlan->h_source);
+		attrib->active_super_prec = beacon->data.beacon.precedence;
+		info->new_supervisor = 1;
+		info->p1_set = info->p2_set = 1;
+		info->p1_rcvd = info->p2_rcvd =
+		info->one_rcvd = info->both_rcvd = 0;
+		info->p1_timeout = info->p2_timeout =
+		info->one_timeout = info->both_timeout = 0;
 
 		/* Set in following code. */
 		info->LastBcnRcvPort = 0;
@@ -1679,33 +1662,31 @@ static int handleBeacon(struct ksz_dlr_info *info,
 		if (DLR_ACTIVE_SUPERVISOR == info->node) {
 			dbg_dlr(info, "stop being active");
 #ifdef DBG_DLR_BEACON
-			dbg_bcn = 6;
+			dbg_bcn = 2;
 #endif
 		}
 #endif
+		memset(&info->last_beacon[0], 0,
+			sizeof(struct ksz_dlr_tx_frame));
+		memset(&info->last_beacon[1], 0,
+			sizeof(struct ksz_dlr_tx_frame));
 		memset(&info->beacon_info[0].last, 0,
 			sizeof(struct ksz_dlr_beacon));
 		memset(&info->beacon_info[1].last, 0,
 			sizeof(struct ksz_dlr_beacon));
 		info->beacon_info[0].timeout =
 		info->beacon_info[1].timeout = 0;
-		if (info->notifications & DLR_INFO_CFG_CHANGE)
-			proc_dlr_hw_access(info, DEV_CMD_INFO,
-				DEV_INFO_DLR_CFG, 1, NULL);
 	}
 
 	/* Process accepted beacon. */
+	info->LastBcnRcvPort |= port ? 2 : 1;
 
 	interval = ntohl(beacon->data.beacon.interval);
 	timeout = ntohl(beacon->data.beacon.timeout);
 
-	/* Used to determine beacon timeout in software simulation. */
-	beacon_info->rcv_once = 1;
-	beacon_info->timeout_start = 0;
-
-#ifdef DROP_BEACON_0
 #ifdef CONFIG_HAVE_DLR_HW
-	if (!update && info->skip_beacon) {
+	if (info->skip_beacon &&
+	    !memcmp(vlan->h_source, info->beacon_addr, ETH_ALEN)) {
 		if (dbg_leak > 0) {
 			dbg_msg(" ??: p=%d %d n=%d %x "
 				"%02x:%02x:%02x:%02x:%02x:%02x "
@@ -1727,21 +1708,42 @@ static int handleBeacon(struct ksz_dlr_info *info,
 		}
 	}
 #endif
-	if (!update && info->skip_beacon)
-		return update;
+	if (!accept && info->skip_beacon)
+		return accept;
 	else if (beacon_info->timeout && !info->drop_beacon) {
 		beacon_info->timeout += interval;
 		if (beacon_info->timeout > timeout) {
-			info->beacon_info[0].timeout =
-			info->beacon_info[1].timeout = 0;
-			dropBeacons(info);
-			return update;
+			info->drop_beacon = true;
+			accept = true;
 		}
 	}
-	if (info->skip_beacon) {
-		acceptBeacons(info);
-	}
+
+	/* Start the beacon drop process. */
+	if (!beacon_info->timeout &&
+	    !info->skip_beacon && !info->drop_beacon &&
+	    !newSupervisor &&
+	    RING_NORMAL_STATE == beacon->data.beacon.ring_state &&
+	    RING_NORMAL_STATE == info->ring_state &&
+	    (DLR_NORMAL_STATE == info->state ||
+	    DLR_ACTIVE_NORMAL_STATE == info->state)) {
+		beacon_info->timeout = 1;
+#ifdef DBG_DLR_BEACON
+		dbg_msg("  ready to drop: %d=r:%d\n",
+			port, beacon->data.beacon.ring_state);
+		dbg_bcn = 3;
 #endif
+	}
+
+	/* Zero out the sequence id for comparison. */
+	memcpy(&beacon_frame.vlan, frame->vlan, sizeof(struct vlan_ethhdr));
+	memcpy(&beacon_frame.body, frame->body, sizeof(struct ksz_dlr_frame));
+	beacon_frame.body.hdr.seqid = 0;
+	if (!accept)
+		accept = memcmp(&beacon_frame, &info->last_beacon[port],
+			sizeof(struct ksz_dlr_tx_frame));
+	if (accept)
+		memcpy(&info->last_beacon[port], &beacon_frame,
+			sizeof(struct ksz_dlr_tx_frame));
 
 	/* Try to process as few beacons as possible. */
 	if (memcmp(&beacon_info->last, &beacon->data.beacon,
@@ -1749,14 +1751,78 @@ static int handleBeacon(struct ksz_dlr_info *info,
 		memcpy(&beacon_info->last, &beacon->data.beacon,
 			sizeof(struct ksz_dlr_beacon));
 		info->seqid_accept[port] = seqid;
-	} else {
-#ifdef DBG_DLR_BEACON
-		if (dbg_bcn)
-			--dbg_bcn;
-#endif
-		if (beacon_info->timeout)
-			return update;
 	}
+
+#ifdef DBG_DLR_BEACON
+	if (accept || dbg_bcn > 0) {
+		dbg_msg("b: %d=%d:%d %04x; %02x %02x:%02x:%02x %08lx; "
+			"%d %d %lx %d\n",
+			port,
+			beacon->data.beacon.ring_state, info->ring_state,
+			ntohs(vlan->h_vlan_TCI),
+			beacon->data.beacon.precedence,
+			vlan->h_source[3], vlan->h_source[4], vlan->h_source[5],
+			seqid, info->new_supervisor,
+			beacon_info->timeout,
+			jiffies, dbg_bcn);
+	}
+	if (dbg_bcn)
+		--dbg_bcn;
+#endif
+	return accept;
+}  /* checkBeacon */
+
+static int handleBeacon(struct ksz_dlr_info *info,
+	struct ksz_dlr_rx_frame *frame, int port)
+{
+	u32 interval;
+	u32 timeout;
+	u16 vid;
+	int cmp = 0;
+	int update = false;
+	struct vlan_ethhdr *vlan = frame->vlan;
+	struct ksz_dlr_frame *beacon = frame->body;
+	struct ksz_dlr_gateway_capable *attrib = &info->attrib;
+	struct ksz_dlr_beacon_info *beacon_info = &info->beacon_info[port];
+#ifdef CONFIG_HAVE_DLR_HW
+	struct ksz_sw *sw = info->sw_dev;
+#endif
+
+	/* Only accepted beacon from active supervisor is processed. */
+	cmp = memcmp(vlan->h_source, attrib->active_super_addr.addr,
+		ETH_ALEN);
+	if (cmp) {
+		struct ksz_dlr_super_info found;
+
+		memcpy(&found.prec_addr[1], vlan->h_source, ETH_ALEN);
+		found.port = port;
+		info->rogue_super = &found;
+		dlr_tx_learning_update(info);
+		return false;
+	}
+
+	/* Process accepted beacon. */
+	if (info->new_supervisor) {
+		if (info->notifications & DLR_INFO_CFG_CHANGE)
+			dlr_notify_cfg_change(info, 1);
+		update = true;
+	}
+
+	interval = ntohl(beacon->data.beacon.interval);
+	timeout = ntohl(beacon->data.beacon.timeout);
+
+	/* Used to determine beacon timeout in software simulation. */
+	beacon_info->rcv_once = 1;
+	beacon_info->timeout_start = 0;
+
+	if (!info->skip_beacon && info->drop_beacon) {
+		dropBeacons(info);
+		info->beacon_info[0].timeout =
+		info->beacon_info[1].timeout = 0;
+		return update;
+	}
+	if (update && info->skip_beacon)
+		acceptBeacons(info);
 
 	/* Not running as supervisor. */
 	if ((DLR_ACTIVE_SUPERVISOR != info->node &&
@@ -1764,12 +1830,10 @@ static int handleBeacon(struct ksz_dlr_info *info,
 	    update) {
 		if ((info->notifications & DLR_INFO_CFG_CHANGE) &&
 		    info->ring_state != beacon->data.beacon.ring_state)
-			proc_dlr_hw_access(info, DEV_CMD_INFO,
-				DEV_INFO_DLR_CFG, 2, NULL);
+			dlr_notify_cfg_change(info, 2);
 		info->ring_state = beacon->data.beacon.ring_state;
 
 		/* Set in following code. */
-		info->LastBcnRcvPort = 0;
 		info->p1_rcvd = info->p2_rcvd =
 		info->one_rcvd = info->both_rcvd = 0;
 		beacon_info->timeout = 0;
@@ -1779,6 +1843,9 @@ static int handleBeacon(struct ksz_dlr_info *info,
 			dbg_dlr(info, "ring fault");
 		}
 #endif
+		/* Get back into backup mode. */
+		if (7 == info->beacon_timeout_ports)
+			info->beacon_timeout_ports = 0;
 	}
 	if (1 == port) {
 		info->p2_rcvd = 1;
@@ -1798,19 +1865,6 @@ static int handleBeacon(struct ksz_dlr_info *info,
 		info->one_down = 0;
 	info->both_down = 0;
 
-	do {
-		int last = info->LastBcnRcvPort;
-		int rcv_port = port ? 2 : 1;
-
-		info->LastBcnRcvPort |= rcv_port;
-		if (last != info->LastBcnRcvPort &&
-		    3 == info->LastBcnRcvPort) {
-#ifdef DBG_DLR_BEACON
-			if (dbg_bcn > 2)
-				++dbg_bcn;
-#endif
-		}
-	} while (0);
 	if (info->p1_rcvd && info->p2_rcvd) {
 
 		/* Running as supervisor. */
@@ -1820,21 +1874,6 @@ static int handleBeacon(struct ksz_dlr_info *info,
 				update = true;
 			info->both_rcvd = 1;
 			info->one_rcvd = 0;
-		}
-
-		/* Start the beacon drop process. */
-		if (!beacon_info->timeout &&
-		    !info->skip_beacon && !info->drop_beacon &&
-		    !newSupervisor &&
-		    RING_NORMAL_STATE == beacon->data.beacon.ring_state &&
-		    RING_NORMAL_STATE == info->ring_state &&
-		    (DLR_NORMAL_STATE == info->state ||
-		    DLR_ACTIVE_NORMAL_STATE == info->state)) {
-			beacon_info->timeout = 1;
-#ifdef DBG_DLR_BEACON
-			dbg_msg("  ready to drop: %d=r:%d\n",
-				port, beacon->data.beacon.ring_state);
-#endif
 		}
 	} else {
 		if (!info->one_rcvd)
@@ -1849,71 +1888,82 @@ static int handleBeacon(struct ksz_dlr_info *info,
 	if (vlan->h_vlan_proto == htons(ETH_P_8021Q))
 		vid = ntohs(vlan->h_vlan_TCI) & ((1 << VLAN_PRIO_SHIFT) - 1);
 	if (info->vid != vid) {
-		u16 old_vid = info->vid;
-
-		info->vid = vid;
 
 		/* Use current VID. */
+		update_vlan(info, vid);
+		if (attrib->cap & DLR_CAP_SUPERVISOR_CAPABLE)
+			attrib->super_cfg.vid = vid;
 		if (attrib->super_cfg.enable) {
 			attrib->super_cfg.vid = vid;
-			info->new_val = 1;
-			update = true;
-		} else {
-			proc_dlr_hw_access(info, DEV_CMD_PUT,
-				DEV_DLR_SETUP_VID, old_vid, NULL);
-			proc_dlr_hw_access(info, DEV_CMD_PUT,
-				DEV_DLR_SETUP_VID,
-				0x80000000 | info->vid, NULL);
-			info->frame.vlan.h_vlan_TCI =
-				htons((7 << VLAN_PRIO_SHIFT) | info->vid);
-			memcpy(info->signon_frame, &info->frame,
-				sizeof(struct vlan_ethhdr));
+#ifdef CONFIG_HAVE_DLR_HW
+			sw->ops->acquire(sw);
+			dlr_hw_set_vlan_id(sw, info->vid);
+			sw->ops->release(sw);
+#endif
 		}
 	}
 	if (info->beacon_interval != interval) {
+#ifdef DBG_DLR_OPER
 		dbg_msg("interval %u %u\n", info->beacon_interval, interval);
-		info->beacon_interval = interval;
+#endif
 
 		/* Use current beacon interval. */
+		info->beacon_interval = interval;
+		if (attrib->cap & DLR_CAP_SUPERVISOR_CAPABLE)
+			attrib->super_cfg.beacon_interval = interval;
 		if (attrib->super_cfg.enable) {
 			attrib->super_cfg.beacon_interval = interval;
-			info->new_val = 1;
-			update = true;
+#ifdef CONFIG_HAVE_DLR_HW
+			sw->ops->acquire(sw);
+			dlr_hw_set_interval(sw, info->beacon_interval);
+			sw->ops->release(sw);
+#endif
 		}
 	}
 	if (info->beacon_timeout != timeout) {
+#ifdef DBG_DLR_OPER
 		dbg_msg("timeout %u %u\n", info->beacon_timeout, timeout);
-		info->beacon_timeout = timeout;
+#endif
 
 		/* Use current beacon timeout. */
+		info->beacon_timeout = timeout;
+		if (attrib->cap & DLR_CAP_SUPERVISOR_CAPABLE)
+			attrib->super_cfg.beacon_timeout = timeout;
 		if (attrib->super_cfg.enable) {
 			attrib->super_cfg.beacon_timeout = timeout;
-			info->new_val = 1;
-			update = true;
+#ifdef CONFIG_HAVE_DLR_HW
+			sw->ops->acquire(sw);
+			dlr_hw_set_timeout(sw, info->beacon_timeout);
+			sw->ops->release(sw);
+#endif
 		}
 		info->p1_set = info->p2_set = 1;
 	}
-
 #ifdef DBG_DLR_BEACON
-	if (update || dbg_bcn > 0)
-	dbg_msg("b: %d=%d:%d %04x %d; r=%d:%d R=%d:%d; %u %08lx %d %lx %d\n",
-		port,
-		beacon->data.beacon.ring_state, info->ring_state,
-		ntohs(vlan->h_vlan_TCI), beacon_info->timeout,
-		info->p1_rcvd, info->p2_rcvd, info->one_rcvd, info->both_rcvd,
-		beacon_info->interval, seqid, info->new_supervisor,
-		jiffies, dbg_bcn);
-	if (dbg_bcn)
-		--dbg_bcn;
+	if (update || dbg_bcn > 0) {
+		u32 seqid = ntohl(beacon->hdr.seqid);
+		dbg_msg("B: %d=%d:%d; r=%d:%d R=%d:%d; %08lx %d %lx\n",
+			port,
+			beacon->data.beacon.ring_state, info->ring_state,
+			info->p1_rcvd, info->p2_rcvd,
+			info->one_rcvd, info->both_rcvd,
+			seqid, info->new_supervisor,
+			jiffies);
+	}
 #endif
+
 	beacon_info->interval = 0;
 	if (info->p1_rcvd && info->p1_set) {
 		info->p1_set = 0;
-		setupBeaconTimeout(info, 0);
+#ifdef CONFIG_HAVE_ACL_HW
+		setup_acl_beacon_timeout(info, info->ports[0]);
+#endif
 	}
 	if (info->p2_rcvd && info->p2_set) {
 		info->p2_set = 0;
-		setupBeaconTimeout(info, 1);
+#ifdef CONFIG_HAVE_ACL_HW
+		setup_acl_beacon_timeout(info, info->ports[1]);
+#endif
 	}
 	return update;
 }  /* handleBeacon */
@@ -1980,8 +2030,7 @@ static int handleSignOn(struct ksz_dlr_info *info,
 		if (!memcmp(info->src_addr, vlan->h_dest, ETH_ALEN)) {
 			memcpy(info->signon_addr, vlan->h_source,
 				ETH_ALEN);
-			proc_dlr_hw_access(info, DEV_CMD_PUT,
-				DEV_DLR_TX_SIGNON, 0, NULL);
+			dlr_tx_signon(info, 0);
 		} else
 			disableSignOnTimer(info);
 	} else {
@@ -2007,8 +2056,7 @@ static int handleSignOn(struct ksz_dlr_info *info,
 		len += sizeof(struct vlan_ethhdr);
 		info->rx_port = port;
 		info->tx_port = (port + 1) & 1;
-		proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_TX_SIGNON, len,
-			NULL);
+		dlr_tx_signon(info, len);
 		if (info->active_port != (1 << info->ports[info->rx_port]))
 			setupDir(info, port);
 	}
@@ -2023,15 +2071,14 @@ static int handleLocateFault(struct ksz_dlr_info *info,
 	/* Ignore if not FAULT_STATE. */
 	if (info->state != DLR_FAULT_STATE &&
 	    !(info->overrides & DLR_TEST)) {
-		dbg_msg(" ?%s\n", __func__);
+		dbg_msg(" ?%s %d\n", __func__, port);
 		return false;
 	}
 	if (info->node != DLR_ACTIVE_SUPERVISOR &&
 	    !memcmp(vlan->h_source, info->attrib.active_super_addr.addr,
 	    ETH_ALEN)) {
 		if (info->p1_down || info->p2_down)
-			proc_dlr_hw_access(info, DEV_CMD_PUT,
-				DEV_DLR_TX_STATUS, 0, NULL);
+			dlr_tx_status(info, 0);
 		else if (!info->neigh_chk) {
 			info->neigh_chk = 1;
 			ksz_start_timer(&info->neigh_chk_timer_info,
@@ -2039,10 +2086,8 @@ static int handleLocateFault(struct ksz_dlr_info *info,
 			info->neigh_chk_timer_info.max = 3;
 			info->p1_lost = info->p2_lost = 0;
 			info->port_chk[0] = info->port_chk[1] = 1;
-			proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_TX_REQ,
-				0, NULL);
-			proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_TX_REQ,
-				1, NULL);
+			dlr_tx_chk_req(info, 0);
+			dlr_tx_chk_req(info, 1);
 		}
 	} else {
 		dbg_msg("%s ignored\n", __func__);
@@ -2064,19 +2109,24 @@ static int handleAnnounce(struct ksz_dlr_info *info,
 	if (RING_NORMAL_STATE == announce->data.announce.ring_state &&
 	    DLR_NORMAL_STATE == info->state &&
 	    (!info->active_port || info->rx_port != port)) {
+#ifdef DBG_DLR_OPER
 		dbg_msg("%s p=%d r=%d x%x\n", __func__, port, info->rx_port,
 			info->active_port);
-		proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_SETUP_DIR, port,
-			NULL);
+#endif
+		setup_dir(info, port);
 	}
 
 #ifdef DBG_DLR_STATE
-	if (announce->data.announce.ring_state != info->ring_state)
-		dbg_msg("  ann: p=%d r=%d != %d\n", port, info->ring_state,
-			announce->data.announce.ring_state);
-	else if (RING_NORMAL_STATE == info->ring_state && info->state !=
-		 DLR_NORMAL_STATE)
-		dbg_msg("  ann ring normal: p=%d s=%d\n", port, info->state);
+	if (DLR_ANNOUNCE_NODE != info->node) {
+		if (announce->data.announce.ring_state != info->ring_state)
+			dbg_msg("  ann: p=%d r=%d != %d\n",
+				port, info->ring_state,
+				announce->data.announce.ring_state);
+		else if (RING_NORMAL_STATE == info->ring_state &&
+			 info->state != DLR_NORMAL_STATE)
+			dbg_msg("  ann ring normal: p=%d s=%d\n",
+				port, info->state);
+	}
 #endif
 
 	/* Rely on Announce frame to determine ring state. */
@@ -2087,8 +2137,7 @@ static int handleAnnounce(struct ksz_dlr_info *info,
 			if ((info->notifications & DLR_INFO_CFG_CHANGE) &&
 			    info->ring_state !=
 			    announce->data.announce.ring_state)
-				proc_dlr_hw_access(info, DEV_CMD_INFO,
-				DEV_INFO_DLR_CFG, 2, NULL);
+				dlr_notify_cfg_change(info, 2);
 			info->ring_state = announce->data.announce.ring_state;
 			acceptBeacons(info);
 #ifdef DBG_DLR_BEACON
@@ -2101,6 +2150,11 @@ static int handleAnnounce(struct ksz_dlr_info *info,
 	if (DLR_ACTIVE_SUPERVISOR == info->node) {
 		dbg_msg("%s ignored %d %d %d\n", __func__, port,
 			announce->data.announce.ring_state, info->skip_beacon);
+		if (vlan)
+			dbg_msg("src: %02x:%02x:%02x:%02x:%02x:%02x\n",
+				vlan->h_source[0], vlan->h_source[1],
+				vlan->h_source[2], vlan->h_source[3],
+				vlan->h_source[4], vlan->h_source[5]);
 		return false;
 	}
 	if (DLR_SUPERVISOR == info->node)
@@ -2121,19 +2175,17 @@ static int handleAnnounce(struct ksz_dlr_info *info,
 		info->new_supervisor = 1;
 		new = 1;
 		if (info->notifications & DLR_INFO_CFG_CHANGE)
-			proc_dlr_hw_access(info, DEV_CMD_INFO,
-				DEV_INFO_DLR_CFG, 1, NULL);
+			dlr_notify_cfg_change(info, 1);
 	} else {
 		/* Check valid sequence number. */
 		if (!seq_ahead(info->seqid_announce, seqid))
 			return false;
 	}
 	info->seqid_announce = seqid;
-	if (announce->data.announce.ring_state != info->ring_state) {
+	if (announce->data.announce.ring_state != info->ring_state || new) {
 		if ((info->notifications & DLR_INFO_CFG_CHANGE) &&
 		    info->ring_state != announce->data.announce.ring_state)
-			proc_dlr_hw_access(info, DEV_CMD_INFO,
-				DEV_INFO_DLR_CFG, 2, NULL);
+			dlr_notify_cfg_change(info, 2);
 		info->ring_state = announce->data.announce.ring_state;
 		info->ann_rcvd = 1;
 		new = 1;
@@ -2141,17 +2193,7 @@ static int handleAnnounce(struct ksz_dlr_info *info,
 	if (vlan->h_vlan_proto == htons(ETH_P_8021Q)) {
 		vid = ntohs(vlan->h_vlan_TCI) & ((1 << VLAN_PRIO_SHIFT) - 1);
 		if (vid != info->vid) {
-			proc_dlr_hw_access(info, DEV_CMD_PUT,
-				DEV_DLR_SETUP_VID, info->vid, NULL);
-			info->vid = vid;
-			proc_dlr_hw_access(info, DEV_CMD_PUT,
-				DEV_DLR_SETUP_VID,
-				0x80000000 | info->vid, NULL);
-			info->frame.vlan.h_vlan_TCI =
-				htons((7 << VLAN_PRIO_SHIFT) | info->vid);
-			memcpy(info->signon_frame, &info->frame,
-				sizeof(struct vlan_ethhdr) +
-				sizeof(struct ksz_dlr_hdr));
+			update_vlan(info, vid);
 			new = 1;
 		}
 	}
@@ -2189,7 +2231,7 @@ static int handleNeighChkReq(struct ksz_dlr_info *info,
 	}
 	info->port_rcv[port] = req->hdr.src_port;
 	info->seqid_rcv[port] = ntohl(req->hdr.seqid);
-	proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_TX_RESP, port, NULL);
+	dlr_tx_chk_resp(info, port);
 	return false;
 }  /* handleNeighChkReq */
 
@@ -2239,10 +2281,9 @@ static int handleFlushTables(struct ksz_dlr_info *info,
 	if (info->state <= DLR_IDLE_STATE &&
 	    !(info->overrides & DLR_TEST))
 		return false;
-	proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_FLUSH, 0, NULL);
+	dlr_flush(info);
 	if (flush->data.flush.learning_update_enable)
-		proc_dlr_hw_access(info, DEV_CMD_PUT,
-			DEV_DLR_TX_LEARNING_UPDATE, 0, NULL);
+		dlr_tx_learning_update(info);
 
 	return false;
 }  /* handleFlushTables */
@@ -2311,9 +2352,7 @@ static int handleLinkStatus(struct ksz_dlr_info *info,
 				if (info->notifications & DLR_INFO_LINK_LOST &&
 				    (!status->data.status.port1_active ||
 				    !status->data.status.port2_active)) {
-					proc_dlr_hw_access(info, DEV_CMD_INFO,
-						DEV_INFO_DLR_LINK, i + 1,
-						NULL);
+					dlr_notify_link_lost(info, i + 1);
 				}
 				break;
 			}
@@ -2341,13 +2380,11 @@ static int handleLearningUpdate(struct ksz_dlr_info *info,
 	if (!memcmp(info->src_addr, vlan->h_dest, ETH_ALEN)) {
 		if (!newSupervisor) {
 dbg_msg(" to self!\n");
-			proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_CHK_HW,
-				0, NULL);
+			dlr_chk_supervisor(info);
 		}
 	} else {
-		if (!info->block)
-			proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_BLOCK, 1,
-				NULL);
+		if (!info->block && info->both_open)
+			blockOtherPorts(info, 1);
 	}
 	if (DLR_SUPERVISOR <= info->node) {
 		if (!memcmp(info->src_addr, vlan->h_source, ETH_ALEN)) {
@@ -2386,6 +2423,7 @@ static int handleBeaconTimeout(struct ksz_dlr_info *info, int port)
 	}
 	memset(&beacon_info->last, 0, sizeof(struct ksz_dlr_beacon));
 	beacon_info->timeout = 0;
+	memset(&info->last_beacon[port], 0, sizeof(struct ksz_dlr_tx_frame));
 	if (info->p1_rcvd || info->p2_rcvd)
 		info->one_rcvd = 1;
 	else
@@ -2442,10 +2480,13 @@ static int handleLinkChange(struct ksz_dlr_info *info, int link1, int link2)
 			node->p2_down = info->p2_down;
 		}
 	}
+	if (!info->p1_down && !info->p2_down)
+		info->both_open = 1;
 	if ((!change[0] || link1) && (!change[1] || link2)) {
 		going_up = true;
 		return update;
 	}
+	info->both_open = 0;
 	if (info->p1_down && info->p2_down) {
 		if (!info->both_down)
 			update = true;
@@ -2515,6 +2556,8 @@ static int handleLinkChange(struct ksz_dlr_info *info, int link1, int link2)
 				memset(&info->beacon_info[p].last, 0,
 					sizeof(struct ksz_dlr_beacon));
 				info->beacon_info[p].timeout = 0;
+				memset(&info->last_beacon[p], 0,
+					sizeof(struct ksz_dlr_tx_frame));
 			}
 		}
 	}
@@ -2567,8 +2610,7 @@ static void startSignOn(struct ksz_dlr_info *info, int now)
 		if (now && !info->ann_first)
 			dlr_tx_signon(info, 0);
 		else
-			proc_dlr_hw_access(info, DEV_CMD_PUT,
-				DEV_DLR_TX_SIGNON, 0, NULL);
+			info->tx_signon = true;
 	}
 #ifdef DBG_DLR_OPER
 	else
@@ -2603,6 +2645,8 @@ static void dlr_clear(struct ksz_dlr_info *info)
 		beacon_info->timeout_stop = 0;
 		beacon_info->timeout = 0;
 		memset(&beacon_info->last, 0, sizeof(struct ksz_dlr_beacon));
+		memset(&info->last_beacon[p], 0,
+			sizeof(struct ksz_dlr_tx_frame));
 	}
 	memset(info->supers, 0, sizeof(struct ksz_dlr_super_info) *
 		DLR_SUPERVISOR_NUM);
@@ -2635,12 +2679,11 @@ static void dlr_idle_init(struct ksz_dlr_info *info, struct dlr_state *state)
 	attrib->active_super_prec = 0;
 
 	if (info->skip_beacon)
-		acceptBeacons_(info);
+		acceptBeacons(info);
 	flushMacTable(info);
 	dlr_set_state(info);
 	if (info->notifications & DLR_INFO_CFG_CHANGE)
-		proc_dlr_hw_access(info, DEV_CMD_INFO,
-			DEV_INFO_DLR_CFG, 2, NULL);
+		dlr_notify_cfg_change(info, 2);
 }  /* dlr_idle_init */
 
 static void dlr_idle_next(struct ksz_dlr_info *info, struct dlr_state *state)
@@ -2659,7 +2702,7 @@ static void dlr_ann_idle_init(struct ksz_dlr_info *info,
 	struct ksz_dlr_gateway_capable *attrib = &info->attrib;
 
 #ifdef DBG_DLR_STATE
-	dbg_dlr(info, "idle");
+	dbg_dlr(info, "ann idle");
 	dlr_print(info, "idle");
 #endif
 
@@ -2699,17 +2742,6 @@ static void dlr_fault_init(struct ksz_dlr_info *info, struct dlr_state *state)
 	newSupervisor = 0;
 	if (DLR_ACTIVE_SUPERVISOR == info->node)
 		announcedState = RING_FAULT_STATE;
-#ifdef DBG_DLR_BEACON
-	dbg_msg("timeout %d %d; %d\n",
-		info->beacon_info[0].timeout, info->beacon_info[1].timeout,
-		info->drop_beacon);
-	if (info->drop_beacon > 1)
-		dbg_msg(" acceptBeacons_ not done yet\n");
-#endif
-	if (1 == info->drop_beacon) {
-dbg_msg("  !!!\n");
-		info->drop_beacon = false;
-	}
 
 	attrib->net_topology = DLR_TOPOLOGY_RING;
 	attrib->net_status = DLR_NET_RING_FAULT;
@@ -2757,6 +2789,13 @@ dbg_msg(" f linkDown\n");
 	/* Apply only to supervisor. */
 	if (newValue) {
 		if (updateValues(info))
+			state->new_state = DLR_PREPARE_STATE;
+	}
+	if (announceTimeout) {
+		announceTimeout = false;
+		dbg_msg("  ??? announce timeout\n");
+		disableAnnounceTimeout(info);
+		if (DLR_SUPERVISOR == info->node)
 			state->new_state = DLR_PREPARE_STATE;
 	}
 }  /* dlr_fault_next */
@@ -2855,6 +2894,7 @@ dbg_msg(" n linkDown\n");
 		state->new_state = DLR_FAULT_STATE;
 	}
 	if (announceTimeout) {
+		announceTimeout = false;
 		dbg_msg("  ??? announce timeout\n");
 		disableAnnounceTimeout(info);
 		if (DLR_SUPERVISOR == info->node)
@@ -2869,7 +2909,7 @@ dbg_msg(" n linkDown\n");
 	if (state->new_state) {
 		setupDir(info, -1);
 		if (info->skip_beacon)
-			acceptBeacons_(info);
+			acceptBeacons(info);
 		info->beacon_info[0].timeout =
 		info->beacon_info[1].timeout = 0;
 	}
@@ -2948,8 +2988,18 @@ static void dlr_active_init(struct ksz_dlr_info *info, struct dlr_state *state)
 
 	/* Supervisor source address may change. */
 	info->p1_set = info->p2_set = 1;
-	enableSupervisor(info);
-	disableAnnounceTimeout(info);
+
+	/* DLR ports will be opened in either ACTIVE_FAULT or BACKUP states. */
+	if (RING_NORMAL_STATE == info->ring_state) {
+
+		/* Notify others to block ports if necessary. */
+		dlr_tx_learning_update(info);
+		blockOtherPorts(info, 2);
+	}
+	if (!newSupervisor) {
+		enableSupervisor(info);
+		disableAnnounceTimeout(info);
+	}
 	if (state->change > 0)
 		state->change--;
 }  /* dlr_active_init */
@@ -2961,10 +3011,10 @@ static void dlr_active_next(struct ksz_dlr_info *info, struct dlr_state *state)
 	if (newSupervisor)
 		state->new_state = DLR_BACKUP_STATE;
 	else if (info->notifications & DLR_INFO_CFG_CHANGE)
-		proc_dlr_hw_access(info, DEV_CMD_INFO,
-			DEV_INFO_DLR_CFG, 1, NULL);
-#ifdef DBG_DLR_BEACON
-	dbg_bcn = 4;
+		dlr_notify_cfg_change(info, 1);
+#ifdef DBG_DLR_BEACON_
+	if (!dbg_bcn)
+		dbg_bcn = 4;
 #endif
 }  /* dlr_active_next */
 
@@ -2982,6 +3032,9 @@ static void dlr_active_fault_init(struct ksz_dlr_info *info,
 	dlr_print(info, "active fault");
 #endif
 	dbg_supervisor(info);
+#ifdef DBG_DLR_BEACON
+	dbg_bcn = 3;
+#endif
 
 	linkLoss = 0;
 	newSupervisor = 0;
@@ -3011,11 +3064,7 @@ static void dlr_active_fault_init(struct ksz_dlr_info *info,
 	}
 	state->delay_ann = 0;
 	if (info->notifications & DLR_INFO_CFG_CHANGE)
-		proc_dlr_hw_access(info, DEV_CMD_INFO,
-			DEV_INFO_DLR_CFG, 2, NULL);
-#ifdef DBG_DLR_BEACON
-	dbg_bcn = 3;
-#endif
+		dlr_notify_cfg_change(info, 2);
 }  /* dlr_active_fault_init */
 
 static void dlr_active_fault_next(struct ksz_dlr_info *info,
@@ -3023,12 +3072,6 @@ static void dlr_active_fault_next(struct ksz_dlr_info *info,
 {
 	if (oneBeaconTimeout || twoBeaconsTimeout) {
 		oneBeaconTimeout = twoBeaconsTimeout = 0;
-#if 0
-		if (!info->neigh_chk) {
-			LocateFault(info);
-			NeighborCheck(info);
-		}
-#endif
 		if (info->start && info->chk_hw)
 			dlr_chk_supervisor(info);
 	}
@@ -3043,6 +3086,13 @@ static void dlr_active_fault_next(struct ksz_dlr_info *info,
 	if (!newSupervisor && newValue) {
 		state->new_state = DLR_RESTART_STATE;
 	}
+
+	if (!state->new_state && DLR_ACTIVE_SUPERVISOR == info->node &&
+	    memcmp(info->attrib.active_super_addr.addr, info->src_addr,
+	    ETH_ALEN)) {
+		printk(KERN_INFO "still active fault\n");
+		state->new_state = DLR_BACKUP_STATE;
+	}
 }  /* dlr_active_fault_next */
 
 static void dlr_active_normal_init(struct ksz_dlr_info *info,
@@ -3053,6 +3103,9 @@ static void dlr_active_normal_init(struct ksz_dlr_info *info,
 #ifdef DBG_DLR_STATE
 	dbg_dlr(info, "active normal");
 	dlr_print(info, "active normal");
+#endif
+#ifdef DBG_DLR_BEACON
+	dbg_bcn += 4;
 #endif
 
 	announcedState = RING_NORMAL_STATE;
@@ -3081,11 +3134,7 @@ static void dlr_active_normal_init(struct ksz_dlr_info *info,
 	}
 	blockOtherPorts(info, false);
 	if (info->notifications & DLR_INFO_CFG_CHANGE)
-		proc_dlr_hw_access(info, DEV_CMD_INFO,
-			DEV_INFO_DLR_CFG, 2, NULL);
-#ifdef DBG_DLR_BEACON
-	dbg_bcn += 8;
-#endif
+		dlr_notify_cfg_change(info, 2);
 }  /* dlr_active_normal_init */
 
 static void dlr_active_normal_next(struct ksz_dlr_info *info,
@@ -3123,21 +3172,31 @@ static void dlr_active_normal_next(struct ksz_dlr_info *info,
 	if (newSupervisor) {
 		twoBeaconsRcvd = 0;
 #ifdef DBG_DLR_BEACON
-	dbg_bcn += 4;
+		dbg_bcn += 4;
 #endif
 		disableSignOnTimer(info);
 		state->new_state = DLR_BACKUP_STATE;
 	}
-	if (newValue) {
+	if (!newSupervisor && newValue) {
 		state->new_state = DLR_RESTART_STATE;
+
+		/* Ignore own beacons until they are changed. */
+		info->start = 0;
 	}
 	if (DLR_ACTIVE_FAULT_STATE == state->new_state)
 		attrib->fault_cnt++;
 	if (state->new_state) {
 		if (info->skip_beacon)
-			acceptBeacons_(info);
+			acceptBeacons(info);
 		info->beacon_info[0].timeout =
 		info->beacon_info[1].timeout = 0;
+	}
+
+	if (!state->new_state && DLR_ACTIVE_SUPERVISOR == info->node &&
+	    memcmp(info->attrib.active_super_addr.addr, info->src_addr,
+	    ETH_ALEN)) {
+		printk(KERN_INFO "still active normal\n");
+		state->new_state = DLR_BACKUP_STATE;
 	}
 }  /* dlr_active_normal_next */
 
@@ -3146,7 +3205,10 @@ static void dlr_backup_init(struct ksz_dlr_info *info, struct dlr_state *state)
 #ifdef DBG_DLR_STATE
 	dbg_dlr(info, "backup");
 #endif
+
 	info->node = DLR_SUPERVISOR;
+	info->attrib.participants_cnt = 0;
+
 	disableSupervisor(info);
 	enableBothPorts(info);
 	state->new_state = DLR_FAULT_STATE;
@@ -3183,18 +3245,21 @@ static void dlr_prepare_next(struct ksz_dlr_info *info,
 static void dlr_restart_init(struct ksz_dlr_info *info,
 	struct dlr_state *state)
 {
+#ifdef DBG_DLR_STATE
 	dbg_dlr(info,"restart");
+#endif
+#ifdef DBG_DLR_BEACON
+	dbg_bcn += 5;
+#endif
 
 	/* Disable timeout notification. */
 	info->beacon_timeout_ports = 7;
 	info->wait_done = 0;
 	info->node = DLR_SUPERVISOR;
+
 	disableSupervisor(info);
 	disableAnnounce(info);
 	dlr_clear(info);
-#ifdef DBG_DLR_BEACON
-	dbg_bcn += 5;
-#endif
 
 	/* Reset to ring fault state. */
 	dlr_set_state(info);
@@ -3213,15 +3278,9 @@ static void dlr_restart_next(struct ksz_dlr_info *info,
 		state->new_state = DLR_ACTIVE_STATE;
 	}
 	if (oneBeaconRcvd || twoBeaconsRcvd) {
-		blockOtherPorts(info, true);
+		dbg_msg("may never get here\n");
+		blockOtherPorts(info, 1);
 		enableBothPorts(info);
-
-		/* If not updated in previous code. */
-		if (newValue) {
-			updateValues(info);
-			info->beacon_info[0].timer =
-			info->beacon_info[1].timer = 1;
-		}
 
 		/* Reset timeout notification. */
 		info->beacon_timeout_ports = 0;
@@ -3266,7 +3325,7 @@ static void RingSupervisor_state(struct ksz_dlr_info *info)
 				sizeof(struct ksz_dlr_active_node));
 			attrib->participants_cnt = 0;
 			if (info->skip_beacon)
-				acceptBeacons_(info);
+				acceptBeacons(info);
 			if (DLR_BEACON_NODE >= info->node)
 				state_info.new_state = DLR_IDLE_STATE;
 			else
@@ -3362,7 +3421,7 @@ static void AnnounceRingNode_state(struct ksz_dlr_info *info)
 				sizeof(struct ksz_dlr_active_node));
 			attrib->participants_cnt = 0;
 			if (info->skip_beacon)
-				acceptBeacons_(info);
+				acceptBeacons(info);
 			state_info.new_state = DLR_IDLE_STATE;
 			state_info.change = 1;
 			break;
@@ -3420,141 +3479,17 @@ static void *check_dlr_frame(u8 *data)
 	return NULL;
 }  /* check_dlr_frame */
 
-static int dlr_rcv(struct ksz_dlr_info *info, struct sk_buff *skb, int port)
+static void dlr_proc_rx(struct ksz_dlr_info *info, struct sk_buff *skb,
+	int port)
 {
 	struct ksz_dlr_rx_frame frame;
 	struct ksz_dlr_frame *body;
 	int update = false;
 
-	/* Accept only from port 1 or 2. */
-	if (port == info->ports[0])
-		port = 0;
-	else if (port == info->ports[1])
-		port = 1;
-	if (port > 1)
-		return 1;
 	body = check_dlr_frame(skb->data);
-	if (body) {
-		frame.vlan = (struct vlan_ethhdr *) skb->data;
-		frame.body = body;
-		switch (body->hdr.frame_type) {
-		case DLR_SIGN_ON:
-		case DLR_NEIGH_CHK_REQ:
-		case DLR_NEIGH_CHK_RESP:
-		case DLR_LOCATE_FAULT:
-		case DLR_FLUSH_TABLES:
-			/* Need to process later after state is changed. */
-			proc_dlr_hw_access(info, DEV_CMD_GET, DEV_DLR_RX,
-				port, skb);
-			return 0;
-			break;
-		case DLR_BEACON:
-			update = handleBeacon(info, &frame, port);
-			break;
-		case DLR_ANNOUNCE:
-			update = handleAnnounce(info, &frame, port);
-			break;
-		case DLR_LINK_STATUS:
-			update = handleLinkStatus(info, &frame, port);
-			break;
-		case DLR_LEARNING_UPDATE:
-			update = handleLearningUpdate(info, &frame, port);
-			break;
-		}
-		if (update) {
-			proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_UPDATE,
-				0, NULL);
-		}
-		dev_kfree_skb_irq(skb);
-		return 0;
-	}
-	return 1;
-}  /* dlr_rcv */
-
-static void dlr_link_change(struct ksz_dlr_info *info, int link1, int link2)
-{
-	if (handleLinkChange(info, link1, link2)) {
-		if (info->block)
-			proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_BLOCK,
-				0, NULL);
-		proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_UPDATE, 0, NULL);
-		if (info->notifications & DLR_INFO_LINK_LOST)
-			proc_dlr_hw_access(info, DEV_CMD_INFO,
-				DEV_INFO_DLR_LINK, 0, NULL);
-	}
-}  /* dlr_link_change */
-
-static void proc_beacon_timeout(struct work_struct *work)
-{
-	int p;
-	struct ksz_dlr_info *dlr =
-		container_of(work, struct ksz_dlr_info, beacon_rx_timeout);
-
-	for (p = 0; p < 2; p++) {
-		if (dlr->beacon_timeout_ports & (1 << p)) {
-			handleBeaconTimeout(dlr, p);
-		}
-	}
-	if (dlr->beacon_timeout_ports) {
-		proc_dlr_hw_access(dlr, DEV_CMD_PUT, DEV_DLR_UPDATE, 0, NULL);
-		dlr->beacon_timeout_ports = 0;
-	}
-}  /* proc_beacon_timeout */
-
-static void dlr_timeout(struct ksz_dlr_info *info, int port)
-{
-	/* Accept only from port 1 or 2. */
-	if (port == info->ports[0])
-		port = 0;
-	else if (port == info->ports[1])
-		port = 1;
-	if (port > 1)
-		return;
-	if (!(info->beacon_timeout_ports & (1 << port))) {
-		info->beacon_timeout_ports |= (1 << port);
-		schedule_work(&info->beacon_rx_timeout);
-	}
-}  /* dlr_timeout */
-
-static void dlr_stop(struct ksz_dlr_info *info)
-{
-	if (info->skip_beacon)
-		acceptBeacons_(info);
-	info->beacon_info[0].timeout =
-	info->beacon_info[1].timeout = 0;
-	info->node = DLR_BEACON_NODE;
-
-	/* Notify others to block ports if necessary. */
-	if (DLR_NORMAL_STATE == info->state ||
-	    DLR_ACTIVE_NORMAL_STATE == info->state) {
-		dlr_tx_learning_update(info);
-		blockOtherPorts(info, true);
-	}
-	disableSupervisor(info);
-	enableBothPorts(info);
-	disableAnnounce(info);
-	disableSignOnTimer(info);
-}  /* dlr_stop */
-
-static void dlr_update(struct ksz_dlr_info *info)
-{
-	switch (info->node) {
-	case DLR_ANNOUNCE_NODE:
-		AnnounceRingNode_state(info);
-		break;
-	default:
-		RingSupervisor_state(info);
-	}
-}  /* dlr_update */
-
-static void dlr_rx(struct ksz_dlr_info *info, int port, struct sk_buff *skb)
-{
-	struct ksz_dlr_rx_frame frame;
-	int update = false;
-
 	frame.vlan = (struct vlan_ethhdr *) skb->data;
-	frame.body = check_dlr_frame(skb->data);
-	switch (frame.body->hdr.frame_type) {
+	frame.body = body;
+	switch (body->hdr.frame_type) {
 	case DLR_SIGN_ON:
 		update = handleSignOn(info, &frame, port);
 		break;
@@ -3570,212 +3505,180 @@ static void dlr_rx(struct ksz_dlr_info *info, int port, struct sk_buff *skb)
 	case DLR_FLUSH_TABLES:
 		update = handleFlushTables(info, &frame, port);
 		break;
-	default:
+	case DLR_BEACON:
+		update = handleBeacon(info, &frame, port);
+		break;
+	case DLR_ANNOUNCE:
+		update = handleAnnounce(info, &frame, port);
+		break;
+	case DLR_LINK_STATUS:
+		update = handleLinkStatus(info, &frame, port);
+		break;
+	case DLR_LEARNING_UPDATE:
+		update = handleLearningUpdate(info, &frame, port);
 		break;
 	}
-	if (update) {
-		proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_UPDATE,
-			0, NULL);
+	if (update)
+		info->state_machine(info);
+}  /* dlr_proc_rx */
+
+static void dlr_stop(struct ksz_dlr_info *info)
+{
+	if (DLR_SUPERVISOR == info->node)
+		disableAnnounceTimeout(info);
+
+	/* Avoid trying to drop the beacons again. */
+	info->beacon_info[0].timeout =
+	info->beacon_info[1].timeout = 1;
+	info->node = DLR_BEACON_NODE;
+
+	/* Notify others to block ports if necessary. */
+	if (DLR_NORMAL_STATE == info->state ||
+	    DLR_ACTIVE_NORMAL_STATE == info->state) {
+		dlr_tx_learning_update(info);
+		blockOtherPorts(info, 1);
 	}
-	kfree_skb(skb);
-}  /* dlr_rx */
+	disableSupervisor(info);
+	enableBothPorts(info);
+	disableAnnounce(info);
+	disableSignOnTimer(info);
+	info->beacon_info[0].timeout =
+	info->beacon_info[1].timeout = 0;
+}  /* dlr_stop */
 
-static void setup_dir(struct ksz_dlr_info *info, int port)
+static void dlr_delay_proc(struct work_struct *work)
 {
-	info->rx_port = port;
-	info->tx_port = (port + 1) & 1;
-	setupDir(info, port);
-}  /* setup_dir */
-
-static void proc_dlr_cmd(struct ksz_dlr_info *dlr, struct dlr_work *parent)
-{
-	switch (parent->cmd) {
-	case DEV_CMD_INFO:
-		switch (parent->subcmd) {
-		case DEV_INFO_DLR_LINK:
-			if (dlr->dev_info) {
-				u8 buf[sizeof(struct ksz_resp_msg) +
-					sizeof(struct ksz_dlr_active_node)];
-				struct ksz_resp_msg *msg =
-					(struct ksz_resp_msg *) buf;
-				struct ksz_dlr_active_node active;
-
-				msg->module = DEV_MOD_DLR;
-				msg->cmd = DEV_INFO_DLR_LINK;
-				msg->resp.data[0] = 0;
-				if (parent->option) {
-					struct ksz_dlr_node_info *node;
-
-					node = &dlr->nodes[parent->option - 1];
-					if (node->p1_down)
-						msg->resp.data[0] |= 0x01;
-					if (node->p2_down)
-						msg->resp.data[0] |= 0x02;
-					if (node->p1_lost)
-						msg->resp.data[0] |= 0x04;
-					if (node->p2_lost)
-						msg->resp.data[0] |= 0x08;
-					memcpy(&active, &node->signon,
-						sizeof(struct ksz_dlr_active_node));
-				} else {
-					if (dlr->p1_down)
-						msg->resp.data[0] |= 0x01;
-					if (dlr->p2_down)
-						msg->resp.data[0] |= 0x02;
-					if (dlr->p1_lost)
-						msg->resp.data[0] |= 0x04;
-					if (dlr->p2_lost)
-						msg->resp.data[0] |= 0x08;
-					dlr_set_addr(&active,
-						dlr->ip_addr, dlr->src_addr);
-				}
-				memcpy(&msg->resp.data[1], &active,
-					sizeof(struct ksz_dlr_active_node));
-				sw_setup_msg(dlr->dev_info, msg,
-					sizeof(struct ksz_resp_msg) +
-					sizeof(struct ksz_dlr_active_node),
-					NULL, NULL);
-			}
-			break;
-		case DEV_INFO_DLR_CFG:
-			if (dlr->dev_info) {
-				struct ksz_resp_msg msg;
-
-				msg.module = DEV_MOD_DLR;
-				msg.cmd = DEV_INFO_DLR_CFG;
-				msg.resp.data[0] = parent->option;
-				sw_setup_msg(dlr->dev_info, &msg,
-					sizeof(struct ksz_resp_msg),
-					NULL, NULL);
-			}
-			break;
-		}
-		break;
-	case DEV_CMD_PUT:
-		switch (parent->subcmd) {
-		case DEV_DLR_CHK_HW:
-			dlr_chk_supervisor(dlr);
-			break;
-		case DEV_DLR_CLR_SUPER:
-			dlr_clr_supervisor(dlr);
-			break;
-		case DEV_DLR_SETUP_DIR:
-			setup_dir(dlr, parent->option);
-			break;
-		case DEV_DLR_SETUP_DROP:
-			if (!dlr->drop_beacon && parent->option)
-				break;
-#ifdef CONFIG_HAVE_ACL_HW
-#if (0 == DROP_BEACON_1)
-			if (dlr->node != DLR_ACTIVE_SUPERVISOR)
-#endif
-			setup_acl_beacon_drop(dlr, parent->option);
-#endif
-			dlr->skip_beacon = !!parent->option;
-			break;
-		case DEV_DLR_SETUP_TIMEOUT:
-#ifdef CONFIG_HAVE_ACL_HW
-			setup_acl_beacon_timeout(dlr,
-				dlr->ports[parent->option]);
-#endif
-			break;
-		case DEV_DLR_SETUP_VID:
-			setup_vlan_table(dlr, parent->option & ~0x80000000,
-				!!(parent->option & 0x80000000));
-			break;
-		case DEV_DLR_FLUSH:
-			dlr_flush(dlr);
-			break;
-		case DEV_DLR_BLOCK:
-			blockOtherPorts(dlr, parent->option);
-			break;
-		case DEV_DLR_STOP:
-			dlr_stop(dlr);
-			break;
-		case DEV_DLR_UPDATE:
-			if (parent->option) {
-				dlr->reset = 1;
-			}
-			dlr_update(dlr);
-			break;
-		case DEV_DLR_START_ANNOUNCE:
-			startAnnounce(dlr);
-			break;
-		case DEV_DLR_TX_ANNOUNCE:
-			dlr_tx_announce(dlr);
-			break;
-		case DEV_DLR_TX_LOCATE:
-			dlr_tx_locate_fault(dlr);
-			break;
-		case DEV_DLR_TX_SIGNON:
-			dlr_tx_signon(dlr, parent->option);
-			break;
-		case DEV_DLR_TX_REQ:
-			dlr_tx_chk_req(dlr, parent->option);
-			break;
-		case DEV_DLR_TX_RESP:
-			dlr_tx_chk_resp(dlr, parent->option);
-			break;
-		case DEV_DLR_TX_STATUS:
-			dlr_tx_status(dlr, parent->option);
-			break;
-		case DEV_DLR_TX_ADVERTISE:
-			dlr_tx_advertise(dlr);
-			break;
-		case DEV_DLR_TX_FLUSH_TABLES:
-			dlr_tx_flush_tables(dlr);
-			break;
-		case DEV_DLR_TX_LEARNING_UPDATE:
-			dlr->rogue_super = parent->ptr;
-			if (dlr->rogue_super)
-				dlr->rogue_super->port = parent->option;
-			dlr_tx_learning_update(dlr);
-			break;
-		}
-		break;
-	case DEV_CMD_GET:
-		switch (parent->subcmd) {
-		case DEV_DLR_RX:
-			dlr_rx(dlr, parent->option, parent->ptr);
-			parent->ptr = NULL;
-			break;
-		}
-		break;
-	}
-	parent->used = false;
-}  /* proc_dlr_cmd */
-
-static void proc_dlr_work(struct work_struct *work)
-{
-	struct dlr_work_info *info =
-		container_of(work, struct dlr_work_info, work);
 	struct ksz_dlr_info *dlr =
-		container_of(info, struct ksz_dlr_info, work_info);
-	struct dlr_work *cmd;
+		container_of(work, struct ksz_dlr_info, delay_proc);
+	bool empty;
+	bool last;
+	struct sk_buff *skb;
+	bool notify_link_lost = false;
 
-	cmd = &info->works[info->head];
-	while (cmd->used) {
-		proc_dlr_cmd(dlr, cmd);
-		info->head++;
-		info->head &= DLR_WORK_LAST;
-		cmd = &info->works[info->head];
+	if (dlr->stop) {
+		dlr->stop = false;
+		dlr_stop(dlr);
 	}
-}  /* proc_dlr_work */
+	if (dlr->timeout_beacon) {
+		dlr->timeout_beacon = false;
+		if (dlr->beacon_timeout_ports) {
+			int p;
 
-static void init_dlr_work(struct ksz_dlr_info *dlr)
+			for (p = 0; p < 2; p++) {
+				if (dlr->beacon_timeout_ports & (1 << p))
+					handleBeaconTimeout(dlr, p);
+			}
+			dlr->beacon_timeout_ports = 0;
+		}
+	}
+	if (dlr->link_change) {
+		dlr->link_change = false;
+		if (dlr->block)
+			blockOtherPorts(dlr, false);
+		if (dlr->notifications & DLR_INFO_LINK_LOST)
+			notify_link_lost = true;
+	}
+
+	last = skb_queue_empty(&dlr->rxq);
+	empty = last;
+	while (!last) {
+		skb = skb_dequeue(&dlr->rxq);
+		last = skb_queue_empty(&dlr->rxq);
+		if (skb) {
+			int port;
+
+			port = skb->cb[0];
+			dlr_proc_rx(dlr, skb, port);
+			dev_kfree_skb_irq(skb);
+		}
+	}
+	dlr->state_machine(dlr);
+	if (dlr->tx_announce) {
+		dlr->tx_announce = false;
+		dlr_tx_announce(dlr);
+	}
+	if (dlr->tx_signon) {
+		dlr->tx_signon = false;
+		dlr_tx_signon(dlr, 0);
+	}
+	if (dlr->tx_status) {
+		dlr->tx_status = false;
+		dlr_tx_status(dlr, 1);
+	}
+	if (dlr->tx_advertise) {
+		dlr->tx_advertise = false;
+		dlr_tx_advertise(dlr);
+	}
+	if (dlr->tx_flush_tables) {
+		dlr->tx_flush_tables = false;
+		dlr_tx_flush_tables(dlr);
+	}
+	if (dlr->clr_supervisor) {
+		dlr->clr_supervisor = false;
+		dlr_clr_supervisor(dlr);
+	}
+	if (notify_link_lost) {
+		dlr_notify_link_lost(dlr, 0);
+	}
+}  /* dlr_delay_proc */
+
+static int dlr_rcv(struct ksz_dlr_info *info, struct sk_buff *skb, int port)
 {
-	struct dlr_work_info *info = &dlr->work_info;
-	struct dlr_work *work;
-	int i;
+	struct ksz_dlr_frame *body;
 
-	for (i = 0; i < DLR_WORK_NUM; i++) {
-		work = &info->works[i];
-		work->index = i;
-		work->prev = &info->works[(i - 1) & DLR_WORK_LAST];
+	/* Accept only from port 1 or 2. */
+	if (port == info->ports[0])
+		port = 0;
+	else if (port == info->ports[1])
+		port = 1;
+	if (port > 1)
+		return 1;
+	body = check_dlr_frame(skb->data);
+	if (body) {
+		struct ksz_dlr_rx_frame frame;
+		int accept = true;
+
+		frame.vlan = (struct vlan_ethhdr *) skb->data;
+		frame.body = body;
+		if (DLR_BEACON == body->hdr.frame_type)
+			accept = checkBeacon(info, &frame, port);
+
+		if (accept) {
+
+			/* Use control buffer to save port information. */
+			skb->cb[0] = (char) port;
+			skb_queue_tail(&info->rxq, skb);
+			schedule_work(&info->delay_proc);
+		} else
+			dev_kfree_skb_irq(skb);
+		return 0;
 	}
-	info->head = info->tail = 0;
-	INIT_WORK(&info->work, proc_dlr_work);
-}  /* init_dlr_work */
+	return 1;
+}  /* dlr_rcv */
+
+static void dlr_link_change(struct ksz_dlr_info *info, int link1, int link2)
+{
+	if (handleLinkChange(info, link1, link2)) {
+		info->link_change = true;
+		schedule_work(&info->delay_proc);
+	}
+}  /* dlr_link_change */
+
+static void dlr_timeout(struct ksz_dlr_info *info, int port)
+{
+	/* Accept only from port 1 or 2. */
+	if (port == info->ports[0])
+		port = 0;
+	else if (port == info->ports[1])
+		port = 1;
+	if (port > 1)
+		return;
+	if (!(info->beacon_timeout_ports & (1 << port))) {
+		info->beacon_timeout_ports |= (1 << port);
+		info->timeout_beacon = true;
+		schedule_work(&info->delay_proc);
+	}
+}  /* dlr_timeout */
 
 static void prep_dlr_addr(struct ksz_dlr_info *dlr, u8 *src)
 {
@@ -3809,14 +3712,13 @@ static void dlr_change_addr(struct ksz_dlr_info *dlr, u8 *addr)
 
 		if (cmp > 0) {
 			dlr->new_val = 1;
-			proc_dlr_hw_access(dlr, DEV_CMD_PUT, DEV_DLR_UPDATE, 0,
-				NULL);
+			schedule_work(&dlr->delay_proc);
 		}
 	} else if (DLR_ACTIVE_SUPERVISOR == dlr->node) {
 		if (dlr->skip_beacon)
-			acceptBeacons_(dlr);
+			acceptBeacons(dlr);
 		dlr->new_val = 1;
-		proc_dlr_hw_access(dlr, DEV_CMD_PUT, DEV_DLR_UPDATE, 0, NULL);
+		schedule_work(&dlr->delay_proc);
 	}
 }  /* dlr_change_addr */
 
@@ -3852,7 +3754,6 @@ static void prep_dlr(struct ksz_dlr_info *dlr, struct net_device *dev, u8 *src)
 	dlr->seqid_beacon = 0;
 	dlr->block = 0;
 	dlr->state = DLR_BEGIN;
-	proc_dlr_hw_access(dlr, DEV_CMD_PUT, DEV_DLR_UPDATE, 0, NULL);
 	do {
 		struct ksz_sw *sw = dlr->sw_dev;
 
@@ -3862,64 +3763,18 @@ static void prep_dlr(struct ksz_dlr_info *dlr, struct net_device *dev, u8 *src)
 			media_connected;
 		dlr->p2_down = sw->port_info[dlr->ports[1]].state !=
 			media_connected;
+		if (DLR_ACTIVE_SUPERVISOR == dlr->node) {
+			if (dlr->p1_down)
+				dlr_set_addr(&dlr->attrib.last_active[0],
+					dlr->ip_addr, dlr->src_addr);
+			if (dlr->p2_down)
+				dlr_set_addr(&dlr->attrib.last_active[1],
+					dlr->ip_addr, dlr->src_addr);
+		}
 	} while (0);
 	setup_vlan_table(dlr, dlr->vid, true);
+	schedule_work(&dlr->delay_proc);
 }  /* prep_dlr */
-
-#ifndef CONFIG_HAVE_DLR_HW
-static void chk_beacon_timeout(struct ksz_dlr_info *dlr)
-{
-	int p;
-
-	for (p = 0; p < 2; p++) {
-		struct ksz_dlr_beacon_info *info = &dlr->beacon_info[p];
-
-		/* Beacon timeout timer enabled. */
-		if (info->timer) {
-printk("  !!!!\n");
-			info->interval += BEACON_INTERVAL;
-			if (info->rcv_once) {
-				info->rcv_once = 0;
-				info->timeout_start = 1;
-				info->timeout_stop = 0;
-				info->interval = 0;
-			} else if (info->timeout_start)
-				info->timeout_stop = 1;
-			if (info->interval >= dlr->beacon_timeout &&
-			    info->timeout_stop) {
-#ifdef DBG_DLR_BEACON
-				dbg_bcn = 3;
-#endif
-				info->timeout_start = info->timeout_stop = 0;
-				dlr_timeout(dlr, dlr->ports[p]);
-			}
-		}
-	}
-}  /* chk_beacon_timeout */
-#endif
-
-static void beacon_monitor(struct work_struct *work)
-{
-	struct delayed_work *dwork = to_delayed_work(work);
-	struct ksz_dlr_info *dlr =
-		container_of(dwork, struct ksz_dlr_info, beacon_tx);
-
-	/* Simulate beacon interval. */
-	dlr->interval += BEACON_INTERVAL;
-	if (dlr->interval >= dlr->beacon_interval) {
-		dlr->interval = 0;
-
-		/* Send beacons for supervisor. */
-		if (DLR_ACTIVE_SUPERVISOR == dlr->node) {
-			dlr_tx_beacon(dlr);
-		}
-	}
-
-#ifndef CONFIG_HAVE_DLR_HW
-	chk_beacon_timeout(dlr);
-#endif
-	schedule_delayed_work(&dlr->beacon_tx, BEACON_TICK);
-}  /* beacon_monitor */
 
 static void announce_monitor(struct work_struct *work)
 {
@@ -3927,15 +3782,15 @@ static void announce_monitor(struct work_struct *work)
 	struct ksz_dlr_info *dlr =
 		container_of(dwork, struct ksz_dlr_info, announce_tx);
 
-	proc_dlr_hw_access(dlr, DEV_CMD_PUT, DEV_DLR_CLR_SUPER, 0, NULL);
+	dlr->clr_supervisor = true;
 
 	/* No longer being active supervisor after this scheduling. */
 	if (DLR_ACTIVE_SUPERVISOR != dlr->node) {
 if (dlr->ann_delay)
-dbg_msg(" ! %d %d\n", dlr->ann_delay, dlr->signon_delay);
+dbg_msg(" ! %s %d %d\n", __func__, dlr->ann_delay, dlr->signon_delay);
 		dlr->ann_delay = 0;
 		dlr->signon_delay = 0;
-		return;
+		goto done;
 	}
 
 	if (dlr->ann_delay) {
@@ -3958,31 +3813,32 @@ dbg_msg(" ! %d %d\n", dlr->ann_delay, dlr->signon_delay);
 	/* No longer being active supervisor after the wait. */
 	if (DLR_ACTIVE_SUPERVISOR != dlr->node) {
 		dlr->signon_delay = 0;
-		return;
+		goto done;
 	}
 
-	proc_dlr_hw_access(dlr, DEV_CMD_PUT, DEV_DLR_TX_ANNOUNCE,
-		0, NULL);
+	dlr->tx_announce = true;
 	if (dlr->signon_delay) {
 #ifdef DBG_DLR_ANN_SIGNON
 		dbg_msg("delay signon: %lx\n", jiffies);
 #endif
-		proc_dlr_hw_access(dlr, DEV_CMD_PUT, DEV_DLR_TX_SIGNON,
-			0, NULL);
+		dlr->tx_signon = true;
 		dlr->signon_delay = 0;
 	}
 	schedule_delayed_work(&dlr->announce_tx, 100);
+
+done:
+	schedule_work(&dlr->delay_proc);
 }  /* announce_monitor */
 
 static void announce_timeout_monitor(unsigned long ptr)
 {
 	struct ksz_dlr_info *info = (struct ksz_dlr_info *) ptr;
 
+dbg_msg("ann timeout\n");
 	info->ann_timeout = 1;
-	if (DLR_ANNOUNCE_NODE == info->node)
-		proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_UPDATE, 0, NULL);
-	else if (DLR_SUPERVISOR == info->node)
-		proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_UPDATE, 0, NULL);
+	if (DLR_ANNOUNCE_NODE == info->node ||
+	    DLR_SUPERVISOR == info->node)
+		schedule_work(&info->delay_proc);
 	ksz_update_timer(&info->announce_timeout_timer_info);
 }  /* announce_timeout_monitor */
 
@@ -4008,8 +3864,7 @@ static void neigh_chk_monitor(unsigned long ptr)
 				lost = true;
 				--checking;
 			} else
-				proc_dlr_hw_access(dlr, DEV_CMD_PUT,
-					DEV_DLR_TX_REQ, p, NULL);
+				dlr_tx_chk_req(dlr, p);
 		}
 	}
 	if (lost) {
@@ -4028,8 +3883,7 @@ static void neigh_chk_monitor(unsigned long ptr)
 					node->p2_lost = 1;
 			}
 		} else
-			proc_dlr_hw_access(dlr, DEV_CMD_PUT, DEV_DLR_TX_STATUS,
-				1, NULL);
+			dlr->tx_status = true;
 	}
 	ksz_update_timer(&dlr->neigh_chk_timer_info);
 	dlr->neigh_chk = !!dlr->neigh_chk_timer_info.max;
@@ -4042,10 +3896,10 @@ static void signon_monitor(unsigned long ptr)
 #ifdef DBG_DLR_ANN_SIGNON
 	dbg_msg("%s\n", __func__);
 #endif
-	if (DLR_ACTIVE_SUPERVISOR == info->node)
-		proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_TX_SIGNON, 0,
-			NULL);
-	else
+	if (DLR_ACTIVE_SUPERVISOR == info->node) {
+		info->tx_signon = true;
+		schedule_work(&info->delay_proc);
+	} else
 		info->signon_timer_info.max = 1;
 	ksz_update_timer(&info->signon_timer_info);
 }  /* signon_monitor */
@@ -4057,10 +3911,6 @@ static void dlr_reset_attrib(struct ksz_dlr_info *dlr)
 #endif
 
 	memset(&dlr->attrib, 0, sizeof(struct ksz_dlr_gateway_capable));
-#if 0
-	dlr->attrib.super_status = 0xFF;
-	dlr->attrib.participants_cnt = 0xFFFF;
-#endif
 	switch (dlr->node) {
 	case DLR_ANNOUNCE_NODE:
 		dlr->attrib.cap = DLR_CAP_ANNOUNCE_BASED;
@@ -4109,11 +3959,6 @@ static void setup_dlr(struct ksz_dlr_info *dlr)
 	dlr->beacon_timeout = 1960;
 	dlr->beacon_interval *= 1;
 	dlr->beacon_timeout *= 1;
-
-	dlr->cfg.vid = dlr->vid;
-	dlr->cfg.prec = dlr->precedence;
-	dlr->cfg.beacon_interval = dlr->beacon_interval;
-	dlr->cfg.beacon_timeout = dlr->beacon_timeout;
 
 	dlr->frame.vlan.h_vlan_proto = htons(ETH_P_8021Q);
 	dlr->frame.vlan.h_vlan_encapsulated_proto = htons(DLR_TAG_TYPE);
@@ -4319,12 +4164,8 @@ static int dlr_change_cfg(struct ksz_dlr_info *dlr,
 	if (cfg->enable && !(dlr->attrib.cap & DLR_CAP_SUPERVISOR_CAPABLE))
 		return STATUS_INVALID_ATTRIB_VALUE;
 	if (cfg->enable != super->enable) {
-		if (DLR_ACTIVE_SUPERVISOR != dlr->node)
-			disableAnnounceTimeout(dlr);
 		if (super->enable) {
-			dlr->node = DLR_BEACON_NODE;
-			proc_dlr_hw_access(dlr, DEV_CMD_PUT, DEV_DLR_STOP, 0,
-				NULL);
+			dlr->stop = true;
 		} else
 			dlr->node = DLR_SUPERVISOR;
 		super->enable = cfg->enable;
@@ -4338,27 +4179,14 @@ static int dlr_change_cfg(struct ksz_dlr_info *dlr,
 			dlr->beacon_timeout = super->beacon_timeout;
 			dlr->vid = super->vid;
 		}
-		proc_dlr_hw_access(dlr, DEV_CMD_PUT, DEV_DLR_UPDATE, 1, NULL);
+		dlr->reset = true;
+		schedule_work(&dlr->delay_proc);
 	} else if (super->enable) {
-#if 0
-		u8 prec = super->prec;
-
-		if (cfg->prec != prec && DLR_SUPERVISOR == dlr->node) {
-			int cmp = memcmp(dlr->src_addr,
-				attrib->active_super_addr.addr, ETH_ALEN);
-
-			if (cfg->prec < attrib->active_super_prec ||
-			    (cfg->prec == attrib->active_super_prec &&
-			    cmp < 0)) {
-				prec = cfg->prec;
-			}
-		}
-#endif
 		if (cfg->prec != super->prec) {
 			super->prec = cfg->prec;
 			dlr->new_val = 1;
 		}
-		if (DLR_ACTIVE_SUPERVISOR == dlr->node) {
+		if (DLR_ACTIVE_SUPERVISOR == dlr->node || dlr->new_val) {
 			if (cfg->beacon_interval != super->beacon_interval) {
 				super->beacon_interval = cfg->beacon_interval;
 				dlr->new_val = 1;
@@ -4372,9 +4200,9 @@ static int dlr_change_cfg(struct ksz_dlr_info *dlr,
 				dlr->new_val = 1;
 			}
 		}
-	}
 	if (dlr->new_val)
-		proc_dlr_hw_access(dlr, DEV_CMD_PUT, DEV_DLR_UPDATE, 0, NULL);
+		schedule_work(&dlr->delay_proc);
+	}
 	return 0;
 }  /* dlr_change_cfg */
 
@@ -4468,8 +4296,7 @@ static int dlr_set_attrib(struct ksz_dlr_info *dlr, int subcmd, int size,
 			node->p2_down = 0;
 			node->p2_lost = 0;
 		}
-		proc_dlr_hw_access(dlr, DEV_CMD_PUT,
-			DEV_DLR_TX_LOCATE, 0, NULL);
+		dlr_tx_locate_fault(dlr);
 		break;
 	}
 	case SVC_DLR_CLEAR_RAPID_FAULTS:
@@ -5418,7 +5245,7 @@ static void sysfs_dlr_write(struct ksz_dlr_info *info, int proc_num, int num,
 			setupDir(info, -1);
 		}
 		if (info->skip_beacon)
-			acceptBeacons_(info);
+			acceptBeacons(info);
 		if (DLR_ANNOUNCE_NODE == info->node)
 			sw->ops->cfg_mac(sw, DLR_BEACON_ENTRY,
 				MAC_ADDR_BEACON, member, false, false, 0);
@@ -5434,12 +5261,21 @@ static void sysfs_dlr_write(struct ksz_dlr_info *info, int proc_num, int num,
 		do {
 			struct ksz_sw *sw = info->sw_dev;
 
-			if (DLR_ANNOUNCE_NODE == info->node)
+			if (DLR_ANNOUNCE_NODE == info->node) {
+#ifdef CONFIG_HAVE_ACL_HW
+				disable_acl_beacon_timeout(info,
+					info->ports[0]);
+				disable_acl_beacon_timeout(info,
+					info->ports[1]);
+#endif
 				sw->ops->cfg_mac(sw, DLR_BEACON_ENTRY,
 					MAC_ADDR_BEACON, info->member,
 					false, false, 0);
-			proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_UPDATE,
-				1, NULL);
+				info->state_machine = AnnounceRingNode_state;
+			} else
+				info->state_machine = RingSupervisor_state;
+			info->reset = true;
+			schedule_work(&info->delay_proc);
 		} while (0);
 		break;
 	case PROC_SET_DLR_PRECEDENCE:
@@ -5560,13 +5396,11 @@ static void sysfs_dlr_write(struct ksz_dlr_info *info, int proc_num, int num,
 		}
 		if (num & 1) {
 			info->port_chk[0] = 1;
-			proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_TX_REQ,
-				0, NULL);
+			dlr_tx_chk_req(info, 0);
 		}
 		if (num & 2) {
 			info->port_chk[1] = 1;
-			proc_dlr_hw_access(info, DEV_CMD_PUT, DEV_DLR_TX_REQ,
-				1, NULL);
+			dlr_tx_chk_req(info, 1);
 		}
 		break;
 	case PROC_SET_DLR_NEIGH_CHK_RESP:
@@ -5592,8 +5426,7 @@ static void sysfs_dlr_write(struct ksz_dlr_info *info, int proc_num, int num,
 		else
 			info->p2_lost = 0;
 		if (info->node != DLR_ACTIVE_SUPERVISOR)
-			proc_dlr_hw_access(info, DEV_CMD_PUT,
-				DEV_DLR_TX_STATUS, 0, NULL);
+			dlr_tx_status(info, 0);
 		else if (attrib->participants_cnt > 0) {
 			struct ksz_dlr_node_info *node;
 
@@ -5692,7 +5525,6 @@ static void ksz_dlr_exit(struct ksz_dlr_info *dlr)
 	ksz_stop_timer(&dlr->neigh_chk_timer_info);
 	ksz_stop_timer(&dlr->signon_timer_info);
 	cancel_delayed_work_sync(&dlr->announce_tx);
-	cancel_delayed_work_sync(&dlr->beacon_tx);
 }  /* ksz_dlr_exit */
 
 static void ksz_dlr_init(struct ksz_dlr_info *dlr, struct ksz_sw *sw)
@@ -5702,14 +5534,11 @@ static void ksz_dlr_init(struct ksz_dlr_info *dlr, struct ksz_sw *sw)
 	dlr->member = (1 << dlr->ports[0]) | (1 << dlr->ports[1]);
 	dlr->sw_dev = sw;
 	dlr->node = DLR_BEACON_NODE;
+	dlr->state_machine = RingSupervisor_state;
 	setup_dlr(dlr);
 	INIT_DELAYED_WORK(&dlr->announce_tx, announce_monitor);
-	INIT_DELAYED_WORK(&dlr->beacon_tx, beacon_monitor);
-	INIT_WORK(&dlr->beacon_rx_timeout, proc_beacon_timeout);
-	init_dlr_work(dlr);
+	INIT_WORK(&dlr->delay_proc, dlr_delay_proc);
+	skb_queue_head_init(&dlr->rxq);
 	dlr->ops = &dlr_ops;
-#ifdef SIMULATE_BEACON
-	schedule_delayed_work(&dlr->beacon_tx, BEACON_TICK);
-#endif
 }  /* ksz_dlr_init */
 

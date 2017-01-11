@@ -62,7 +62,9 @@ struct sw_dev_info {
 
 
 #include "ksz_sw_api.h"
+#ifdef CONFIG_KSZ_STP
 #include "ksz_stp.h"
+#endif
 #ifdef CONFIG_KSZ_IBA
 #include "ksz_iba.h"
 #endif

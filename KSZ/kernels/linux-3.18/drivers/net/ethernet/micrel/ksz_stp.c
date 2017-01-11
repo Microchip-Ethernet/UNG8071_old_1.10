@@ -1,3 +1,18 @@
+/**
+ * Microchip RSTP code
+ *
+ * Copyright (c) 2016-2017 Microchip Technology Inc.
+ *	Tristram Ha <Tristram.Ha@microchip.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
 
 
 #if 0
@@ -1004,7 +1019,7 @@ static int stp_xmit(struct ksz_stp_info *stp, u8 port)
 	u8 *frame = stp->tx_frame;
 	struct ksz_sw *sw = stp->sw_dev;
 	int len = stp->len;
-	u16 ports;
+	int ports;
 	const struct net_device_ops *ops = stp->dev->netdev_ops;
 	struct llc *llc = (struct llc *) &frame[12];
 	struct ksz_port_info *info = &sw->port_info[port];
@@ -1013,12 +1028,8 @@ static int stp_xmit(struct ksz_stp_info *stp, u8 port)
 	if (!netif_running(stp->dev) || !netif_carrier_ok(stp->dev))
 		return 0;
 
-#ifdef CONFIG_HAVE_KSZ9897
 	ports = (1 << port);
-	ports |= sw->TAIL_TAG_OVERRIDE;
-#else
-	ports = (1 << port);
-#endif
+	ports |= 0x80000000;
 
 	len += 3;
 	llc->len = htons(len);
@@ -4363,8 +4374,10 @@ static ssize_t sysfs_stp_port_read(struct ksz_sw *sw, int proc_num, int port,
 	char note[40];
 
 	note[0] = '\0';
-#ifdef CONFIG_HAVE_KSZ9897
+#ifdef USE_FEWER_PORTS
 	port = chk_last_port(sw, port);
+	if (port == sw->HOST_PORT)
+		return 0;
 #endif
 	p = &stp->br.ports[port];
 	switch (proc_num) {
@@ -4472,7 +4485,7 @@ static int sysfs_stp_port_write(struct ksz_sw *sw, int proc_num, int port,
 	int change = 0;
 	int processed = true;
 
-#ifdef CONFIG_HAVE_KSZ9897
+#ifdef USE_FEWER_PORTS
 	port = chk_last_port(sw, port);
 	if (port == sw->HOST_PORT)
 		return false;
@@ -4601,7 +4614,7 @@ static void ksz_stp_init(struct ksz_stp_info *stp, struct ksz_sw *sw)
 	if (sw->stp)
 		br->bridgeEnabled = TRUE;
 
-	br->port_cnt = sw->mib_port_cnt;
+	br->port_cnt = sw->port_cnt;
 
 	/* Can turn off ports.  Useful for using one port for telnet. */
 	num = sw->stp;
@@ -4613,10 +4626,6 @@ static void ksz_stp_init(struct ksz_stp_info *stp, struct ksz_sw *sw)
 		if (!(num & (1 << i)))
 			p->off = TRUE;
 	}
-#if 0
-	if (br->port_cnt > 4)
-		br->port_cnt = 4;
-#endif
 
 	num = 1;
 	for (i = 0; i < br->port_cnt; i++) {
@@ -4639,7 +4648,7 @@ static void ksz_stp_init(struct ksz_stp_info *stp, struct ksz_sw *sw)
 #endif
 	}
 
-	p = &br->ports[sw->HOST_PORT];
+	p = &br->ports[0];
 	ZERO(BridgePriority);
 	stp_br_init(p);
 }  /* ksz_stp_init */

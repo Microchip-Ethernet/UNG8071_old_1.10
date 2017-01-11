@@ -1,7 +1,7 @@
 /**
  * Microchip DLR driver header
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -147,26 +147,6 @@ struct ksz_dlr_super_info {
 
 struct ksz_dlr_info;
 
-struct dlr_work {
-	void *ptr;
-	int cmd;
-	int subcmd;
-	int option;
-	int used;
-	int index;
-	struct dlr_work *prev;
-};
-
-#define DLR_WORK_NUM			(1 << 5)
-#define DLR_WORK_LAST			(DLR_WORK_NUM - 1)
-
-struct dlr_work_info {
-	struct work_struct work;
-	int head;
-	int tail;
-	struct dlr_work works[DLR_WORK_NUM];
-};
-
 struct dlr_ops {
 	void (*change_addr)(struct ksz_dlr_info *dlr, u8 *addr);
 	void (*link_change)(struct ksz_dlr_info *dlr, int link1, int link2);
@@ -232,13 +212,11 @@ struct ksz_dlr_info {
 	u32 neigh_chk:1;
 	u32 wait_done:1;
 	u32 reset:1;
-	u32 reset_fault:1;
 	u32 start:1;
 	u32 chk_hw:1;
 	u32 block:1;
 
 	struct ksz_dlr_gateway_capable attrib;
-	struct ksz_dlr_super_cfg cfg;
 	struct ksz_dlr_active_node last_sup;
 
 	u32 beacon_interval;
@@ -253,6 +231,7 @@ struct ksz_dlr_info {
 	u8 ring_state;
 	u8 drop_beacon;
 	u32 skip_beacon:1;
+	u32 both_open:1;
 	u8 LastBcnRcvPort;
 	struct ksz_dlr_beacon_info beacon_info[2];
 	u32 interval;
@@ -265,10 +244,21 @@ struct ksz_dlr_info {
 	struct ksz_timer_info neigh_chk_timer_info;
 	struct ksz_timer_info signon_timer_info;
 	struct delayed_work announce_tx;
-	struct delayed_work beacon_tx;
 	u32 beacon_timeout_ports;
-	struct work_struct beacon_rx_timeout;
-	struct dlr_work_info work_info;
+	struct work_struct delay_proc;
+	struct sk_buff_head rxq;
+	void (*state_machine)(struct ksz_dlr_info *info);
+	struct ksz_dlr_tx_frame last_beacon[2];
+	u8 beacon_addr[ETH_ALEN];
+	u32 stop:1;
+	u32 tx_signon:1;
+	u32 tx_announce:1;
+	u32 tx_status:1;
+	u32 tx_advertise:1;
+	u32 tx_flush_tables:1;
+	u32 link_change:1;
+	u32 clr_supervisor:1;
+	u32 timeout_beacon:1;
 
 	struct ksz_dlr_tx_frame frame;
 	struct ksz_dlr_update_frame update_frame;

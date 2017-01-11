@@ -1,7 +1,7 @@
 /**
  * Microchip KSZ8795 switch common sysfs code
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2011-2015 Micrel, Inc.
@@ -402,6 +402,10 @@ NETSW_WR_ENTRY(fw_unk_ip_mcast_dest);
 NETSW_WR_ENTRY(pme_ctrl);
 NETSW_WR_ENTRY(pme_status);
 
+NETSW_RD_ENTRY(duplex);
+NETSW_RD_ENTRY(speed);
+NETSW_WR_ENTRY(linkmd);
+
 #ifdef CONFIG_KSZ_STP
 NETSW_RD_ENTRY(stp_info);
 NETSW_WR_ENTRY(stp_on);
@@ -413,10 +417,6 @@ NETSW_WR_ENTRY(stp_auto_edge);
 NETSW_WR_ENTRY(stp_mcheck);
 NETSW_WR_ENTRY(stp_admin_p2p);
 #endif
-
-NETSW_RD_ENTRY(duplex);
-NETSW_RD_ENTRY(speed);
-NETSW_WR_ENTRY(linkmd);
 
 NETSW_WR_ENTRY(authen_mode);
 NETSW_WR_ENTRY(acl);
@@ -647,6 +647,10 @@ static struct attribute *sw_attrs[] = {
 	&sw_attr_acl_info.attr,
 	&sw_attr_acl_table.attr,
 
+	&sw_attr_duplex.attr,
+	&sw_attr_speed.attr,
+	&sw_attr_linkmd.attr,
+
 #ifdef CONFIG_KSZ_STP
 	&sw_attr_stp_info.attr,
 	&sw_attr_stp_on.attr,
@@ -658,10 +662,6 @@ static struct attribute *sw_attrs[] = {
 	&sw_attr_stp_mcheck.attr,
 	&sw_attr_stp_admin_p2p.attr,
 #endif
-
-	&sw_attr_duplex.attr,
-	&sw_attr_speed.attr,
-	&sw_attr_linkmd.attr,
 
 	NULL
 };

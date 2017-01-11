@@ -1,7 +1,7 @@
 /**
  * Microchip switch common code
  *
- * Copyright (c) 2015-2016 Microcip Technology Inc.
+ * Copyright (c) 2015-2017 Microcip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2010-2015 Micrel, Inc.
@@ -163,6 +163,14 @@ enum {
 	PROC_SET_UNKNOWN_DEF_PORT,
 	PROC_SET_FORWARD_INVALID_VID,
 
+	PROC_SET_PORT_DUPLEX,
+	PROC_SET_PORT_SPEED,
+	PROC_SET_LINK_MD,
+
+	PROC_SET_PORT_MAC_ADDR,
+	PROC_SET_SRC_FILTER_0,
+	PROC_SET_SRC_FILTER_1,
+
 #ifdef CONFIG_KSZ_STP
 	PROC_GET_STP_INFO,
 	PROC_SET_STP_ON,
@@ -174,14 +182,6 @@ enum {
 	PROC_SET_STP_MCHECK,
 	PROC_SET_STP_ADMIN_P2P,
 #endif
-
-	PROC_SET_PORT_DUPLEX,
-	PROC_SET_PORT_SPEED,
-	PROC_SET_LINK_MD,
-
-	PROC_SET_PORT_MAC_ADDR,
-	PROC_SET_SRC_FILTER_0,
-	PROC_SET_SRC_FILTER_1,
 };
 
 enum {
@@ -3124,6 +3124,8 @@ static void port_set_stp_state(struct ksz_sw *sw, int port, int state)
 	case STP_STATE_FORWARDING:
 		data |= (PORT_TX_ENABLE | PORT_RX_ENABLE);
 		data &= ~PORT_LEARN_DISABLE;
+		if (sw->features & STP_SUPPORT)
+			break;
 		if ((sw->features & SW_VLAN_DEV) && port != sw->HOST_PORT)
 			/* Set port-base vlan membership with host port. */
 			member = sw->HOST_MASK | port_cfg->vid_member;
@@ -3267,6 +3269,35 @@ static void bridge_change(struct ksz_sw *sw)
 	}
 }  /* bridge_change */
 #endif
+
+#define MAX_SW_LEN			1500
+
+static void sw_setup_msg(struct sw_dev_info *info, void *data, int len,
+	void (*func)(void *data, void *param), void *param)
+{
+	struct ksz_sw *sw = info->sw;
+	int in_intr = in_interrupt();
+
+	if (len > MAX_SW_LEN)
+		len = MAX_SW_LEN;
+	if (!in_intr)
+		mutex_lock(&info->lock);
+	memcpy(sw->msg_buf, data, len);
+	if (func)
+		func(sw->msg_buf, param);
+	len += 2;
+	if (info->read_len + len <= info->read_max) {
+		u16 *msg_len = (u16 *) &info->read_buf[info->read_len];
+
+		*msg_len = len;
+		msg_len++;
+		memcpy(msg_len, sw->msg_buf, len - 2);
+		info->read_len += len;
+	}
+	if (!in_intr)
+		mutex_unlock(&info->lock);
+	wake_up_interruptible(&info->wait_msg);
+}  /* sw_setup_msg */
 
 #ifdef CONFIG_KSZ_STP
 #include "ksz_stp.c"
@@ -3525,7 +3556,7 @@ static void port_set_link_speed(struct ksz_port *port)
 
 	for (i = 0, p = port->first_port; i < port->port_cnt; i++, p++) {
 		info = &sw->port_info[p];
-		if (sw->port_info[p].fiber)
+		if (info->fiber)
 			continue;
 
 		info->own_flow_ctrl = port->flow_ctrl;
@@ -3744,6 +3775,7 @@ static void sw_setup(struct ksz_sw *sw)
 
 	sw_setup_mirror(sw);
 
+	sw->info->multi_sys = MULTI_MAC_TABLE_ENTRIES;
 	sw->info->multi_net = SWITCH_MAC_TABLE_ENTRIES;
 	if (sw->features & STP_SUPPORT) {
 		sw_setup_stp(sw);
@@ -3862,6 +3894,8 @@ static void hw_get_link_md(struct ksz_sw *sw, int port)
 	int timeout;
 	struct ksz_port_info *port_info = &sw->port_info[port];
 
+	if (port_info->fiber)
+		return;
 	port_r(sw, port, P_SPEED_STATUS, &data);
 #if (SW_SIZE == (1))
 	port_r(sw, port, P_LINK_STATUS, &link);
@@ -5141,6 +5175,11 @@ static ssize_t sysfs_port_read(struct ksz_sw *sw, int proc_num, int port,
 			port_info->length[0], port_info->status[0],
 			port_info->length[1], port_info->status[1],
 			port_info->length[2], port_info->status[2]);
+		if (sw->verbose)
+			len += sprintf(buf + len,
+				"(%d=unknown; %d=normal; %d=open; %d=short)\n",
+				CABLE_UNKNOWN, CABLE_GOOD, CABLE_OPEN,
+				CABLE_SHORT);
 		break;
 	case PROC_SET_PORT_BASED:
 		chk = port_cfg->port_prio;
@@ -6355,7 +6394,7 @@ static void sw_add_tail_tag(struct ksz_sw *sw, struct sk_buff *skb, int ports)
 	int len = 1;
 
 	trailer = skb_put(skb, len);
-	trailer[0] = (u8) ports;
+	trailer[0] = (u8) ports & sw->PORT_MASK;
 }  /* sw_add_tail_tag */
 
 static int sw_get_tail_tag(u8 *trailer, int *port)
@@ -6462,6 +6501,10 @@ static struct sk_buff *sw_check_skb(struct ksz_sw *sw, struct sk_buff *skb,
 
 #ifdef CONFIG_NET_DSA_TAG_TAIL
 	if (skb->protocol == htons(ETH_P_TRAILER))
+		return skb;
+#endif
+#ifdef CONFIG_KSZ_STP
+	if (skb->protocol == htons(STP_TAG_TYPE))
 		return skb;
 #endif
 #ifdef CONFIG_KSZ_DLR
@@ -7002,6 +7045,532 @@ static u8 sw_set_mac_addr(struct ksz_sw *sw, struct net_device *dev,
 	return promiscuous;
 }  /* sw_set_mac_addr */
 
+static struct ksz_sw *sw_priv;
+
+static struct sw_dev_info *alloc_sw_dev_info(unsigned int minor)
+{
+	struct sw_dev_info *info;
+
+	info = kzalloc(sizeof(struct sw_dev_info), GFP_KERNEL);
+	if (info) {
+		info->sw = sw_priv;
+		sema_init(&info->sem, 1);
+		mutex_init(&info->lock);
+		init_waitqueue_head(&info->wait_msg);
+		info->write_len = 1000;
+		info->write_buf = kzalloc(info->write_len, GFP_KERNEL);
+		info->read_max = 60000;
+		info->read_buf = kzalloc(info->read_max, GFP_KERNEL);
+
+		info->minor = minor;
+		info->next = sw_priv->dev_list[minor];
+		sw_priv->dev_list[minor] = info;
+	}
+	return info;
+}  /* alloc_sw_dev_info */
+
+static void free_sw_dev_info(struct sw_dev_info *info)
+{
+	if (info) {
+		struct ksz_sw *sw = info->sw;
+		unsigned int minor = info->minor;
+		struct sw_dev_info *prev = sw->dev_list[minor];
+
+		if (prev == info) {
+			sw->dev_list[minor] = info->next;
+		} else {
+			while (prev && prev->next != info)
+				prev = prev->next;
+			if (prev)
+				prev->next = info->next;
+		}
+		kfree(info->read_buf);
+		kfree(info->write_buf);
+		kfree(info);
+	}
+}  /* free_sw_dev_info */
+
+static int sw_dev_open(struct inode *inode, struct file *filp)
+{
+	struct sw_dev_info *info = (struct sw_dev_info *)
+		filp->private_data;
+	unsigned int minor = MINOR(inode->i_rdev);
+
+	if (minor > 1)
+		return -ENODEV;
+	if (!info) {
+		info = alloc_sw_dev_info(minor);
+		if (info)
+			filp->private_data = info;
+		else
+			return -ENOMEM;
+	}
+	return 0;
+}  /* sw_dev_open */
+
+static int sw_dev_release(struct inode *inode, struct file *filp)
+{
+	struct sw_dev_info *info = (struct sw_dev_info *)
+		filp->private_data;
+
+	free_sw_dev_info(info);
+	filp->private_data = NULL;
+	return 0;
+}  /* sw_dev_release */
+
+static int sw_get_attrib(struct ksz_sw *sw, int subcmd, int size,
+	int *req_size, size_t *len, u8 *data, int *output)
+{
+	struct ksz_info_opt *opt = (struct ksz_info_opt *) data;
+	struct ksz_info_cfg *cfg = &opt->data.cfg;
+	int i;
+	int n;
+	int p;
+
+	*len = 0;
+	*output = 0;
+	switch (subcmd) {
+	case DEV_SW_CFG:
+		n = opt->num;
+		p = opt->port;
+		if (!n)
+			n = 1;
+		*len = 2 + n * sizeof(struct ksz_info_cfg);
+		break;
+	}
+	if (!*len)
+		return DEV_IOC_INVALID_CMD;
+	if (size < *len) {
+		*req_size = *len + SIZEOF_ksz_request;
+		return DEV_IOC_INVALID_LEN;
+	}
+	switch (subcmd) {
+	case DEV_SW_CFG:
+		sw->ops->acquire(sw);
+		for (i = 0; i < opt->num; i++, p++) {
+			cfg->on_off = 0;
+			if (cfg->set & SP_LEARN) {
+				if (!port_chk_dis_learn(sw, p))
+					cfg->on_off |= SP_LEARN;
+			}
+			if (cfg->set & SP_RX) {
+				if (port_chk_rx(sw, p))
+					cfg->on_off |= SP_RX;
+			}
+			if (cfg->set & SP_TX) {
+				if (port_chk_tx(sw, p))
+					cfg->on_off |= SP_TX;
+			}
+			if (p == sw->HOST_PORT)
+				continue;
+#if 0
+			if (cfg->set & SP_PHY_POWER) {
+				if (port_chk_power(sw, p))
+					cfg->on_off |= SP_PHY_POWER;
+			}
+#endif
+			cfg++;
+		}
+		sw->ops->release(sw);
+		break;
+	}
+	return DEV_IOC_OK;
+}  /* sw_get_attrib */
+
+static int sw_set_attrib(struct ksz_sw *sw, int subcmd, int size,
+	int *req_size, u8 *data, int *output)
+{
+	struct ksz_info_opt *opt = (struct ksz_info_opt *) data;
+	struct ksz_info_cfg *cfg = &opt->data.cfg;
+	int len;
+	int i;
+	int n;
+	int p;
+
+	*output = 0;
+	switch (subcmd) {
+	case DEV_SW_CFG:
+		n = opt->num;
+		p = opt->port;
+		if (!n)
+			n = 1;
+		len = 2 + n * sizeof(struct ksz_info_cfg);
+		if (size < len)
+			goto not_enough;
+		sw->ops->acquire(sw);
+		for (i = 0; i < opt->num; i++, p++) {
+			if (cfg->set & SP_LEARN)
+				port_cfg_dis_learn(sw, p,
+					!(cfg->on_off & SP_LEARN));
+			if (cfg->set & SP_RX)
+				port_cfg_rx(sw, p,
+					!!(cfg->on_off & SP_RX));
+			if (cfg->set & SP_TX)
+				port_cfg_tx(sw, p,
+					!!(cfg->on_off & SP_TX));
+			if (p == sw->HOST_PORT)
+				continue;
+#if 0
+			if (cfg->set & SP_PHY_POWER)
+				port_cfg_power(sw, p,
+					!!(cfg->on_off & SP_PHY_POWER));
+#endif
+			cfg++;
+		}
+		sw->ops->release(sw);
+		break;
+	default:
+		return DEV_IOC_INVALID_CMD;
+	}
+	return DEV_IOC_OK;
+
+not_enough:
+	*req_size = len + SIZEOF_ksz_request;
+	return DEV_IOC_INVALID_LEN;
+}  /* sw_set_attrib */
+
+static int base_dev_req(struct ksz_sw *sw, char *arg, void *info)
+{
+	struct ksz_request *req = (struct ksz_request *) arg;
+	int len;
+	int maincmd;
+	int req_size;
+	int subcmd;
+	int output;
+	size_t param_size;
+	u8 data[PARAM_DATA_SIZE];
+	struct ksz_resp_msg *msg = (struct ksz_resp_msg *) data;
+	int err = 0;
+	int result = 0;
+
+	get_user_data(&req_size, &req->size, info);
+	get_user_data(&maincmd, &req->cmd, info);
+	get_user_data(&subcmd, &req->subcmd, info);
+	get_user_data(&output, &req->output, info);
+	len = req_size - SIZEOF_ksz_request;
+
+	maincmd &= 0xffff;
+	switch (maincmd) {
+	case DEV_CMD_INFO:
+		switch (subcmd) {
+		case DEV_INFO_INIT:
+			req_size = SIZEOF_ksz_request + 4;
+			if (len >= 4) {
+				data[0] = 'M';
+				data[1] = 'i';
+				data[2] = 'c';
+				data[3] = 'r';
+				data[4] = 0;
+				err = write_user_data(data, req->param.data,
+					6, info);
+				if (err)
+					goto dev_ioctl_done;
+				sw->dev_info = info;
+			} else
+				result = DEV_IOC_INVALID_LEN;
+			break;
+		case DEV_INFO_EXIT:
+
+		/* fall through */
+		case DEV_INFO_QUIT:
+
+			/* Not called through char device. */
+			if (!info)
+				break;
+			msg->module = DEV_MOD_BASE;
+			msg->cmd = DEV_INFO_QUIT;
+			msg->resp.data[0] = 0;
+			sw_setup_msg(info, msg, 8, NULL, NULL);
+			sw->notifications = 0;
+			sw->dev_info = NULL;
+			break;
+		case DEV_INFO_NOTIFY:
+			if (len >= 4) {
+				uint *notify = (uint *) data;
+
+				_chk_ioctl_size(len, 4, 0, &req_size, &result,
+					&req->param, data, info);
+				sw->notifications = *notify;
+			}
+			break;
+		default:
+			result = DEV_IOC_INVALID_CMD;
+			break;
+		}
+		break;
+	case DEV_CMD_PUT:
+		if (_chk_ioctl_size(len, len, 0, &req_size, &result,
+		    &req->param, data, info))
+			goto dev_ioctl_resp;
+		result = sw_set_attrib(sw, subcmd, len, &req_size, data,
+			&output);
+		if (result)
+			goto dev_ioctl_resp;
+		put_user_data(&output, &req->output, info);
+		break;
+	case DEV_CMD_GET:
+		if (_chk_ioctl_size(len, len, 0, &req_size, &result,
+		    &req->param, data, info))
+			goto dev_ioctl_resp;
+		result = sw_get_attrib(sw, subcmd, len, &req_size,
+			&param_size, data, &output);
+		if (result)
+			goto dev_ioctl_resp;
+		err = write_user_data(data, req->param.data, param_size, info);
+		if (err)
+			goto dev_ioctl_done;
+		req_size = param_size + SIZEOF_ksz_request;
+		put_user_data(&output, &req->output, info);
+		break;
+	default:
+		result = DEV_IOC_INVALID_CMD;
+		break;
+	}
+
+dev_ioctl_resp:
+	put_user_data(&req_size, &req->size, info);
+	put_user_data(&result, &req->result, info);
+
+	/* Return ERESTARTSYS so that the system call is called again. */
+	if (result < 0)
+		err = result;
+
+dev_ioctl_done:
+	return err;
+}  /* base_dev_req */
+
+static int sw_dev_req(struct ksz_sw *sw, int start, char *arg,
+	struct sw_dev_info *info)
+{
+	struct ksz_request *req = (struct ksz_request *) arg;
+	int maincmd;
+	int req_size;
+	int err = 0;
+	int result = DEV_IOC_OK;
+
+	/* Check request size. */
+	get_user_data(&req_size, &req->size, info);
+	if (chk_ioctl_size(req_size, SIZEOF_ksz_request, 0, &req_size,
+	    &result, NULL, NULL))
+		goto dev_ioctl_resp;
+
+	result = -EOPNOTSUPP;
+	get_user_data(&maincmd, &req->cmd, info);
+	maincmd >>= 16;
+	switch (maincmd) {
+	case DEV_MOD_BASE:
+		err = base_dev_req(sw, arg, info);
+		result = 0;
+		break;
+#ifdef CONFIG_KSZ_DLR
+	case DEV_MOD_DLR:
+		if (sw->features & DLR_HW) {
+			struct ksz_dlr_info *dlr = &sw->info->dlr;
+
+			err = dlr->ops->dev_req(dlr, arg, info);
+			result = 0;
+		}
+		break;
+#endif
+	default:
+		break;
+	}
+
+	/* Processed by specific module. */
+	if (!result)
+		return err;
+	if (result < 0)
+		goto dev_ioctl_done;
+
+dev_ioctl_resp:
+	put_user_data(&req_size, &req->size, info);
+	put_user_data(&result, &req->result, info);
+
+dev_ioctl_done:
+
+	/* Return ERESTARTSYS so that the system call is called again. */
+	if (result < 0)
+		err = result;
+
+	return err;
+}  /* sw_dev_req */
+
+static ssize_t sw_dev_read(struct file *filp, char *buf, size_t count,
+	loff_t *offp)
+{
+	struct sw_dev_info *info = (struct sw_dev_info *)
+		filp->private_data;
+	ssize_t result = 0;
+	int rc;
+
+	if (!info->read_len) {
+		*offp = 0;
+		rc = wait_event_interruptible(info->wait_msg,
+			0 != info->read_len);
+
+		/* Cannot continue if ERESTARTSYS. */
+		if (rc < 0)
+			return 0;
+	}
+
+	if (down_interruptible(&info->sem))
+		return -ERESTARTSYS;
+
+	mutex_lock(&info->lock);
+	if (*offp >= info->read_len) {
+		info->read_len = 0;
+		count = 0;
+		*offp = 0;
+		goto dev_read_done;
+	}
+
+	if (*offp + count > info->read_len) {
+		count = info->read_len - *offp;
+		info->read_len = 0;
+	}
+
+	if (copy_to_user(buf, &info->read_buf[*offp], count)) {
+		result = -EFAULT;
+		goto dev_read_done;
+	}
+	if (info->read_len)
+		*offp += count;
+	else
+		*offp = 0;
+	result = count;
+
+dev_read_done:
+	mutex_unlock(&info->lock);
+	up(&info->sem);
+	return result;
+}  /* sw_dev_read */
+
+#ifdef HAVE_UNLOCKED_IOCTL
+static long sw_dev_ioctl(struct file *filp, unsigned int cmd,
+	unsigned long arg)
+#else
+static int sw_dev_ioctl(struct inode *inode, struct file *filp,
+	unsigned int cmd, unsigned long arg)
+#endif
+{
+	struct sw_dev_info *info = (struct sw_dev_info *)
+		filp->private_data;
+	struct ksz_sw *sw = info->sw;
+	int err = 0;
+
+	if (_IOC_TYPE(cmd) != DEV_IOC_MAGIC)
+		return -ENOTTY;
+	if (_IOC_NR(cmd) > DEV_IOC_MAX)
+		return -ENOTTY;
+	if (_IOC_DIR(cmd) & _IOC_READ)
+		err = !access_ok(VERIFY_WRITE, (void *) arg, _IOC_SIZE(cmd));
+	else if (_IOC_DIR(cmd) & _IOC_WRITE)
+		err = !access_ok(VERIFY_READ, (void *) arg, _IOC_SIZE(cmd));
+	if (err) {
+		printk(KERN_ALERT "err fault\n");
+		return -EFAULT;
+	}
+	if (down_interruptible(&info->sem))
+		return -ERESTARTSYS;
+
+	err = sw_dev_req(sw, 0, (char *) arg, info);
+	up(&info->sem);
+	return err;
+}  /* sw_dev_ioctl */
+
+static ssize_t sw_dev_write(struct file *filp, const char *buf, size_t count,
+	loff_t *offp)
+{
+	struct sw_dev_info *info = (struct sw_dev_info *)
+		filp->private_data;
+	ssize_t result = 0;
+	size_t size;
+	int rc;
+
+	if (!count)
+		return result;
+
+	if (down_interruptible(&info->sem))
+		return -ERESTARTSYS;
+
+	if (*offp >= info->write_len) {
+		result = -ENOSPC;
+		goto dev_write_done;
+	}
+	if (*offp + count > info->write_len)
+		count = info->write_len - *offp;
+	if (copy_from_user(info->write_buf, buf, count)) {
+		result = -EFAULT;
+		goto dev_write_done;
+	}
+	size = 0;
+	result = size;
+	rc = 0;
+	if (rc)
+		result = rc;
+
+dev_write_done:
+	up(&info->sem);
+	return result;
+}  /* sw_dev_write */
+
+static const struct file_operations sw_dev_fops = {
+	.read		= sw_dev_read,
+	.write		= sw_dev_write,
+#ifdef HAVE_UNLOCKED_IOCTL
+	.unlocked_ioctl	= sw_dev_ioctl,
+#else
+	.ioctl		= sw_dev_ioctl,
+#endif
+	.open		= sw_dev_open,
+	.release	= sw_dev_release,
+};
+
+static struct class *sw_class;
+
+static int init_sw_dev(int dev_major, char *dev_name)
+{
+	int result;
+
+	result = register_chrdev(dev_major, dev_name, &sw_dev_fops);
+	if (result < 0) {
+		printk(KERN_WARNING "%s: can't get major %d\n", dev_name,
+			dev_major);
+		return result;
+	}
+	if (0 == dev_major)
+		dev_major = result;
+	sw_class = class_create(THIS_MODULE, dev_name);
+	if (IS_ERR(sw_class)) {
+		unregister_chrdev(dev_major, dev_name);
+		return -ENODEV;
+	}
+	device_create(sw_class, NULL, MKDEV(dev_major, 0), NULL, dev_name);
+	return dev_major;
+}  /* init_sw_dev */
+
+static void exit_sw_dev(int dev_major, char *dev_name)
+{
+	device_destroy(sw_class, MKDEV(dev_major, 0));
+	class_destroy(sw_class);
+	unregister_chrdev(dev_major, dev_name);
+}  /* exit_sw_dev */
+
+static void sw_init_dev(struct ksz_sw *sw)
+{
+	sw_priv = sw;
+	sprintf(sw->dev_name, "sw_dev");
+	sw->dev_major = init_sw_dev(0, sw->dev_name);
+	sw->msg_buf = kzalloc(MAX_SW_LEN, GFP_KERNEL);
+}  /* sw_init_dev */
+
+static void sw_exit_dev(struct ksz_sw *sw)
+{
+	kfree(sw->msg_buf);
+	if (sw->dev_major >= 0)
+		exit_sw_dev(sw->dev_major, sw->dev_name);
+}  /* sw_exit_dev */
+
 /*
  * This enables multiple network device mode for the switch, which contains at
  * least two physical ports.  Some users like to take control of the ports for
@@ -7346,6 +7915,10 @@ static struct ksz_sw_net_ops sw_net_ops = {
 };
 
 static struct ksz_sw_ops sw_ops = {
+	.init			= sw_init_dev,
+	.exit			= sw_exit_dev,
+	.dev_req		= sw_dev_req,
+
 	.acquire		= sw_acquire,
 	.release		= sw_release,
 

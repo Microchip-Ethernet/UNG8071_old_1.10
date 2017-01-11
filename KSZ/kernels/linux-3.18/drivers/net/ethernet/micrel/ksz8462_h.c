@@ -109,7 +109,7 @@
 
 #define DRV_NAME			"ksz8462_hli"
 #define DRV_VERSION			"1.0.0"
-#define DRV_RELDATE			"Dec 22, 2016"
+#define DRV_RELDATE			"Jan 8, 2017"
 
 #define MAX_RECV_FRAMES			180 /* 32 */
 #define MAX_BUF_SIZE			2048
@@ -4097,9 +4097,14 @@ static int ks846x_probe(struct platform_device *pdev)
 	}
 	sema_init(&ks->proc_sem, 1);
 	if (TOTAL_PORT_NUM == sw->mib_port_cnt) {
+		sw->ops->init(sw);
 		err = init_sw_sysfs(sw, &ks->sysfs, &info->netdev[0]->dev);
 		if (err)
 			goto err_register;
+
+#ifdef CONFIG_KSZ_STP
+		ksz_stp_init(&sw->info->rstp, sw);
+#endif
 	}
 	netdev = info->netdev[0];
 
@@ -4108,10 +4113,6 @@ static int ks846x_probe(struct platform_device *pdev)
 	hw->RX_MAX = rx_max;
 	ks->use_napi = napi;
 	netif_napi_add(netdev, &ks->napi, rx_napi_proc, rx_max);
-
-#ifdef CONFIG_KSZ_STP
-	ksz_stp_init(&sw->info->rstp, sw);
-#endif
 
 #ifdef CONFIG_1588_PTP
 	err = init_ptp_sysfs(&ks->ptp_sysfs, &info->netdev[0]->dev);
@@ -4206,16 +4207,18 @@ static int ks846x_remove(struct platform_device *pdev)
 	ksz_stop_timer(&ks->mib_timer_info);
 	flush_work(&ks->mib_read);
 
-#ifdef CONFIG_KSZ_STP
-	ksz_stp_exit(&sw->info->rstp);
-#endif
-
 	iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	release_mem_region(iomem->start, resource_size(iomem));
 	iomem = platform_get_resource(pdev, IORESOURCE_MEM, 1);
 	release_mem_region(iomem->start, resource_size(iomem));
-	if (TOTAL_PORT_NUM == sw->mib_port_cnt)
+	if (TOTAL_PORT_NUM == sw->mib_port_cnt) {
+		sw->ops->exit(sw);
 		exit_sw_sysfs(sw, &ks->sysfs, &info->netdev[0]->dev);
+
+#ifdef CONFIG_KSZ_STP
+		ksz_stp_exit(&sw->info->rstp);
+#endif
+	}
 	for (i = 0; i < sw->dev_count + sw->dev_offset; i++) {
 		if (info->netdev[i])
 			netdev_free(info->netdev[i]);

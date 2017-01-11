@@ -1,7 +1,7 @@
 /**
  * Microchip switch common sysfs code
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2011-2013 Micrel, Inc.
@@ -581,6 +581,13 @@ NETSW_WR_ENTRY(force_flow_ctrl);
 NETSW_WR_ENTRY(fw_unk_dest);
 NETSW_WR_ENTRY(fw_inv_vid);
 
+NETSW_RD_ENTRY(duplex);
+NETSW_RD_ENTRY(speed);
+NETSW_WR_ENTRY(linkmd);
+NETSW_WR_ENTRY(macaddr);
+NETSW_WR_ENTRY(src_filter_0);
+NETSW_WR_ENTRY(src_filter_1);
+
 #ifdef CONFIG_KSZ_STP
 NETSW_RD_ENTRY(stp_info);
 NETSW_WR_ENTRY(stp_on);
@@ -592,13 +599,6 @@ NETSW_WR_ENTRY(stp_auto_edge);
 NETSW_WR_ENTRY(stp_mcheck);
 NETSW_WR_ENTRY(stp_admin_p2p);
 #endif
-
-NETSW_RD_ENTRY(duplex);
-NETSW_RD_ENTRY(speed);
-NETSW_WR_ENTRY(linkmd);
-NETSW_WR_ENTRY(macaddr);
-NETSW_WR_ENTRY(src_filter_0);
-NETSW_WR_ENTRY(src_filter_1);
 
 NETMAC_WR_ENTRY(fid);
 NETMAC_WR_ENTRY(use_fid);
@@ -747,6 +747,13 @@ static struct attribute *sw_attrs[] = {
 	&sw_attr_fw_inv_vid.attr,
 	&sw_attr_mib.attr,
 
+	&sw_attr_duplex.attr,
+	&sw_attr_speed.attr,
+	&sw_attr_linkmd.attr,
+	&sw_attr_macaddr.attr,
+	&sw_attr_src_filter_0.attr,
+	&sw_attr_src_filter_1.attr,
+
 #ifdef CONFIG_KSZ_STP
 	&sw_attr_stp_info.attr,
 	&sw_attr_stp_on.attr,
@@ -758,13 +765,6 @@ static struct attribute *sw_attrs[] = {
 	&sw_attr_stp_mcheck.attr,
 	&sw_attr_stp_admin_p2p.attr,
 #endif
-
-	&sw_attr_duplex.attr,
-	&sw_attr_speed.attr,
-	&sw_attr_linkmd.attr,
-	&sw_attr_macaddr.attr,
-	&sw_attr_src_filter_0.attr,
-	&sw_attr_src_filter_1.attr,
 	NULL
 };
 

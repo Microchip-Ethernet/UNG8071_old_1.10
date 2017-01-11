@@ -144,6 +144,7 @@ static void dbg_print_work(struct work_struct *work)
 		printk(KERN_INFO "---\n");
 		print_buf(db.int_buf, &db.int_msg, &db.int_cnt,
 			&db.last_int_line);
+		printk(KERN_INFO "+++\n");
 	}
 }  /* dbg_print_work */
 

@@ -1,7 +1,7 @@
 /**
  * Microchip KSZ8795 definition file
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2014-2015 Micrel, Inc.
@@ -229,6 +229,9 @@
 #define REG_PORT_2_STATUS_0		0x28
 #define REG_PORT_3_STATUS_0		0x38
 #define REG_PORT_4_STATUS_0		0x48
+
+/* For KSZ8765. */
+#define PORT_FIBER_MODE			(1 << 7)
 
 #define PORT_REMOTE_ASYM_PAUSE		(1 << 5)
 #define PORT_REMOTE_SYM_PAUSE		(1 << 4)

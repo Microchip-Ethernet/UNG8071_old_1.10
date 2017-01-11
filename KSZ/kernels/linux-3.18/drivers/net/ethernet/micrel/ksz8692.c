@@ -8001,10 +8001,6 @@ static void netdev_free(struct net_device *dev)
 			}
 #endif
 
-#ifdef CONFIG_HAVE_KSZ9897
-			sw->ops->exit(sw);
-#endif
-
 #ifdef CONFIG_KSZ_IBA_ONLY
 			ksz_remove(sw->dev);
 #endif
@@ -8743,10 +8739,6 @@ static int netdev_probe(struct platform_device *pdev)
 		err = init_sw_sysfs(sw, &hw_priv->sysfs, &dev->dev);
 		if (err)
 			goto netdev_probe_reg_err;
-
-#ifdef CONFIG_HAVE_KSZ9897
-		sw->ops->init(sw);
-#endif
 
 #ifdef CONFIG_1588_PTP
 		if (sw->features & PTP_HW) {

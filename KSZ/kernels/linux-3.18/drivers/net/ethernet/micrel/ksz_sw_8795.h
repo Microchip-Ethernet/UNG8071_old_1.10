@@ -1,7 +1,7 @@
 /**
  * Microchip KSZ8795 switch common header
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2010-2015 Micrel, Inc.
@@ -63,6 +63,7 @@ struct sw_dev_info {
 };
 
 
+#include "ksz_sw_api.h"
 #ifdef CONFIG_KSZ_STP
 #include "ksz_stp.h"
 #endif
@@ -352,6 +353,7 @@ struct ksz_port_info {
 	u16 own_speed;
 	u8 phy_id;
 	u32 report:1;
+	u32 fiber:1;
 };
 
 struct ksz_sw;
@@ -893,6 +895,10 @@ struct sw_attributes {
 	int acl_info;
 	int acl_table;
 
+	int duplex;
+	int speed;
+	int linkmd;
+
 #ifdef CONFIG_KSZ_STP
 	int stp_info;
 	int stp_on;
@@ -904,10 +910,6 @@ struct sw_attributes {
 	int stp_mcheck;
 	int stp_admin_p2p;
 #endif
-
-	int duplex;
-	int speed;
-	int linkmd;
 
 };
 

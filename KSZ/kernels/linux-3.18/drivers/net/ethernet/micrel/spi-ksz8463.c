@@ -1,7 +1,7 @@
 /**
  * Microchip KSZ8463 SPI driver
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  * Copyright (c) 2010-2015 Micrel, Inc.
  *
  * Copyright 2009 Simtec Electronics
@@ -60,7 +60,7 @@
 #define KS8463MLI_DEV0			"ksz8463"
 #define KS8463MLI_DEV2			"ksz8463_2"
 
-#define DRV_RELDATE			"Dec 22, 2016"
+#define DRV_RELDATE			"Jan 8, 2017"
 
 /* -------------------------------------------------------------------------- */
 
@@ -542,6 +542,14 @@ static void link_update_work(struct work_struct *work)
 		if (phydev->adjust_link)
 			phydev->adjust_link(phydev->attached_dev);
 	}
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->features & STP_SUPPORT) {
+		struct ksz_stp_info *stp = &sw->info->rstp;
+
+		stp->ops->link_change(stp, true);
+	}
+#endif
 
 #ifdef CONFIG_KSZ_HSR
 	if (sw->features & HSR_HW) {
@@ -1271,10 +1279,6 @@ static void ksz8463_dev_monitor(unsigned long ptr)
 				schedule_work(&priv->port->link_update);
 		}
 	}
-#if 0
-	if (hw_priv->intr_working && !(hw_priv->sw.features & STP_SUPPORT))
-		return;
-#endif
 	if (!hw_priv->intr_working)
 		schedule_delayed_work(&hw_priv->link_read, 0);
 

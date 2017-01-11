@@ -1,7 +1,7 @@
 /**
  * Microchip KSZ8895 SPI driver
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -52,7 +52,7 @@
 
 #define KS8895_DEV			"ksz8895"
 
-#define DRV_RELDATE			"Dec 22, 2016"
+#define DRV_RELDATE			"Jan 8, 2017"
 
 /* -------------------------------------------------------------------------- */
 
@@ -557,6 +557,14 @@ static void link_update_work(struct work_struct *work)
 		if (phydev->adjust_link)
 			phydev->adjust_link(phydev->attached_dev);
 	}
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->features & STP_SUPPORT) {
+		struct ksz_stp_info *stp = &sw->info->rstp;
+
+		stp->ops->link_change(stp, true);
+	}
+#endif
 
 #ifdef CONFIG_KSZ_HSR
 	if (sw->features & HSR_HW) {
@@ -1669,6 +1677,7 @@ static int ksz8895_probe(struct spi_device *spi)
 	sw_setup(sw);
 	sw_enable(sw);
 	sw->ops->release(sw);
+	sw->ops->init(sw);
 
 #ifndef CONFIG_KSZ_SWITCH_EMBEDDED
 	init_sw_sysfs(sw, &ks->sysfs, ks->dev);
@@ -1750,6 +1759,7 @@ static int ksz8895_remove(struct spi_device *spi)
 	ksz_stop_timer(&ks->mib_timer_info);
 	flush_work(&ks->mib_read);
 
+	sw->ops->exit(sw);
 	sysfs_remove_bin_file(&ks->dev->kobj, &kszsw_registers_attr);
 #ifndef CONFIG_KSZ_SWITCH_EMBEDDED
 	exit_sw_sysfs(sw, &ks->sysfs, ks->dev);
