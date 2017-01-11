@@ -269,6 +269,7 @@ static void print_dlr_help(void)
 	printf("\tR\tClear Rapid Fault\n");
 	printf("\tS\tRestart SignOn\n");
 	printf("\tG\tClear Gateway Fault\n");
+	printf("\tN\tChange notifications\n");
 	printf("\tsw\tswitch to sw\n");
 	printf("\th\thelp\n");
 	printf("\tq\tquit\n");
@@ -543,7 +544,8 @@ static void print_sw_help(void)
 	printf("\tr <p> [0,1]\trx\n");
 	printf("\tt <p> [0,1]\ttx\n");
 	printf("\ts <p> [0,1]\tpower\n");
-	printf("\tdlr\tswitch to dlr\n");
+	printf("\tN\t\tChange notifications\n");
+	printf("\tdlr\t\tswitch to dlr\n");
 	printf("\th\t\thelp\n");
 	printf("\tq\t\tquit\n");
 }
@@ -656,9 +658,6 @@ static SOCKET create_sock(char *devname, char *multi_ip, char *local_ip,
 	SOCKET sockfd;
 	struct sockaddr_in servaddr;
 	struct sockaddr_in6 servaddr6;
-#if 0
-	struct in_addr local;
-#endif
 	char *sockopt;
 	int family = AF_INET;
 	int reuse = 1;

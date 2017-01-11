@@ -2975,9 +2975,11 @@ int main(int argc, char *argv[])
 		selfClockIdentity.addr[4] = 0xFE;
 		memcpy(&selfClockIdentity.addr[5], &info.hwaddr[3], 3);
 		if (strcmp(devname, argv[1])) {
-			get_host_info(devname, &info);
-			memcpy(host_addr, &info.addr.sin_addr, 4);
-			inet_ntop(AF_INET, &info.addr.sin_addr,
+			struct ip_info parent_info;
+
+			get_host_info(devname, &parent_info);
+			memcpy(host_addr, &parent_info.addr.sin_addr, 4);
+			inet_ntop(AF_INET, &parent_info.addr.sin_addr,
 				host_ip4, sizeof(host_ip4));
 			printf("use %s\n", host_ip4);
 		} else if (AF_INET == family)
