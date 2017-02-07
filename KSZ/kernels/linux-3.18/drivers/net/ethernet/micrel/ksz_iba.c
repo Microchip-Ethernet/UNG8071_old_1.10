@@ -1,7 +1,7 @@
 /**
  * Microchip IBA code
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2013-2015 Micrel, Inc.
@@ -571,7 +571,7 @@ static int iba_test(struct ksz_iba_info *info, int n)
 if (mutex_is_locked(sw->reglock))
 printk(" reg locked\n");
 		mutex_lock(sw->reglock);
-		info->use_iba = false;
+		info->use_iba = 0;
 		status = sw_r32(sw, REG_SW_IBA_STATUS__4);
 		dbg_msg("status %08x q:%d p:%d d:%d f:%d o:%d m:%d\n", status,
 			!!(status & SW_IBA_REQ),
@@ -586,7 +586,7 @@ printk(" reg locked\n");
 			SW_IBA_PACKET_SIZE_M) * 4);
 		status = sw_r32(sw, REG_SW_IBA_RESULT__4);
 		dbg_msg("result %08x %u\n", status, status >> SW_IBA_SIZE_S);
-		info->use_iba = true;
+		info->use_iba = 1;
 		mutex_unlock(sw->reglock);
 	} while (0);
 #endif
@@ -808,7 +808,7 @@ if (sw->intr_using < 2 && mutex_is_locked(sw->reglock))
 printk(" reg locked: %d\n", sw->intr_using);
 	if (sw->intr_using < 2)
 		mutex_lock(sw->reglock);
-	info->use_iba = false;
+	info->use_iba = 0;
 	status = sw_r32(sw, REG_SW_IBA_STATUS__4);
 	dbg_msg("status %08x q:%d p:%d d:%d f:%d o:%d m:%d\n", status,
 		!!(status & SW_IBA_REQ),
@@ -959,6 +959,8 @@ static u32 iba_r(struct ksz_iba_info *info, unsigned reg, u32 size)
 	int rc;
 	static int iba_r_enter;
 
+	if (4 == info->use_iba)
+		printk(KERN_WARNING " %s %x\n", __func__, reg);
 #if 1
 if (info->respid != info->seqid || iba_r_enter) {
 dbg_msg(" iba_r %x %x %d; %x %x; %d\n", info->respid, info->seqid, info->cnt, reg,
@@ -1043,6 +1045,8 @@ static void iba_w(struct ksz_iba_info *info, unsigned reg, unsigned val,
 	u32 data[3];
 	int rc;
 
+	if (4 == info->use_iba)
+		printk(KERN_WARNING " %s %x\n", __func__, reg);
 	data[0] = size;
 	data[1] = reg;
 	data[2] = val;
@@ -2862,7 +2866,7 @@ dbg_msg(" iba rx: %x %x\n", info->seqid, iba->tag.seqid);
 	len = ntohs(iba->length);
 	cnt = skb->len;
 	if (len != cnt) {
-		if (skb->len > 60 && len + 4 != cnt)
+		if (skb->len > 61 && len + 4 != cnt)
 			dbg_msg("len: %d != %d\n", len, cnt);
 		if (len > cnt)
 			len = cnt;

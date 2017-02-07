@@ -370,6 +370,9 @@ void br_dev_setup(struct net_device *dev)
 	dev->hw_features = COMMON_FEATURES | NETIF_F_HW_VLAN_CTAG_TX |
 			   NETIF_F_HW_VLAN_STAG_TX;
 	dev->vlan_features = COMMON_FEATURES;
+#ifdef CONFIG_KSZ_SWITCH
+	dev->hard_header_len += 6;
+#endif
 
 	br->dev = dev;
 	spin_lock_init(&br->lock);

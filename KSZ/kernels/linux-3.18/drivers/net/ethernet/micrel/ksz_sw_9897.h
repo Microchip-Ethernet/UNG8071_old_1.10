@@ -87,7 +87,7 @@ struct sw_dev_info {
 #define RESERVED_MCAST_TABLE_ENTRIES	0x30
 #define ACTUAL_MCAST_TABLE_ENTRIES	8
 #define SWITCH_MAC_TABLE_ENTRIES	16
-#define MULTI_MAC_TABLE_ENTRIES		40
+#define MULTI_MAC_TABLE_ENTRIES		80
 
 /**
  * struct ksz_mac_table - Static MAC table data structure
@@ -119,6 +119,8 @@ struct ksz_mac_table {
 #define FWD_STP_DEV			(1 << 2)
 #define FWD_MAIN_DEV			(1 << 3)
 #define FWD_VLAN_DEV			(1 << 4)
+#define FWD_MCAST			(1 << 5)
+#define FWD_UCAST			(1 << 6)
 
 struct ksz_alu_table {
 	u16 index;
@@ -318,14 +320,17 @@ struct ksz_port_cfg {
 /**
  * struct ksz_sw_info - KSZ9897 switch information data structure
  * @mac_table:	MAC table entries information.
+ * @alu_table:	ALU table entries information.
  * @multi_net:	Network multicast addresses used.
  * @multi_sys:	System multicast addresses used.
- * @blocked_rx:	Blocked receive addresses.
- * @blocked_rx_cnt: Blocked receive addresses count.
- * @vlan_table:	VLAN table entries information.
  * @port_cfg:	Port configuration information.
- * @rx_table:	Receive frame information.
- * @tx_table:	Transmit frame information.
+ * @rstp:	RSTP information.
+ * @iba:	IBA information.
+ * @dlr:	DLR information.
+ * @hsr:	HSR information.
+ * @hsr_entry:	HSR table entry information.
+ * @mac_entry:	MAC table entry information.
+ * @vlan_entry:	VLAN table entry information.
  * @diffserv:	DiffServ priority settings.  Possible values from 6-bit of ToS
  *		(bit7 ~ bit2) field.
  * @p_802_1p:	802.1P priority settings.  Possible values from 3-bit of 802.1p
@@ -339,10 +344,13 @@ struct ksz_port_cfg {
 struct ksz_sw_info {
 	struct ksz_mac_table mac_table[MULTI_MAC_TABLE_ENTRIES];
 	struct ksz_alu_table alu_table[MULTI_MAC_TABLE_ENTRIES];
+	int forward;
 	int multi_net;
 	int multi_sys;
 	struct ksz_port_cfg port_cfg[TOTAL_PORT_NUM];
+#ifdef CONFIG_KSZ_STP
 	struct ksz_stp_info rstp;
+#endif
 #ifdef CONFIG_KSZ_IBA
 	struct ksz_iba_info iba;
 #endif
@@ -484,6 +492,7 @@ struct ksz_sw_net_ops {
 	int (*setup_dev)(struct ksz_sw *sw, struct net_device *dev,
 		char *dev_name, struct ksz_port *port, int i, int port_cnt,
 		int mib_port_cnt);
+	void (*leave_dev)(struct ksz_sw *sw);
 	u8 (*get_state)(struct net_device *dev);
 	void (*set_state)(struct net_device *dev, u8 state);
 	struct ksz_port *(*get_priv_port)(struct net_device *dev);
@@ -624,6 +633,8 @@ struct ksz_sw_ops {
 
 	void (*cfg_src_filter)(struct ksz_sw *sw, int set);
 	void (*flush_table)(struct ksz_sw *sw, int port);
+	void (*fwd_unk_mcast)(struct ksz_sw *sw);
+	void (*fwd_unk_ucast)(struct ksz_sw *sw);
 	void (*fwd_unk_vid)(struct ksz_sw *sw);
 
 };
@@ -670,6 +681,8 @@ struct ksz_sw_cached_regs {
 #define PAUSE_FLOW_CTRL			(1 << 0)
 #define FAST_AGING			(1 << 1)
 #define MCAST_FILTER			(1 << 2)
+#define HAVE_MORE_THAN_2_PORTS		(1 << 3)
+#define DLR_FORWARD			(1 << 4)
 
 #define BAD_SPI				(1 << 15)
 #define IBA_TEST			(1 << 16)
@@ -721,6 +734,8 @@ struct ksz_sw_cached_regs {
  * @PORT_MASK:		A predefined value indicating the port mask.
  * @TAIL_TAG_LOOKUP:	A predefined value indicating tx tail tag lookup.
  * @TAIL_TAG_OVERRIDE:	A predefined value indicating tx tail tag override.
+ * @live_ports:		Bitmap of ports with link enabled.
+ * @on_ports:		Bitmap of ports with 802.1X enabled.
  * @rx_ports:		Bitmap of ports with receive enabled.
  * @tx_ports:		Bitmap of ports with transmit enabled.
  * @dev_count:		Number of network devices this switch supports.
@@ -788,7 +803,9 @@ struct ksz_sw {
 	u32 intr_mask;
 	u32 port_intr_mask;
 	u32 phy_intr;
+	u16 live_ports;
 	u16 on_ports;
+	u16 open_ports;
 	u16 rx_ports;
 	u16 tx_ports;
 	u8 tx_pad[60];
@@ -953,6 +970,7 @@ struct lan_attributes {
 	int vlan_start;
 	int avb;
 	int stp;
+	int two_dev;
 	int authen;
 
 	int alu_fid;

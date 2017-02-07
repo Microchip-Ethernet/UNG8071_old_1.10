@@ -1,7 +1,7 @@
 /**
  * Microchip MRP driver code
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2014-2015 Micrel, Inc.
@@ -3424,6 +3424,20 @@ hw_access_end:
 	return ret;
 }  /* proc_mrp_hw_access */
 
+static void exit_mrp_work(struct mrp_info *mrp)
+{
+	struct mrp_access *access;
+	struct mrp_work *work;
+	int i;
+
+	access = &mrp->hw_access;
+	for (i = 0; i < MRP_WORK_NUM; i++) {
+		work = &access->works[i];
+		flush_work(&work->work);
+	}
+	flush_work(&access->work);
+}  /* exit_mrp_work */
+
 static void init_mrp_work(struct mrp_info *mrp)
 {
 	struct mrp_access *access;
@@ -3901,7 +3915,7 @@ static void mrp_open(struct mrp_info *mrp)
 #endif
 }  /* mrp_open */
 
-static void mrp_clr_blocked_addr(struct mrp_info *mrp)
+static void mrp_clr_blocked_addr(struct mrp_info *mrp, int hw_access)
 {
 	struct mrp_node *prev;
 	struct mrp_node *next;
@@ -3912,8 +3926,9 @@ static void mrp_clr_blocked_addr(struct mrp_info *mrp)
 	while (next) {
 		mac = next->data;
 		if (mac->srp_ports & SRP_PORT_BLACKLIST) {
-			mrp_cfg_dest_addr(mrp, mac->index, mac->addr, 0,
-				mac->fid);
+			if (hw_access)
+				mrp_cfg_dest_addr(mrp, mac->index, mac->addr,
+					0, mac->fid);
 
 			/* Remove node from list. */
 			prev->next = next->next;
@@ -3959,12 +3974,12 @@ static void mrp_chk_blocked_addr(struct mrp_info *mrp)
 		mib->first_drop = 0;
 		mib->last_drop = 0;
 	}
-	mrp_clr_blocked_addr(mrp);
+	mrp_clr_blocked_addr(mrp, true);
 }  /* mrp_chk_blocked_addr */
 
-static void mrp_close(struct mrp_info *mrp)
+static void mrp_close(struct mrp_info *mrp, int hw_access)
 {
-	mrp_clr_blocked_addr(mrp);
+	mrp_clr_blocked_addr(mrp, hw_access);
 #ifdef PROC_MRP_
 {
 struct mrp_port *p;
@@ -4178,9 +4193,7 @@ static void setup_mrp(struct mrp_info *mrp, struct net_device *dev)
 		err = mrp_init_applicant(port, dev, &vlan_mrp_app);
 		app = rcu_dereference(port->applicants[vlan_mrp_app.type]);
 		mvrp_init_application(app, mrp, p, mvrp_acton);
-#if 1
 		mrp_periodic_event(app, MRP_EVENT_PERIODIC_ENABLE);
-#endif
 
 		err = mrp_init_applicant(port, dev, &mac_mrp_app);
 		app = rcu_dereference(port->applicants[mac_mrp_app.type]);
@@ -4191,13 +4204,32 @@ static void setup_mrp(struct mrp_info *mrp, struct net_device *dev)
 		err = mrp_init_applicant(port, dev, &srp_mrp_app);
 		app = rcu_dereference(port->applicants[srp_mrp_app.type]);
 		msrp_init_application(app, mrp, p, msrp_acton);
-#if 1
 		mrp_periodic_event(app, MRP_EVENT_PERIODIC_DISABLE);
-#endif
 #endif
 	}
 #endif
 }  /* setup_mrp */
+
+static void leave_mrp(struct mrp_info *mrp)
+{
+#ifdef PROC_MRP
+	u8 lp;
+	u8 p;
+	struct ksz_sw *sw = container_of(mrp, struct ksz_sw, mrp);
+
+	for (p = 0; p < sw->mib_port_cnt; p++) {
+		lp = sw_get_net_port(sw, 0, mrp->ports, p);
+		if (lp > mrp->ports && p != sw->HOST_PORT)
+			continue;
+		mrp_uninit_applicant(&mrp->mrp_ports[p], &vlan_mrp_app);
+		mrp_uninit_applicant(&mrp->mrp_ports[p], &mac_mrp_app);
+
+#ifdef CONFIG_KSZ_MSRP
+		mrp_uninit_applicant(&mrp->mrp_ports[p], &srp_mrp_app);
+#endif
+	}
+#endif
+}  /* leave_mrp */
 
 static void mrp_init(struct mrp_info *mrp)
 {
@@ -4288,21 +4320,7 @@ bw_str1, bw_str2, bw_str3, bw_str4, bw_str5);
 
 static void mrp_exit(struct mrp_info *mrp)
 {
-#ifdef PROC_MRP
-	u8 p;
-	struct ksz_sw *sw = container_of(mrp, struct ksz_sw, mrp);
-
-	for (p = 0; p < sw->mib_port_cnt; p++) {
-		if (p >= mrp->ports && p != sw->HOST_PORT)
-			continue;
-		mrp_uninit_applicant(&mrp->mrp_ports[p], &vlan_mrp_app);
-		mrp_uninit_applicant(&mrp->mrp_ports[p], &mac_mrp_app);
-
-#ifdef CONFIG_KSZ_MSRP
-		mrp_uninit_applicant(&mrp->mrp_ports[p], &srp_mrp_app);
-#endif
-	}
-#endif
+	exit_mrp_work(mrp);
 	if (mrp->access) {
 		destroy_workqueue(mrp->access);
 		mrp->access = NULL;

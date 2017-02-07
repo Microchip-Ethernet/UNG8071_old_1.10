@@ -1,7 +1,7 @@
 /**
  * Microchip PTP common code
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2009-2015 Micrel, Inc.
@@ -1890,6 +1890,114 @@ dbg_msg("clk_ctrl: %x\n", data);
 	ptp->ops->release(ptp);
 }  /* ptp_hw_enable */
 
+static void init_tx_ts(struct ptp_tx_ts *ts)
+{
+	ts->ts.timestamp = 0;
+	ts->req_time = 0;
+	ts->resp_time = 0;
+	ts->missed = false;
+	ts->hdr.messageType = 7;
+}  /* init_tx_ts */
+
+static void ptp_init_hw(struct ptp_info *ptp)
+{
+	int port;
+	u32 reg;
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
+
+	ptp->ops->acquire(ptp);
+	for (port = 0; port < ptp->ports; port++) {
+		int index;
+
+		if ((sw->features & USE_FEWER_PORTS) && port == sw->last_port)
+			port = sw->HOST_PORT;
+		ptp->hw_sync[port].ts.timestamp = 0;
+		ptp->hw_sync[port].sending = false;
+		ptp->hw_dreq[port].ts.timestamp = 0;
+		ptp->hw_dreq[port].sending = false;
+		ptp->hw_resp[port].ts.timestamp = 0;
+		ptp->hw_resp[port].sending = false;
+		init_tx_ts(&ptp->tx_sync[port]);
+		init_tx_ts(&ptp->tx_dreq[port]);
+		init_tx_ts(&ptp->tx_resp[port]);
+		reg = PORT_CTRL_ADDR(port, REG_PTP_PORT_XDELAY_TS);
+		ptp->xdelay_ts[port] = sw->reg->r32(sw, reg);
+		reg = PORT_CTRL_ADDR(port, REG_PTP_PORT_PDRESP_TS);
+		ptp->pdresp_ts[port] = sw->reg->r32(sw, reg);
+		index = get_speed_index(ptp, port);
+		ptp->rx_latency[port][index] = get_ptp_ingress(ptp, port);
+		ptp->tx_latency[port][index] = get_ptp_egress(ptp, port);
+		ptp->asym_delay[port][index] = get_ptp_asym(ptp, port);
+		ptp->peer_delay[port] = get_ptp_link(ptp, port);
+		dbg_msg("%d = %d %d %d; %u\n", port,
+			ptp->rx_latency[port][index],
+			ptp->tx_latency[port][index],
+			ptp->asym_delay[port][index],
+			ptp->peer_delay[port]);
+		set_ptp_link(ptp, port, 0);
+		ptp->peer_delay[port] = 0;
+	}
+	ptp->ops->release(ptp);
+}  /* ptp_init_hw */
+
+static void ptp_check(struct ptp_info *ptp)
+{
+	struct ptp_utime cur;
+	struct ptp_utime now;
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
+
+	ptp->features |= PTP_ADJ_HACK;
+	ptp->ops->acquire(ptp);
+	ptp->reg->get_time(ptp, &cur);
+	ptp->reg->adjust_time(ptp, true, 10, 0, true);
+	ptp->reg->get_time(ptp, &now);
+dbg_msg("%08x:%08x %08x:%08x\n", cur.sec, cur.nsec, now.sec, now.nsec);
+	if (now.sec - cur.sec >= 10) {
+		ptp->features &= ~PTP_ADJ_HACK;
+		ptp->features |= PTP_ADJ_SEC;
+		ptp->reg->adjust_time(ptp, false, 10, 0, true);
+		ptp->version = 1;
+	}
+/*
+ * THa  2013/01/08
+ * The Rev. D chip has a problem of decrementing nanosecond that is bigger than
+ * the current nanosecond when continual clock adjustment is enabled.  The
+ * workaround is to use the PTP_ADJ_HACK code although the actual problem
+ * avoided is now different.
+ */
+	if (!(ptp->features & PTP_ADJ_HACK)) {
+		u16 data;
+
+		data = sw->cached.ptp_clk_ctrl;
+		sw->cached.ptp_clk_ctrl |= PTP_CLK_ADJ_ENABLE;
+		sw->reg->w16(sw, REG_PTP_CLK_CTRL, sw->cached.ptp_clk_ctrl);
+		if (cur.sec < 1)
+			cur.sec = 1;
+		cur.nsec = 0;
+		ptp->reg->set_time(ptp, &cur);
+		ptp->reg->adjust_time(ptp, false, 0, 800000000, false);
+		ptp->reg->get_time(ptp, &now);
+		dbg_msg("%x:%u %x:%u\n", cur.sec, cur.nsec, now.sec, now.nsec);
+		if (abs(now.sec - cur.sec) > 2) {
+			ptp->reg->get_time(ptp, &now);
+			dbg_msg("! %x:%u\n", now.sec, now.nsec);
+			ptp->features |= PTP_ADJ_HACK;
+			sw->reg->w16(sw, REG_PTP_CLK_CTRL, data);
+
+			sw->reg->w16(sw, REG_PTP_CLK_CTRL,
+				data | PTP_CLK_ADJ_ENABLE);
+			ptp->reg->set_time(ptp, &cur);
+			ptp->reg->adjust_time(ptp, false, 0, 800000000, true);
+			ptp->reg->get_time(ptp, &now);
+			dbg_msg("ok %x:%u\n", now.sec, now.nsec);
+		}
+		sw->cached.ptp_clk_ctrl = data;
+		sw->reg->w16(sw, REG_PTP_CLK_CTRL, data);
+	}
+	ptp->version = 2;
+	ptp->ops->release(ptp);
+}  /* ptp_check */
+
 static void ptp_start(struct ptp_info *ptp, int init)
 {
 	u32 ctrl;
@@ -1897,15 +2005,13 @@ static void ptp_start(struct ptp_info *ptp, int init)
 	struct ptp_utime t;
 	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
 
-#if defined(NO_DIRECT_ACCESS)
-do {
-if (!sw->info->iba.use_iba) {
-printk("%s\n", __func__);
-	ptp->started = true;
-return;
-}
-} while (0);
-#endif
+	if (!ptp->version) {
+		ptp_hw_enable(ptp);
+		ptp_check(ptp);
+		if (ptp->test_access_time)
+			ptp->test_access_time(ptp);
+		ptp_init_hw(ptp);
+	} else
 	if (init && (sw->features & NEW_CAP))
 		ptp_hw_enable(ptp);
 	ptp->ops->acquire(ptp);
@@ -1934,6 +2040,11 @@ return;
 	sw_w32(sw, REG_PTP_INT_STATUS__4, 0xffffffff);
 	if (sw->overrides & TAIL_TAGGING)
 		sw->overrides |= PTP_TAG;
+	ptp->tx_intr = PTP_PORT_XDELAY_REQ_INT;
+#if 0
+	ptp->tx_intr = PTP_PORT_XDELAY_REQ_INT | PTP_PORT_PDELAY_RESP_INT |
+		PTP_PORT_SYNC_INT;
+#endif
 	ptp_tx_intr_enable(ptp);
 	ptp->ops->release(ptp);
 
@@ -2074,6 +2185,8 @@ static int ptp_stop(struct ptp_info *ptp)
 {
 	flush_work(&ptp->adj_clk);
 	flush_work(&ptp->set_latency);
+	cancel_delayed_work_sync(&ptp->check_pps);
+	cancel_delayed_work_sync(&ptp->update_sec);
 	flush_workqueue(ptp->access);
 	ptp->update_sec_jiffies = 0;
 	ptp->ops->acquire(ptp);
@@ -2089,6 +2202,8 @@ static int ptp_stop(struct ptp_info *ptp)
 	/* Stop processing PTP interrupts. */
 	ptp->started = false;
 	ptp->first_drift = ptp->drift = 0;
+	ptp->tx_intr = 0;
+	ptp_tx_intr_enable(ptp);
 	ptp->ops->release(ptp);
 
 #ifdef DEBUG_MSG
@@ -2096,15 +2211,6 @@ static int ptp_stop(struct ptp_info *ptp)
 #endif
 	return false;
 }  /* ptp_stop */
-
-static void init_tx_ts(struct ptp_tx_ts *ts)
-{
-	ts->ts.timestamp = 0;
-	ts->req_time = 0;
-	ts->resp_time = 0;
-	ts->missed = false;
-	ts->hdr.messageType = 7;
-}  /* init_tx_ts */
 
 static struct ptp_dev_info *find_minor_dev(struct ptp_dev_info *info)
 {
@@ -2122,56 +2228,6 @@ static struct ptp_dev_info *find_minor_dev(struct ptp_dev_info *info)
 		dev = NULL;
 	return dev;
 }  /* find_minor_dev */
-
-static void ptp_init_hw(struct ptp_info *ptp)
-{
-	int port;
-	u32 reg;
-	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
-
-#if defined(NO_DIRECT_ACCESS)
-do {
-	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
-if (!sw->info->iba.use_iba) {
-printk("%s\n", __func__);
-return;
-}
-} while (0);
-#endif
-	ptp->ops->acquire(ptp);
-	for (port = 0; port < ptp->ports; port++) {
-		int index;
-
-		if ((sw->features & USE_FEWER_PORTS) && port == sw->last_port)
-			port = sw->HOST_PORT;
-		ptp->hw_sync[port].ts.timestamp = 0;
-		ptp->hw_sync[port].sending = false;
-		ptp->hw_dreq[port].ts.timestamp = 0;
-		ptp->hw_dreq[port].sending = false;
-		ptp->hw_resp[port].ts.timestamp = 0;
-		ptp->hw_resp[port].sending = false;
-		init_tx_ts(&ptp->tx_sync[port]);
-		init_tx_ts(&ptp->tx_dreq[port]);
-		init_tx_ts(&ptp->tx_resp[port]);
-		reg = PORT_CTRL_ADDR(port, REG_PTP_PORT_XDELAY_TS);
-		ptp->xdelay_ts[port] = sw->reg->r32(sw, reg);
-		reg = PORT_CTRL_ADDR(port, REG_PTP_PORT_PDRESP_TS);
-		ptp->pdresp_ts[port] = sw->reg->r32(sw, reg);
-		index = get_speed_index(ptp, port);
-		ptp->rx_latency[port][index] = get_ptp_ingress(ptp, port);
-		ptp->tx_latency[port][index] = get_ptp_egress(ptp, port);
-		ptp->asym_delay[port][index] = get_ptp_asym(ptp, port);
-		ptp->peer_delay[port] = get_ptp_link(ptp, port);
-		dbg_msg("%d = %d %d %d; %u\n", port,
-			ptp->rx_latency[port][index],
-			ptp->tx_latency[port][index],
-			ptp->asym_delay[port][index],
-			ptp->peer_delay[port]);
-		set_ptp_link(ptp, port, 0);
-		ptp->peer_delay[port] = 0;
-	}
-	ptp->ops->release(ptp);
-}  /* ptp_init_hw */
 
 static void ptp_init_state(struct ptp_info *ptp)
 {
@@ -4969,6 +5025,19 @@ hw_access_end:
 	return ret;
 }  /* proc_ptp_hw_access */
 
+static void exit_ptp_work(struct ptp_info *ptp)
+{
+	struct ptp_access *access;
+	struct ptp_work *work;
+	int i;
+
+	access = &ptp->hw_access;
+	for (i = 0; i < PTP_WORK_NUM; i++) {
+		work = &access->works[i];
+		flush_work(&work->work);
+	}
+}  /* exit_ptp_work */
+
 static void init_ptp_work(struct ptp_info *ptp)
 {
 	struct ptp_access *access;
@@ -5070,25 +5139,14 @@ static void ptp_update_sec(struct work_struct *work)
 	struct delayed_work *dwork = to_delayed_work(work);
 	struct ptp_info *ptp =
 		container_of(dwork, struct ptp_info, update_sec);
-#if defined(NO_DIRECT_ACCESS)
-	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
-#endif
 
 	if (ptp->update_sec_jiffies) {
 #ifndef NO_SEC_TIMESTAMP
 		ptp->cur_time.sec++;
 #else
-#if defined(NO_DIRECT_ACCESS)
-if (sw->info->iba.use_iba) {
-#endif
-#if 1
 		ptp->ops->acquire(ptp);
 		ptp->reg->get_time(ptp, &ptp->cur_time);
 		ptp->ops->release(ptp);
-#endif
-#if defined(NO_DIRECT_ACCESS)
-}
-#endif
 #endif
 		ptp->sec_lo++;
 		if (!(ptp->sec_lo & 3)) {
@@ -6328,73 +6386,6 @@ static void exit_ptp_device(int dev_major, char *dev_name)
 	unregister_chrdev(dev_major, dev_name);
 }  /* exit_ptp_device */
 
-static void ptp_check(struct ptp_info *ptp)
-{
-	struct ptp_utime cur;
-	struct ptp_utime now;
-	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
-
-#if defined(NO_DIRECT_ACCESS)
-do {
-if (!sw->info->iba.use_iba) {
-printk("%s\n", __func__);
-	ptp->version = 2;
-return;
-}
-} while (0);
-#endif
-	ptp->features |= PTP_ADJ_HACK;
-	ptp->ops->acquire(ptp);
-	ptp->reg->get_time(ptp, &cur);
-	ptp->reg->adjust_time(ptp, true, 10, 0, true);
-	ptp->reg->get_time(ptp, &now);
-dbg_msg("%08x:%08x %08x:%08x\n", cur.sec, cur.nsec, now.sec, now.nsec);
-	if (now.sec - cur.sec >= 10) {
-		ptp->features &= ~PTP_ADJ_HACK;
-		ptp->features |= PTP_ADJ_SEC;
-		ptp->reg->adjust_time(ptp, false, 10, 0, true);
-		ptp->version = 1;
-	}
-/*
- * THa  2013/01/08
- * The Rev. D chip has a problem of decrementing nanosecond that is bigger than
- * the current nanosecond when continual clock adjustment is enabled.  The
- * workaround is to use the PTP_ADJ_HACK code although the actual problem
- * avoided is now different.
- */
-	if (!(ptp->features & PTP_ADJ_HACK)) {
-		u16 data;
-
-		data = sw->cached.ptp_clk_ctrl;
-		sw->cached.ptp_clk_ctrl |= PTP_CLK_ADJ_ENABLE;
-		sw->reg->w16(sw, REG_PTP_CLK_CTRL, sw->cached.ptp_clk_ctrl);
-		if (cur.sec < 1)
-			cur.sec = 1;
-		cur.nsec = 0;
-		ptp->reg->set_time(ptp, &cur);
-		ptp->reg->adjust_time(ptp, false, 0, 800000000, false);
-		ptp->reg->get_time(ptp, &now);
-		dbg_msg("%x:%u %x:%u\n", cur.sec, cur.nsec, now.sec, now.nsec);
-		if (abs(now.sec - cur.sec) > 2) {
-			ptp->reg->get_time(ptp, &now);
-			dbg_msg("! %x:%u\n", now.sec, now.nsec);
-			ptp->features |= PTP_ADJ_HACK;
-			sw->reg->w16(sw, REG_PTP_CLK_CTRL, data);
-
-			sw->reg->w16(sw, REG_PTP_CLK_CTRL,
-				data | PTP_CLK_ADJ_ENABLE);
-			ptp->reg->set_time(ptp, &cur);
-			ptp->reg->adjust_time(ptp, false, 0, 800000000, true);
-			ptp->reg->get_time(ptp, &now);
-			dbg_msg("ok %x:%u\n", now.sec, now.nsec);
-		}
-		sw->cached.ptp_clk_ctrl = data;
-		sw->reg->w16(sw, REG_PTP_CLK_CTRL, data);
-	}
-	ptp->version = 2;
-	ptp->ops->release(ptp);
-}  /* ptp_check */
-
 static void ptp_set_identity(struct ptp_info *ptp, u8 *addr)
 {
 	memcpy(&ptp->clockIdentity.addr[0], &addr[0], 3);
@@ -6445,11 +6436,6 @@ static void ptp_init(struct ptp_info *ptp, u8 *mac_addr)
 	ptp->def_mode = ptp->mode;
 	ptp->def_cfg = ptp->cfg;
 	ptp->trig_intr = PTP_TRIG_UNIT_M;
-	ptp->tx_intr = PTP_PORT_XDELAY_REQ_INT;
-#if 0
-	ptp->tx_intr = PTP_PORT_XDELAY_REQ_INT | PTP_PORT_PDELAY_RESP_INT |
-		PTP_PORT_SYNC_INT;
-#endif
 
 	/* KSZ8463: 574 = 415 + 45 + 114 */
 	/* KSZ9567 S1: 1246; 616 */
@@ -6484,20 +6470,12 @@ static void ptp_init(struct ptp_info *ptp, u8 *mac_addr)
 		ptp->tx_latency[i][2] = latency[1][2];
 	}
 
-#if !defined(NO_DIRECT_ACCESS)
-	ptp_hw_enable(ptp);
-#endif
 	if (!ptp->ports)
 		ptp->ports = MAX_PTP_PORT;
-	ptp_check(ptp);
 	if (!ptp->get_clk_cnt)
 		ptp->get_clk_cnt = _get_clk_cnt;
 	if (!ptp->test_access_time)
 		ptp->test_access_time = _test_access_time;
-#if !defined(NO_DIRECT_ACCESS)
-	if (ptp->test_access_time)
-		ptp->test_access_time(ptp);
-#endif
 
 	ptp->gps_tsi = MAX_TIMESTAMP_UNIT;
 	ptp->gps_gpi = DEFAULT_GPS_GPI;
@@ -6515,7 +6493,6 @@ static void ptp_init(struct ptp_info *ptp, u8 *mac_addr)
 
 	init_msg_info(ptp->rx_msg_info, &ptp->rx_msg_lock);
 	init_msg_info(ptp->tx_msg_info, &ptp->tx_msg_lock);
-	ptp_init_hw(ptp);
 	for (i = sw->phy_port_cnt; i < ptp->ports; i++) {
 		if ((sw->features & USE_FEWER_PORTS) && i == sw->last_port)
 			i = sw->HOST_PORT;
@@ -6535,11 +6512,11 @@ static void ptp_init(struct ptp_info *ptp, u8 *mac_addr)
 
 static void ptp_exit(struct ptp_info *ptp)
 {
-	ptp->ops->acquire(ptp);
-	ptp->tx_intr = 0;
-	ptp_tx_intr_enable(ptp);
-	ptp->ops->release(ptp);
-
+	exit_ptp_work(ptp);
+	flush_work(&ptp->adj_clk);
+	flush_work(&ptp->set_latency);
+	cancel_delayed_work_sync(&ptp->check_pps);
+	cancel_delayed_work_sync(&ptp->update_sec);
 	if (ptp->access) {
 		destroy_workqueue(ptp->access);
 		ptp->access = NULL;

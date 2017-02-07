@@ -61,18 +61,12 @@ typedef uint64_t u64;
 #endif
 #endif
 
-#ifdef _SYS_SOCKET_H
-
-#if 0
-#define USE_NET_IOCTL
-#endif
-#if 1
-#define USE_DEV_IOCTL
-#endif
-
-#include "ksz_sw_api.c"
-#include "ksz_dlr_api.c"
-#include "ksz_hsr_api.c"
+typedef uint8_t u8;
+typedef int16_t s16;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef int64_t s64;
+typedef uint64_t u64;
 
 struct ksz_net_info {
 	void *msg;
@@ -99,12 +93,10 @@ struct ksz_net_msg {
 } __packed;
 
 
-#include "ksz_dlr_net.c"
-#else
+#include "ksz_req.h"
 #include "ksz_sw_api.h"
-#include "ksz_dlr_api.h"
+#include "ksz_dlr_net.c"
 #include "ksz_hsr_api.h"
-#endif
 
 #if defined(_MSC_VER)
 #include <packoff.h>
@@ -127,13 +119,11 @@ SOCKET event_fd;
 
 SOCKET *sockptr;
 char devname[20];
-struct dev_info swdev;
 
 struct sockaddr_in event_addr;
 struct sockaddr_in client_addr;
 struct sockaddr_in6 event_addr6;
 struct sockaddr_in6 client_addr6;
-struct sockaddr *server_addr;
 
 pthread_mutex_t disp_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -142,6 +132,7 @@ u8 host_addr6[16];
 u8 hw_addr[ETH_ALEN];
 
 struct dlr_info dlr;
+struct dlr_info active_dlr;
 
 typedef struct {
 	int fTaskStop;
@@ -271,6 +262,30 @@ static void print_dlr_msg(u8 err)
 	}
 }
 
+struct dlr_node {
+	void *data;
+	struct dlr_node *next;
+	struct dlr_node *link;
+};
+
+struct dlr_node_anchor {
+	struct dlr_node anchor;
+	struct dlr_node *last;
+};
+
+static struct dlr_node *active_node;
+static struct dlr_node_anchor dlr_list;
+
+struct dlr_net_info {
+	struct ksz_dlr_active_node node;
+	struct sockaddr_in addr;
+	struct ksz_net_info net;
+	struct dlr_info dlr;
+};
+
+static void print_dlr_list(void);
+static void print_dlr_ring(void);
+
 static void print_dlr_help(void)
 {
 	printf("\tv\tRevision\n");
@@ -319,7 +334,6 @@ int get_dlr_cmd(FILE *fp)
 	u16 rev = 0;
 	u16 size;
 	u8 network = 0;
-	u8 port;
 	u8 status = 0;
 	u8 topology = 0;
 	char cmd[80];
@@ -329,15 +343,9 @@ int get_dlr_cmd(FILE *fp)
 	u32 beacon_interval = 400;
 	u32 beacon_timeout = 1960;
 	u16 vid = 0;
-	void *fd = &swdev;
+	void *fd = &net_info;
+	struct dlr_net_info *data;
 
-	rc = get_dlr_super_cfg(fd, &cfg);
-	if (!rc) {
-		precedence = cfg.prec;
-		beacon_interval = cfg.beacon_interval;
-		beacon_timeout = cfg.beacon_timeout;
-		vid = cfg.vid;
-	}
 	do {
 		printf("dlr> ");
 		if (fgets(line, 80, fp) == NULL)
@@ -353,6 +361,10 @@ int get_dlr_cmd(FILE *fp)
 			(unsigned int *) &hex[1],
 			(unsigned int *) &hex[2],
 			(unsigned int *) &hex[3]);
+		if (active_node) {
+			data = active_node->data;
+			memcpy(fd, &data->net, sizeof(struct ksz_net_info));
+		}
 		if (!strcmp(cmd, "sw"))
 			return 3;
 		else if (!strcmp(cmd, "hsr"))
@@ -394,39 +406,19 @@ int get_dlr_cmd(FILE *fp)
 		} else
 		switch (line[0]) {
 		case 't':
-			rc = get_dlr_topology(fd, &topology);
-			if (rc)
-				print_sw_err(rc);
-			else
-				print_topology(topology);
+			w_dlr_topology(fd, NULL);
 			break;
 		case 'n':
-			rc = get_dlr_network(fd, &network);
-			if (rc)
-				print_sw_err(rc);
-			else
-				print_network(network);
+			w_dlr_network(fd, NULL);
 			break;
 		case 'a':
-			rc = get_dlr_all(fd, &capable);
-			if (rc)
-				print_sw_err(rc);
-			else
-				print_all(&capable);
+			w_dlr_all(fd, NULL);
 			break;
 		case 'v':
-			rc = get_dlr_revision(fd, &rev);
-			if (rc)
-				print_sw_err(rc);
-			else
-				printf("revision: %u\n", rev);
+			w_dlr_revision(fd, NULL);
 			break;
 		case 's':
-			rc = get_dlr_super_status(fd, &status);
-			if (rc)
-				print_sw_err(rc);
-			else
-				print_status(status);
+			w_dlr_super_status(fd, NULL);
 			break;
 		case 'C':
 			if (count >= 2) {
@@ -435,120 +427,52 @@ int get_dlr_cmd(FILE *fp)
 				cfg.beacon_timeout = beacon_timeout;
 				cfg.prec = precedence;
 				cfg.vid = vid;
-				rc = set_dlr_super_cfg(fd, &cfg, &err);
-				if (rc)
-					print_sw_err(rc);
-				print_dlr_msg(err);
+				w_dlr_super_cfg(fd, &cfg);
 			} else {
-				rc = get_dlr_super_cfg(fd, &cfg);
-				if (rc)
-					print_sw_err(rc);
-				else {
-					print_super_cfg(&cfg);
-					beacon_interval = cfg.beacon_interval;
-					beacon_timeout = cfg.beacon_timeout;
-					vid = cfg.vid;
-				}
+				w_dlr_super_cfg(fd, NULL);
 			}
 			break;
 		case 'F':
 			if (count >= 2) {
 				cnt = num[0];
-				rc = set_dlr_ring_fault_cnt(fd, cnt, &err);
-				if (rc)
-					print_sw_err(rc);
-				print_dlr_msg(err);
+				w_dlr_ring_fault_cnt(fd, &cnt);
 			} else {
-				rc = get_dlr_ring_fault_cnt(fd, &cnt);
-				if (rc)
-					print_sw_err(rc);
-				else
-					printf("ring fault cnt: %u\n", cnt);
+				w_dlr_ring_fault_cnt(fd, NULL);
 			}
 			break;
 		case 'e':
-			if (count < 2)
-				break;
-			port = num[0];
-			rc = get_dlr_active_node(fd, port, &node);
-			if (rc)
-				print_sw_err(rc);
-			else
-				print_dlr_node(&node);
+			w_dlr_active_node(fd, NULL);
 			break;
 		case 'r':
-			rc = get_dlr_ring_part_cnt(fd, &cnt);
-			if (rc)
-				print_sw_err(rc);
-			else
-				printf("ring part cnt: %u\n", cnt);
+			w_dlr_ring_part_cnt(fd, NULL);
 			break;
 		case 'l':
-			size = sizeof(nodes);
-			rc = get_dlr_ring_part_list(fd, nodes, &size, &err);
-			if (rc)
-				print_sw_err(rc);
-			else {
-				if (err) {
-					print_dlr_msg(err);
-					break;
-				}
-				for (err = 0; err < size /
-				     sizeof(struct ksz_dlr_active_node); err++)
-					print_dlr_node(&nodes[err]);
-			}
+			w_dlr_ring_part_list(fd, NULL, 0);
 			break;
 		case 'd':
-			rc = get_dlr_active_super_addr(fd, &node);
-			if (rc)
-				print_sw_err(rc);
-			else
-				print_dlr_node(&node);
+			w_dlr_active_super_addr(fd, NULL);
 			break;
 		case 'p':
-			rc = get_dlr_active_super_prec(fd, &prec);
-			if (rc)
-				print_sw_err(rc);
-			else
-				printf("precedence: %u\n", prec);
+			w_dlr_active_super_prec(fd, NULL);
 			break;
 		case 'c':
-			rc = get_dlr_cap(fd, &flags);
-			if (rc)
-				print_sw_err(rc);
-			else
-				print_dlr_cap(flags);
+			w_dlr_cap(fd, NULL); 
+			break;
+		case 'L':
+			print_dlr_list();
+			print_dlr_ring();
 			break;
 		case 'V':
-			rc = set_dlr_verify_fault(fd, &err);
-			if (rc)
-				print_sw_err(rc);
-			print_dlr_msg(err);
+			w_dlr_verify_fault(fd, NULL);
 			break;
 		case 'R':
-			rc = set_dlr_clear_rapid_fault(fd, &err);
-			if (rc)
-				print_sw_err(rc);
-			print_dlr_msg(err);
+			w_dlr_clear_rapid_fault(fd, NULL);
 			break;
 		case 'S':
-			rc = set_dlr_restart_sign_on(fd, &err);
-			if (rc)
-				print_sw_err(rc);
-			print_dlr_msg(err);
+			w_dlr_restart_sign_on(fd, NULL);
 			break;
 		case 'G':
-			rc = set_dlr_clear_gateway_fault(fd, &err);
-			if (rc)
-				print_sw_err(rc);
-			print_dlr_msg(err);
-			break;
-		case 'N':
-			if (count >= 2) {
-				rc = set_dlr_notify(&swdev, num[0]);
-				if (rc)
-					print_sw_err(rc);
-			}
+			w_dlr_clear_gateway_fault(fd, NULL);
 			break;
 		case 'h':
 			print_dlr_help();
@@ -594,6 +518,7 @@ static void print_hsr_node(struct ksz_hsr_node *node)
 		node->addr[5]);
 }
 
+#if 0
 static void print_hsr_help(void)
 {
 	printf("\tc\tCapabilities\n");
@@ -813,6 +738,7 @@ int get_cmd(FILE *fp)
 	} while (cont);
 	return 0;
 }  /* get_cmd */
+#endif
 
 static SOCKET create_sock(char *devname, char *multi_ip, char *local_ip,
 	int port, int multi_loop)
@@ -992,44 +918,243 @@ static void init_net_info(struct ksz_net_info *info, int family)
 	info->send = send_msg;
 }
 
-void proc_dlr_req(void *fd, struct dlr_info *info, int set)
+static struct dlr_node *dlr_alloc_node(size_t data_size)
 {
+	struct dlr_node *node;
+
+	node = malloc(sizeof(struct dlr_node));
+	if (!node)
+		return NULL;
+	node->data = malloc(data_size);
+	if (!node->data) {
+		free(node);
+		return NULL;
+	}
+	return node;
+}  /* dlr_alloc_node */
+
+static void dlr_free_node(struct dlr_node *node)
+{
+	struct dlr_net_info *data;
+
+	data = node->data;
+	if (data->dlr.max_cnt)
+		free(data->dlr.nodes);
+
+	/* Free the node data. */
+	free(node->data);
+
+	/* Free the node. */
+	free(node);
+}  /* dlr_free_node */
+
+static void dlr_exit_list(struct dlr_node_anchor *list)
+{
+	struct dlr_node *prev;
+	struct dlr_node *next;
+
+	prev = &list->anchor;
+	next = prev->next;
+	while (next) {
+printf("D\n");
+		prev = next;
+		next = next->next;
+		dlr_free_node(prev);
+	}
+	list->anchor.next = NULL;
+}  /* dlr_exit_list */
+
+static void dlr_init_list(struct dlr_node_anchor *list)
+{
+	list->last = &list->anchor;
+	list->anchor.next = NULL;
+}  /* dlr_init_list */
+
+static void *dlr_find_node(struct dlr_node_anchor *list,
+	int (*cmp)(void *a, void *b), void *data)
+{
+	int c;
+	struct dlr_node *prev;
+	struct dlr_node *next;
+
+	prev = &list->anchor;
+	next = prev->next;
+	while (next) {
+		c = cmp(next->data, data);
+
+		/* Exact match. */
+		if (!c)
+			goto dlr_find_node_done;
+
+		/* Will not be found as list is sorted. */
+		if (c > 0) {
+			next = NULL;
+			break;
+		}
+		prev = next;
+		next = prev->next;
+	}
+
+dlr_find_node_done:
+	list->last = prev;
+	return next;
+}  /* dlr_find_node */
+
+static void dlr_insert_node(struct dlr_node_anchor *list,
+	int (*cmp)(void *a, void *b), struct dlr_node *this)
+{
+	int c;
+	struct dlr_node *prev;
+	struct dlr_node *next;
+
+	if (list->last != &list->anchor) {
+		prev = list->last;
+		next = prev->next;
+		c = 1;
+		if (next) {
+			c = cmp(next->data, this->data);
+		}
+		if (c > 0) {
+			this->next = prev->next;
+			prev->next = this;
+			list->last = &list->anchor;
+			return;
+		}
+	}
+	prev = &list->anchor;
+	next = prev->next;
+	while (next) {
+		c = cmp(next->data, this->data);
+
+		/* Stop if next one is higher in the list. */
+		if (c > 0)
+			break;
+		prev = next;
+		next = prev->next;
+	}
+	this->next = prev->next;
+	prev->next = this;
+printf("insert\n");
+	list->last = &list->anchor;
+}  /* dlr_insert_node */
+
+static void dlr_delete_node(struct dlr_node_anchor *list,
+	int (*cmp)(void *a, void *b), struct dlr_node *this)
+{
+	int c;
+	struct dlr_node *prev;
+	struct dlr_node *next;
+
+	if (list->last != &list->anchor) {
+		prev = list->last;
+		next = prev->next;
+		c = 1;
+		if (next == this)
+			c = 0;
+		else if (next)
+			c = cmp(next->data, this->data);
+
+		/* Exact match. */
+		if (!c)
+			goto dlr_delete_this_node_done;
+	}
+	prev = &list->anchor;
+	next = prev->next;
+	while (next) {
+		c = cmp(next->data, this->data);
+
+		/* Exact match. */
+		if (!c)
+			goto dlr_delete_this_node_done;
+
+		/* Stop if next one is higher in the list. */
+		if (c > 0)
+			break;
+		prev = next;
+		next = prev->next;
+	}
+
+	/* Nothing is removed. */
+	return;
+
+dlr_delete_this_node_done:
+	prev->next = this->next;
+	list->last = &list->anchor;
+
+	dlr_free_node(next);
+}  /* dlr_delete_node */
+
+static int cmp_dlr(void *first, void *second)
+{
+	int cmp;
+
+	struct dlr_net_info *a = first;
+	struct dlr_net_info *b = second;
+
+	cmp = memcmp(&a->node.ip_addr, &b->node.ip_addr, 4);
+#if 0
+	if (!cmp)
+		cmp = memcmp(a->node.addr, b->node.addr, ETH_ALEN);
+#endif
+	return cmp;
+}  /* cmp_dlr */
+
+static struct dlr_node *dlr_get_node(struct dlr_node_anchor *list,
+	struct ksz_net_info *net)
+{
+	struct dlr_node *node;
+	struct dlr_net_info data;
+	struct ksz_dlr_active_node active;
+	struct sockaddr_in *addr4 = NULL;
+	struct sockaddr_in6 *addr6;
+
+	if (AF_INET6 == net->family) {
+		addr6 = (struct sockaddr_in6 *) net->addr;
+	} else if (AF_INET == net->family) {
+		addr4 = (struct sockaddr_in *) net->addr;
+		memcpy(&active.ip_addr, &addr4->sin_addr, 4);
+		memset(&active.addr, 0, ETH_ALEN);
+	}
+	memcpy(&data.node, &active, sizeof(struct ksz_dlr_active_node));
+	node = dlr_find_node(list, cmp_dlr, &data);
+	if (!node) {
+		struct dlr_net_info *info;
+
+		node = dlr_alloc_node(sizeof(struct dlr_net_info));
+		if (!node)
+			return NULL;
+		info = node->data;
+		memcpy(&info->node, &active,
+			sizeof(struct ksz_dlr_active_node));
+		memcpy(&info->addr, addr4, sizeof(struct sockaddr_in));
+		memcpy(&info->net, net, sizeof(struct ksz_net_info));
+		info->net.addr = (struct sockaddr *) &info->addr;
+		dlr_insert_node(list, cmp_dlr, node);
+	}
+	return node;
+}  /* dlr_get_node */
+
+void proc_dlr_resp(struct dlr_node *node, void *fd, struct dlr_info *info)
+{
+	struct dlr_net_info *data = node->data;
 	struct ksz_net_info *net = fd;
 	struct dlr_msg *msg = net->msg;
+	int i;
 	int proc;
-	int rc;
-	u16 size;
-	fd = &swdev;
 
 	proc = 1;
 	switch (msg->hdr.svc) {
 	case SVC_DLR_VERIFY_FAULT_LOCATION:
-		if (!set) {
-			rc = set_dlr_verify_fault(fd, &info->err);
-			if (!rc && info->err)
-				w_dlr_verify_fault(net, &info->err);
-		}
+		print_dlr_msg(info->err);
 		break;
 	case SVC_DLR_CLEAR_RAPID_FAULTS:
-		if (!set) {
-			rc = set_dlr_clear_rapid_fault(fd, &info->err);
-			if (!rc && info->err)
-				w_dlr_clear_rapid_fault(net, &info->err);
-		}
+		print_dlr_msg(info->err);
 		break;
 	case SVC_DLR_RESTART_SIGN_ON:
-		if (!set) {
-			rc = set_dlr_restart_sign_on(fd, &info->err);
-			if (!rc && info->err)
-				w_dlr_restart_sign_on(net, &info->err);
-		}
+		print_dlr_msg(info->err);
 		break;
 	case SVC_DLR_CLEAR_GATEWAY_PARTIAL_FAULT:
-		if (!set) {
-			rc = set_dlr_clear_gateway_fault(fd, &info->err);
-			if (!rc && info->err)
-				w_dlr_clear_gateway_fault(net, &info->err);
-		}
+		print_dlr_msg(info->err);
 		break;
 	default:
 		proc = 0;
@@ -1040,10 +1165,156 @@ void proc_dlr_req(void *fd, struct dlr_info *info, int set)
 	proc = 1;
 	switch (msg->hdr.class) {
 	case DLR_GET_REVISION:
-		if (!set) {
-			rc = get_dlr_revision(fd, &info->rev);
-			if (!rc)
-				w_dlr_revision(net, &info->rev);
+		printf("revision: %u\n", info->rev);
+		break;
+	default:
+		proc = 0;
+		break;
+	}
+	if (proc)
+		return;
+	proc = 1;
+	switch (msg->hdr.id) {
+	case 0:
+		print_all(&info->capable);
+		if (DLR_STAT_ACTIVE_SUPERVISOR == info->capable.super_status) {
+			if (memcmp(&info->capable.active_super_addr,
+			    &data->node, sizeof(struct ksz_dlr_active_node)))
+printf(" !!\n");
+			active_node = node;
+			memcpy(&net_info, &data->net,
+				sizeof(struct ksz_net_info));
+			memcpy(&active_dlr.capable, &info->capable,
+				sizeof(struct ksz_dlr_gateway_capable));
+			active_dlr.topology = info->capable.net_topology;
+			active_dlr.network = info->capable.net_status;
+			active_dlr.super_status = info->capable.super_status;
+			memcpy(&active_dlr.super_cfg,
+				&info->capable.super_cfg,
+				sizeof(struct ksz_dlr_super_cfg));
+			memcpy(active_dlr.last_active,
+				info->capable.last_active,
+				sizeof(struct ksz_dlr_active_node) * 2);
+			memcpy(&active_dlr.super_addr, &info->super_addr,
+				sizeof(struct ksz_dlr_active_node));
+			active_dlr.flags = info->capable.cap;
+		}
+		break;
+	case DLR_GET_NETWORK_TOPOLOGY:
+		if (!active_node || active_node == node)
+			print_topology(info->topology);
+		if (active_node == node)
+			active_dlr.topology = info->topology;
+		break;
+	case DLR_GET_NETWORK_STATUS:
+		if (!active_node || active_node == node)
+			print_network(info->network);
+		if (active_node == node)
+			active_dlr.network = info->network;
+		break;
+	case DLR_GET_RING_SUPERVISOR_STATUS:
+		if (!active_node || active_node == node)
+			print_status(info->super_status);
+		if (active_node == node)
+			active_dlr.super_status = info->super_status;
+		break;
+	case DLR_SET_RING_SUPERVISOR_CONFIG:
+		if (!active_node || active_node == node)
+			print_super_cfg(&info->super_cfg);
+		if (active_node == node)
+			memcpy(&active_dlr.super_cfg, &info->super_cfg,
+				sizeof(struct ksz_dlr_super_cfg));
+		break;
+	case DLR_SET_RING_FAULT_COUNT:
+		if (!active_node || active_node == node)
+			printf("ring fault cnt: %u\n", info->fault_cnt);
+		if (active_node == node)
+			active_dlr.fault_cnt = info->fault_cnt;
+		break;
+	case DLR_GET_LAST_ACTIVE_NODE_ON_PORT_1:
+		if (!active_node || active_node == node) {
+			print_dlr_node(&info->last_active[0]);
+			print_dlr_node(&info->last_active[1]);
+		}
+		if (active_node == node)
+			memcpy(active_dlr.last_active, info->last_active,
+				sizeof(struct ksz_dlr_active_node) * 2);
+		break;
+	case DLR_GET_RING_PARTICIPANTS_COUNT:
+		if (!active_node || active_node == node)
+			printf("ring part cnt: %u\n", info->node_cnt);
+		if (active_node == node) {
+			active_dlr.node_cnt = info->node_cnt;
+			if (info->max_cnt < active_dlr.node_cnt) {
+				if (info->max_cnt)
+					free(info->nodes);
+				info->max_cnt = info->node_cnt;
+				info->nodes = malloc(
+					sizeof(struct ksz_dlr_active_node) *
+					info->node_cnt);
+			}
+			if (active_dlr.max_cnt < active_dlr.node_cnt) {
+				if (active_dlr.max_cnt)
+					free(active_dlr.nodes);
+				active_dlr.max_cnt = active_dlr.node_cnt;
+				active_dlr.nodes = malloc(
+					sizeof(struct ksz_dlr_active_node) *
+					active_dlr.node_cnt);
+			}
+		}
+		break;
+	case DLR_GET_RING_PARTICIPANTS_LIST:
+		for (i = 0; i < info->node_cnt; i++)
+			print_dlr_node(&info->nodes[i]);
+		if (active_node == node) {
+			if (active_dlr.max_cnt >= info->node_cnt) {
+				memcpy(active_dlr.nodes, info->nodes,
+					sizeof(struct ksz_dlr_active_node) *
+					info->node_cnt);
+			}
+		}
+		break;
+	case DLR_GET_ACTIVE_SUPERVISOR_ADDRESS:
+		if (!active_node || active_node == node)
+			print_dlr_node(&info->super_addr);
+		if (active_node == node) {
+			memcpy(&active_dlr.super_addr, &info->super_addr,
+				sizeof(struct ksz_dlr_active_node));
+		} else {
+			if (memcmp(&active_dlr.super_addr, &info->super_addr,
+			    sizeof(struct ksz_dlr_active_node)))
+printf(" !!\n");
+		}
+		break;
+	case DLR_GET_ACTIVE_SUPERVISOR_PRECEDENCE:
+		if (!active_node || active_node == node)
+			printf("precedence: %u\n", info->prec);
+		if (active_node == node) {
+			active_dlr.prec = info->prec;
+		} else {
+			if (info->prec != active_dlr.prec)
+				printf("prec %d %d\n", info->prec,
+					active_dlr.prec);
+		}
+		break;
+	case DLR_GET_CAPABILITY_FLAGS:
+		print_dlr_cap(info->flags);
+		if (active_node == node)
+			active_dlr.flags = info->flags;
+		break;
+	case DLR_SET_IP_ADDRESS:
+		if (info->node.ip_addr) {
+if (info->node.ip_addr != data->node.ip_addr)
+printf(" ! same\n");
+			memcpy(data->node.addr, info->node.addr, ETH_ALEN);
+printf(" first\n");
+			if (!node->link)
+				w_dlr_all(net, NULL);
+		} else {
+printf("leave\n");
+			if (active_node == node)
+				active_node = NULL;
+			dlr_delete_node(&dlr_list, cmp_dlr, node);
 		}
 		break;
 	default:
@@ -1052,146 +1323,37 @@ void proc_dlr_req(void *fd, struct dlr_info *info, int set)
 	}
 	if (proc)
 		return;
-	switch (msg->hdr.id) {
-	case 0:
-		if (!set) {
-			rc = get_dlr_all(fd, &info->capable);
-			if (!rc)
-				w_dlr_all(net, &info->capable);
-		}
-		break;
-	case DLR_GET_NETWORK_TOPOLOGY:
-		if (!set) {
-			rc = get_dlr_topology(fd, &info->topology);
-			if (!rc)
-				w_dlr_topology(net, &info->topology);
-		}
-		break;
-	case DLR_GET_NETWORK_STATUS:
-		if (!set) {
-			rc = get_dlr_network(fd, &info->network);
-			if (!rc)
-				w_dlr_network(net, &info->network);
-		}
-		break;
-	case DLR_GET_RING_SUPERVISOR_STATUS:
-		if (!set) {
-			rc = get_dlr_super_status(fd, &info->super_status);
-			if (!rc)
-				w_dlr_super_status(net, &info->super_status);
-		}
-		break;
-	case DLR_SET_RING_SUPERVISOR_CONFIG:
-		if (!set) {
-			rc = get_dlr_super_cfg(fd, &info->super_cfg);
-			if (!rc)
-				w_dlr_super_cfg(net, &info->super_cfg);
-		} else {
-			rc = set_dlr_super_cfg(fd, &info->super_cfg,
-				&info->err);
-			if (rc)
-				print_sw_err(rc);
-			print_dlr_msg(info->err);
-		}
-		break;
-	case DLR_SET_RING_FAULT_COUNT:
-		if (!set) {
-			rc = get_dlr_ring_fault_cnt(fd, &info->fault_cnt);
-			if (!rc)
-				w_dlr_ring_fault_cnt(net, &info->fault_cnt);
-		} else {
-			rc = set_dlr_ring_fault_cnt(fd, info->fault_cnt,
-				&info->err);
-			if (rc)
-				print_sw_err(rc);
-			print_dlr_msg(info->err);
-		}
-		break;
-	case DLR_GET_LAST_ACTIVE_NODE_ON_PORT_1:
-		if (!set) {
-			rc = get_dlr_active_node(fd, 0, &info->last_active[0]);
-			rc = get_dlr_active_node(fd, 1, &info->last_active[1]);
-			if (!rc)
-				w_dlr_active_node(net, info->last_active);
-		}
-		break;
-	case DLR_GET_RING_PARTICIPANTS_COUNT:
-		if (!set) {
-			rc = get_dlr_ring_part_cnt(fd, &info->node_cnt);
-			if (!rc)
-				w_dlr_ring_part_cnt(net, &info->node_cnt);
-			if (info->max_cnt < info->node_cnt) {
-				if (info->max_cnt)
-					free(info->nodes);
-				info->max_cnt = info->node_cnt;
-				info->nodes = malloc(info->max_cnt *
-					sizeof(struct ksz_dlr_active_node));
-			}
-		}
-		break;
-	case DLR_GET_RING_PARTICIPANTS_LIST:
-		if (!set) {
-			size = info->max_cnt *
-				sizeof(struct ksz_dlr_active_node);
-			rc = get_dlr_ring_part_list(fd, info->nodes, &size,
-				&info->err);
-			if (!rc && !info->err)
-				w_dlr_ring_part_list(net, info->nodes,
-					sizeof(struct ksz_dlr_active_node) *
-					info->node_cnt);
-		}
-		break;
-	case DLR_GET_ACTIVE_SUPERVISOR_ADDRESS:
-		if (!set) {
-			rc = get_dlr_active_super_addr(fd, &info->super_addr);
-			if (!rc)
-				w_dlr_active_super_addr(net, &info->super_addr);
-		}
-		break;
-	case DLR_GET_ACTIVE_SUPERVISOR_PRECEDENCE:
-		if (!set) {
-			rc = get_dlr_active_super_prec(fd, &info->prec);
-			if (!rc)
-				w_dlr_active_super_prec(net, &info->prec);
-		}
-		break;
-	case DLR_GET_CAPABILITY_FLAGS:
-		if (!set) {
-			rc = get_dlr_cap(fd, &info->flags);
-			if (!rc)
-				w_dlr_cap(net, &info->flags);
-		}
-		break;
-	case DLR_SET_IP_ADDRESS:
-		if (!set) {
-			/* Not used by client. */
-#if 0
-			info->node.ip_addr = (host_addr[0]) |
-				(host_addr[1] << 8) |
-				(host_addr[2] << 16) |
-				(host_addr[3] << 24);
-			memcpy(info->node.addr, hw_addr, ETH_ALEN);
-			w_dlr_ip_addr(net, &info->node);
-#endif
-		} else {
-			if (info->node.ip_addr) {
-				struct ksz_dlr_active_node active;
-printf("enter\n");
-				server_addr = net->addr;
-				active.ip_addr = (host_addr[0]) |
-					(host_addr[1] << 8) |
-					(host_addr[2] << 16) |
-					(host_addr[3] << 24);
-				memcpy(active.addr, hw_addr, ETH_ALEN);
-				w_dlr_ip_addr(&net_info, &active);
-			} else {
-				server_addr = NULL;
-printf("leave\n");
-			}
-		}
-		break;
+}  /* proc_dlr_resp */
+
+static void print_dlr_list(void)
+{
+	struct dlr_net_info *info;
+	struct dlr_node *next = dlr_list.anchor.next;
+
+printf("---\n");
+	while (next) {
+		info = next->data;
+		print_dlr_node(&info->node);
+printf(" - ");
+		print_dlr_node(&info->dlr.node);
+		next = next->next;
 	}
-}  /* proc_dlr_req */
+printf("+++\n");
+}
+
+static void print_dlr_ring(void)
+{
+	struct dlr_net_info *info;
+	struct dlr_node *link = dlr_list.anchor.link;
+
+printf("---\n");
+	while (link) {
+		info = link->data;
+		print_dlr_node(&info->dlr.node);
+		link = link->next;
+	}
+printf("+++\n");
+}
 
 void proc_msg(struct ksz_net_info *net_info)
 {
@@ -1199,7 +1361,9 @@ void proc_msg(struct ksz_net_info *net_info)
 	int len = net_info->len;
 	int msglen;
 	u16 seqid;
-	int rc;
+	struct dlr_node *node;
+	struct dlr_net_info *info;
+	int rc = 0;
 
 	msglen = ntohs(msg->hdr.messageLength);
 	if (msglen != len) {
@@ -1210,9 +1374,15 @@ void proc_msg(struct ksz_net_info *net_info)
 	}
 	seqid = ntohs(msg->hdr.sequenceId);
 	if (DEV_MOD_DLR == msg->hdr.mod) {
-		rc = proc_dlr_msg(net_info, &dlr);
-		if (rc >= 0)
-			proc_dlr_req(net_info, &dlr, rc);
+		node = dlr_get_node(&dlr_list, net_info);
+		if (!node)
+			return;
+		info = node->data;
+		rc = proc_dlr_msg(net_info, &info->dlr);
+		if (1 == rc) {
+			proc_dlr_resp(node, net_info, &info->dlr);
+		} else if (0 == rc && DLR_SET_IP_ADDRESS == msg->hdr.id)
+			w_dlr_ip_addr(net_info, &dlr.node);
 	}
 }  /* proc_msg */
 
@@ -1272,7 +1442,7 @@ ReceiveTask(void *param)
 	fd_set allrset;
 	socklen_t len;
 	int maxfdp1;
-	struct dlr_msg *msg;
+	struct ksz_net_msg *msg;
 	int i;
 	char in_addr[80];
 	int cur;
@@ -1366,7 +1536,7 @@ ReceiveTask(void *param)
 				printf("r: %d=%d %d=%s\n", sockfd,
 					buf[cur].len, len, in_addr);
 			msglen = buf[cur].len;
-			msg = (struct dlr_msg *) buf[cur].buf;
+			msg = (struct ksz_net_msg *) buf[cur].buf;
 			looped = check_loop(buf[cur].from, len);
 			if (looped) {
 				int ignored = 1;
@@ -1413,7 +1583,6 @@ ReceiveTask(void *param)
 
 static void handle_dlr_msg(u16 cmd, void *data, int len)
 {
-	int rc;
 	u32 *dword = data;
 
 	switch (cmd) {
@@ -1423,42 +1592,16 @@ static void handle_dlr_msg(u16 cmd, void *data, int len)
 	{
 		len -= 4;
 		printf("link status: x%x\n", *dword);
-		if (len >= 4 + sizeof(struct ksz_dlr_active_node) * 2) {
+		if (len >= 4 + sizeof(struct ksz_dlr_active_node)) {
 			struct ksz_dlr_active_node *active =
 				(struct ksz_dlr_active_node *)(dword + 1);
 
-			print_dlr_node(active++);
 			print_dlr_node(active);
 		}
-		if (!server_addr)
-			break;
-		rc = get_dlr_active_node(&swdev, 0, &dlr.last_active[0]);
-		rc = get_dlr_active_node(&swdev, 1, &dlr.last_active[1]);
-		if (!rc)
-			w_dlr_active_node(&net_info, dlr.last_active);
 		break;
 	}
 	case DEV_INFO_DLR_CFG:
-#if 0
 		printf("cfg: %x\n", *dword);
-#endif
-		if (!server_addr)
-			break;
-		if (*dword & 1) {
-			rc = get_dlr_active_super_addr(&swdev,
-				&dlr.super_addr);
-			if (!rc)
-				w_dlr_active_super_addr(&net_info,
-					&dlr.super_addr);
-		}
-		if (*dword & 2) {
-			rc = get_dlr_topology(&swdev, &dlr.topology);
-			if (!rc)
-				w_dlr_topology(&net_info, &dlr.topology);
-			rc = get_dlr_network(&swdev, &dlr.network);
-			if (!rc)
-				w_dlr_network(&net_info, &dlr.network);
-		}
 		break;
 	}
 }
@@ -1502,6 +1645,7 @@ static void handle_sw_msg(u16 cmd, void *data, int len)
 	}
 }
 
+#if 0
 void *NotificationTask(void *param)
 {
 	int len;
@@ -1533,6 +1677,7 @@ void *NotificationTask(void *param)
 	} while (!pTaskParam->fTaskStop);
 	return NULL;
 }
+#endif
 
 struct ip_info {
 	struct sockaddr_in addr;
@@ -1720,15 +1865,6 @@ int main(int argc, char *argv[])
 	int i;
 	struct ip_info info;
 	int multi_loop = 0;
-	int dlr_hw;
-	int hsr_hw;
-
-#ifdef USE_DEV_IOCTL
-	if (sw_init(&swdev)) {
-		printf("cannot access device\n");
-		return 1;
-	}
-#endif
 
 	SocketInit(0);
 
@@ -1776,9 +1912,6 @@ int main(int argc, char *argv[])
 	host_ip = strchr(devname, '.');
 	if (host_ip != NULL)
 		*host_ip = 0;
-#ifdef USE_NET_IOCTL
-	strncpy(swdev.name, devname, sizeof(swdev.name));
-#endif
 
 	if (get_host_info(argv[1], &info)) {
 		memcpy(host_addr, &info.addr.sin_addr, 4);
@@ -1825,12 +1958,11 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 	sockptr = &event_fd;
-#ifdef USE_NET_IOCTL
-	swdev.sock = event_fd;
-#endif
 
 	init_net_info(&net_info, family);
 	dlr.max_cnt = 0;
+	active_dlr.max_cnt = 0;
+	dlr_init_list(&dlr_list);
 
 	i = 0;
 	param[i].fTaskStop = FALSE;
@@ -1839,7 +1971,9 @@ int main(int argc, char *argv[])
 
 #ifdef _SYS_SOCKET_H
 	Pthread_create(&tid[i], NULL, ReceiveTask, &param[i]);
+#if 0
 	Pthread_create(&tid[1], NULL, NotificationTask, &param[1]);
+#endif
 
 #elif defined( _WIN32 )
 	param[i].hevTaskComplete =
@@ -1861,6 +1995,13 @@ int main(int argc, char *argv[])
 	if ( !param[0].fTaskStop ) {
 		int rc;
 
+		dlr.node.ip_addr = (host_addr[0]) | (host_addr[1] << 8) |
+			(host_addr[2] << 16) | (host_addr[3] << 24);
+		memcpy(dlr.node.addr, hw_addr, ETH_ALEN);
+
+		/* Signal server is ready. */
+		w_dlr_ip_addr(&net_info, &dlr.node);
+#if 0
 		rc = sw_dev_init(&swdev, 0, &sw_version, &sw_ports);
 		if (rc) {
 			print_sw_err(rc);
@@ -1870,83 +2011,52 @@ int main(int argc, char *argv[])
 		}
 		rc = set_sw_notify(&swdev,
 			SW_INFO_LINK_CHANGE);
-		dlr_hw = 0;
-		rc = dlr_dev_init(&swdev, 0, &dlr_version, &dlr_ports);
-		if (!rc) {
-			u8 err;
-
-			printf("DLR version=%d ports=0x%x\n",
-				dlr_version, dlr_ports);
-			dlr_hw = 1;
 			rc = set_dlr_notify(&swdev,
 				DLR_INFO_CFG_CHANGE | DLR_INFO_LINK_LOST);
-			dlr.node.ip_addr = (host_addr[0]) |
-				(host_addr[1] << 8) |
-				(host_addr[2] << 16) |
-				(host_addr[3] << 24);
-			memcpy(dlr.node.addr, hw_addr, ETH_ALEN);
-			rc = set_dlr_ip_addr(&swdev, &dlr.node, &err);
-			if (rc)
-				print_sw_err(rc);
-
-			/* Request server address .*/
-			w_dlr_ip_addr(&net_info, NULL);
-		}
-		hsr_hw = 0;
-		rc = hsr_dev_init(&swdev, 0, &hsr_version, &hsr_ports);
-		if (!rc) {
-			printf("HSR version=%d ports=0x%x\n",
-				hsr_version, hsr_ports);
-			hsr_hw = 1;
 			rc = set_hsr_notify(&swdev,
 				HSR_INFO_LINK_LOST);
-		}
-		rc = 0;
+#endif
+		rc = 1;
 		do {
 			switch (rc) {
 			case 1:
-				rc = 2;
-				if (!dlr_hw)
-					break;
 				rc = get_dlr_cmd(stdin);
 				break;
+#if 0
 			case 2:
 				rc = 3;
-				if (!hsr_hw)
-					break;
 				rc = get_hsr_cmd(stdin);
 				break;
 			default:
 				rc = get_cmd(stdin);
 				break;
+#endif
 			}
 			if (!rc)
 				break;
 		} while (1);
 
-		if (dlr_hw) {
+		/* Signal server is quitting. */
+		net_info.addr = NULL;
+		memset(&dlr.node, 0, sizeof(struct ksz_dlr_active_node));
+		w_dlr_ip_addr(&net_info, &dlr.node);
+		dlr_exit_list(&dlr_list);
 
-			/* Signal node is quitting. */
-			memset(&dlr.node, 0,
-				sizeof(struct ksz_dlr_active_node));
-			if (server_addr)
-				w_dlr_ip_addr(&net_info, &dlr.node);
-			rc = dlr_dev_exit(&swdev);
-		}
-		if (hsr_hw)
-			rc = hsr_dev_exit(&swdev);
 		param[1].fTaskStop = TRUE;
-		rc = sw_dev_exit(&swdev);
 		param[0].fTaskStop = TRUE;
 	}
 
+#if 0
 done:
+#endif
 	// wait for task to end
 	i = 0;
 
 #ifdef _SYS_SOCKET_H
 	Pthread_join(tid[0], &status);
+#if 0
 	Pthread_join(tid[1], &status);
+#endif
 
 #elif defined( _WIN32 )
 	rc = WaitForSingleObject( param[i].hevTaskComplete, INFINITE );
@@ -1961,13 +2071,11 @@ done:
 #endif
 	if (dlr.max_cnt)
 		free(dlr.nodes);
+	if (active_dlr.max_cnt)
+		free(active_dlr.nodes);
 
 	closesocket(event_fd);
 	SocketExit();
-
-#ifdef USE_DEV_IOCTL
-	sw_exit(&swdev);
-#endif
 
 	return 0;
 }

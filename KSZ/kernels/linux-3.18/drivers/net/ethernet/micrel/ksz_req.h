@@ -95,6 +95,7 @@ enum {
 	DEV_MOD_PTP,
 	DEV_MOD_MRP,
 	DEV_MOD_DLR,
+	DEV_MOD_HSR,
 };
 
 struct ksz_resp_msg {

@@ -386,10 +386,13 @@
 #define SW_GREEN_COLOR_S		0
 #define SW_COLOR_M			0x3
 
-#define REG_SW_QM_CTRL			0x0390
+#define REG_SW_QM_CTRL__4		0x0390
 
-#define PRIO_SCHEME_SELECT_M		0x3
-#define PRIO_SCHEME_SELECT_S		2
+#define PRIO_SCHEME_SELECT_M		KS_PRIO_M
+#define PRIO_SCHEME_SELECT_S		6
+#define PRIO_MAP_3_HI			0
+#define PRIO_MAP_2_HI			2
+#define PRIO_MAP_0_LO			3
 #define UNICAST_VLAN_BOUNDARY		(1 << 1)
 
 #define REG_SW_EEE_QM_CTRL__2		0x03C0
@@ -1430,7 +1433,7 @@
 #define ACL_TABLE_LEN			16
 
 #define ACL_ACTION_ENABLE		0x003C
-#define ACL_MATCH_ENABLE		0x7FC3
+#define ACL_MATCH_ENABLE		0x7FC0
 #define ACL_RULESET_ENABLE		0x8003
 #define ACL_BYTE_ENABLE			0xFFFF
 

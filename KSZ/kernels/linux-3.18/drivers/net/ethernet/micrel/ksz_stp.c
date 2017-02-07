@@ -4577,6 +4577,12 @@ static void prep_stp_mcast(struct net_device *dev)
 	dev_mc_add(dev, addr);
 }  /* prep_stp_mcast */
 
+static void leave_stp(struct ksz_stp_info *stp)
+{
+	if (stp->dev)
+		dev_mc_del(stp->dev, MAC_ADDR_STP);
+}  /* leave_stp */
+
 static struct stp_ops stp_ops = {
 	.change_addr		= stp_change_addr,
 	.link_change		= stp_link_change,
@@ -4584,6 +4590,8 @@ static struct stp_ops stp_ops = {
 
 static void ksz_stp_exit(struct ksz_stp_info *stp)
 {
+	flush_work(&stp->state_machine);
+	flush_work(&stp->rx_proc);
 }  /* ksz_stp_exit */
 
 static void ksz_stp_init(struct ksz_stp_info *stp, struct ksz_sw *sw)

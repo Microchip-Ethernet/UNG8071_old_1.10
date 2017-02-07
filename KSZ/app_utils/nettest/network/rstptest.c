@@ -140,6 +140,8 @@ int ip_family;
 int ipv6_interface = 0;
 int dbg_rcv = 0;
 int ptp_proto = PTP_PROTO;
+int eth_ucast;
+int eth_vlan;
 
 SOCKET eth_fd[NUM_OF_PORTS];
 SOCKET stp_fd[NUM_OF_PORTS];
@@ -155,8 +157,10 @@ int ptp_unicast = 0;
 #ifdef _SYS_SOCKET_H
 struct sockaddr_ll eth_bpdu_addr[NUM_OF_PORTS];
 struct sockaddr_ll eth_others_addr[NUM_OF_PORTS];
+struct sockaddr_ll eth_ucast_addr[NUM_OF_PORTS];
 u8 *eth_bpdu_buf[NUM_OF_PORTS];
 u8 *eth_others_buf[NUM_OF_PORTS];
+u8 *eth_ucast_buf[NUM_OF_PORTS];
 
 u8 eth_bpdu[] = { 0x01, 0x80, 0xC2, 0x00, 0x00, 0x00 };
 u8 eth_others[] = { 0x01, 0x1B, 0x19, 0x00, 0x00, 0x01 };
@@ -662,6 +666,7 @@ struct tx_job_type {
 	int port;
 	int type;
 	int cnt;
+	u16 vid;
 	uint sec;
 };
 
@@ -831,13 +836,16 @@ static void parse_file(FILE *ifp)
 	int n;
 	int p;
 	int num[6];
+	int vid;
 	struct job_info *job;
 
 	job_cnt = 0;
 	rx_cnt = 0;
 	while (fgets(line, 80, ifp)) {
-		n = sscanf(line, "%s %d %s %s\n",
-			cmd, &cnt, ts_name, type);
+		vid = 0;
+		cmd[0] = '\0';
+		n = sscanf(line, "%s %d %s %s %u\n",
+			cmd, &cnt, ts_name, type, &vid);
 		if (!n)
 			continue;
 		if ('#' == cmd[0])
@@ -864,6 +872,7 @@ printf("  !!\n");
 			job->cmd = 1;
 			job->tx_job.port = p;
 			job->tx_job.type = get_packet_type(type);
+			job->tx_job.vid = (u16) vid;
 			job->tx_job.cnt = cnt;
 			job_cnt++;
 			break;
@@ -922,6 +931,26 @@ printf("  !!\n");
 			job->sec = cnt;
 			job_cnt++;
 			break;
+		case 'd':
+			p = get_ts_port(ts_name);
+			if (p < 0)
+				break;
+			n = sscanf(type, "%02x-%02x-%02x-%02x-%02x-%02x",
+				&num[0],
+				&num[1],
+				&num[2],
+				&num[3],
+				&num[4],
+				&num[5]);
+			if (6 == n) {
+				job->cmd = 7;
+				job->tx_job.port = p;
+				job->tx_job.cnt = cnt;
+				for (n = 0; n < 6; n++)
+					job->addr[n] = (u8) num[n];
+				job_cnt++;
+			}
+			break;
 		}
 	}
 }
@@ -968,16 +997,26 @@ void send_msg(int p, struct ptp_msg *msg, int len, u8 *src)
 	SOCKET sockfd = eth_fd[p];
 	SAI *pservaddr;
 	socklen_t servlen;
+	int index = 14;
 	char *buf = (char *) msg;
 
 	if (!len)
 		len = ntohs(msg->hdr.messageLength);
 
-	pservaddr = (SAI *) &eth_others_addr[p];
+	if (eth_ucast) {
+		pservaddr = (SAI *) &eth_ucast_addr[p];
+		buf = (char *) eth_ucast_buf[p];
+	} else {
+		pservaddr = (SAI *) &eth_others_addr[p];
+		buf = (char *) eth_others_buf[p];
+	}
 	servlen = sizeof(eth_others_addr[0]);
-	buf = (char *) eth_others_buf[p];
 	memcpy(&buf[6], src, 6);
-	memcpy(&buf[14], msg, len);
+	if (eth_vlan) {
+		index += 4;
+		len += 4;
+	}
+	memcpy(&buf[index], msg, len);
 	len += 14;
 	Sendto(sockfd, buf, len, 0, (SA *) pservaddr, servlen);
 }  /* send_msg */
@@ -1708,6 +1747,7 @@ static void process_jobs(void)
 	int i;
 	int j;
 	int p;
+	u16 vid;
 	u8 *buf;
 	int tx_job = 0;
 	struct job_info *job;
@@ -1716,6 +1756,13 @@ static void process_jobs(void)
 		job = &jobs[i];
 		switch (job->cmd) {
 		case 1:
+			p = job->tx_job.port;
+			vid = job->tx_job.vid;
+			if (vid) {
+				u16 *word = (u16 *) &eth_ucast_buf[p][14];
+
+				*word = htons(vid);
+			}
 			add_tx_job(job->tx_job.port, job->tx_job.type,
 				job->tx_job.cnt);
 			tx_job = job->tx_job.cnt;
@@ -1772,6 +1819,14 @@ static void process_jobs(void)
 					rx_num[j][p] = 0;
 				}
 			}
+			break;
+		case 7:
+			p = job->tx_job.port;
+			if (job->tx_job.cnt >= 0) {
+				memcpy(eth_ucast_buf[p], job->addr, 6);
+				eth_ucast = 1;
+			} else
+				eth_ucast = 0;
 			break;
 		}
 	}
@@ -2155,13 +2210,19 @@ ReceiveTask(void *param)
 						&buf[cur].buf[12];
 					msglen -= 12;
 				} else {
+					int index = 14;
+					u16 *word = (u16 *)
+						&buf[cur].buf[12];
+
+					if (*word == ntohs(ETH_P_8021Q))
+						index += 4;
 					msg = (struct ptp_msg *)
-						&buf[cur].buf[14];
-					msglen -= 14;
+						&buf[cur].buf[index];
+					msglen -= index;
 				}
 			} else
 #endif
-				bpdu = (struct bpdu *) buf[cur].buf;
+				msg = (struct ptp_msg *) buf[cur].buf;
 			looped = check_loop(buf[cur].from, len,
 				i / 2);
 			if (looped) {
@@ -2664,6 +2725,7 @@ static SOCKET create_raw(struct ip_info *info, char *dest, int p, int stp)
 	int addr[ETH_ALEN];
 	int cnt;
 	u16 proto;
+	u16 *word;
 	struct sockaddr_ll *sock_addr;
 	u8 *eth_addr;
 	u8 **eth_buf;
@@ -2704,23 +2766,55 @@ static SOCKET create_raw(struct ip_info *info, char *dest, int p, int stp)
 	}
 	sock_addr->sll_addr[6] = 0x00;
 	sock_addr->sll_addr[7] = 0x00;
+#if 1
 		if (setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE,
 		    ethnames[p], strlen(ethnames[p]))) {
 			err_ret("bindtodev");
 			return -1;
 		}
+#endif
 
 	*eth_buf = malloc(1518);
 	memcpy(*eth_buf, sock_addr->sll_addr, ETH_ALEN);
 	memcpy((*eth_buf) + ETH_ALEN, info->hwaddr, ETH_ALEN);
 	eh = (struct ethhdr *) *eth_buf;
 	eh->h_proto = proto;
+	if (eth_vlan) {
+		word = (u16 *)((*eth_buf) + 16);
+		*word-- = proto;
+		*word-- = htons(0);
+		*word-- = htons(ETH_P_8021Q);
+	}
 	if (stp) {
 		llc = (struct llc *)((*eth_buf) + 12);
 		llc->dsap = 0x42;
 		llc->ssap = 0x42;
 		llc->ctrl = 0x03;
 	}
+	memcpy(&eth_ucast_addr[p], sock_addr, sizeof(struct sockaddr_ll));
+	sock_addr = &eth_ucast_addr[p];
+	eth_buf = &eth_ucast_buf[p];
+	if (ETH_ALEN == cnt) {
+		sock_addr->sll_pkttype = PACKET_OTHERHOST;
+		sock_addr->sll_addr[0] = (u8) addr[0];
+		sock_addr->sll_addr[1] = (u8) addr[1];
+		sock_addr->sll_addr[2] = (u8) addr[2];
+		sock_addr->sll_addr[3] = (u8) addr[3];
+		sock_addr->sll_addr[4] = (u8) addr[4];
+		sock_addr->sll_addr[5] = (u8) addr[5];
+	}
+	*eth_buf = malloc(1518);
+	memcpy(*eth_buf, sock_addr->sll_addr, ETH_ALEN);
+	memcpy((*eth_buf) + ETH_ALEN, info->hwaddr, ETH_ALEN);
+	eh = (struct ethhdr *) *eth_buf;
+	eh->h_proto = proto;
+	if (eth_vlan) {
+		word = (u16 *)((*eth_buf) + 16);
+		*word-- = proto;
+		*word-- = htons(0);
+		*word-- = htons(ETH_P_8021Q);
+	}
+	memcpy(ts_addr[p], info->hwaddr, ETH_ALEN);
 
 	return sockfd;
 }
@@ -2786,6 +2880,13 @@ int main(int argc, char *argv[])
 					break;
 				case 'm':
 					unicast_sock = 1;
+					break;
+				case 'u':
+					++i;
+					strcpy(dest_ip, argv[i]);
+					break;
+				case 'v':
+					eth_vlan = 1;
 					break;
 				}
 			}
@@ -2872,8 +2973,11 @@ int main(int argc, char *argv[])
 		}
 		add_multi(stp_fd[p], ethnames[p], eth_bpdu);
 		add_multi(eth_fd[p], ethnames[p], eth_others);
+#if 0
 		memcpy(&eth_bpdu_buf[p][6], hw_addr, ETH_ALEN);
 		memcpy(&eth_others_buf[p][6], hw_addr, ETH_ALEN);
+		memcpy(&eth_ucast_buf[p][6], hw_addr, ETH_ALEN);
+#endif
 		signal_init(&rx_thread[p]);
 	}
 
@@ -2921,6 +3025,7 @@ int main(int argc, char *argv[])
 			del_multi(eth_fd[p], ethnames[p], eth_others);
 			free(eth_bpdu_buf[p]);
 			free(eth_others_buf[p]);
+			free(eth_ucast_buf[p]);
 			closesocket(stp_fd[p]);
 			closesocket(eth_fd[p]);
 		}

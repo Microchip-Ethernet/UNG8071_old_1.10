@@ -43,7 +43,7 @@
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/of.h>
-#if defined(CONFIG_MACB)
+#if defined(CONFIG_MACB) || defined(CONFIG_MACB_MODULE)
 #include <linux/of_gpio.h>
 #include <linux/gpio.h>
 #endif
@@ -128,7 +128,7 @@
 #define KS9897MLI_DEV0			"ksz9897"
 #define KS9897MLI_DEV2			"ksz9897_2"
 
-#define DRV_RELDATE			"Jan 3, 2017"
+#define DRV_RELDATE			"Feb 6, 2017"
 
 /* -------------------------------------------------------------------------- */
 
@@ -626,6 +626,9 @@ static void sw_r(struct ksz_sw *sw, unsigned reg, void *buf, size_t cnt)
 {
 #ifndef CONFIG_KSZ_IBA_ONLY
 	spi_rdreg(sw->dev, reg, buf, cnt);
+#else
+	/* Avoid compiler complaint. */
+	memset(buf, 0, cnt);
 #endif
 }
 
@@ -695,7 +698,7 @@ static int ksz9897_probe(struct spi_device *spi)
 
 	ks->dev = &spi->dev;
 	if (spi->irq <= 0)
-		spi->irq = get_irq(ks, spi->irq);
+		spi->irq = get_irq(ks, &spi->dev, spi->irq);
 
 	/* initialise pre-made spi transfer messages */
 
@@ -706,7 +709,7 @@ static int ksz9897_probe(struct spi_device *spi)
 	spi_message_add_tail(&hw_priv->spi_xfer2[0], &hw_priv->spi_msg2);
 	spi_message_add_tail(&hw_priv->spi_xfer2[1], &hw_priv->spi_msg2);
 
-#if defined(CONFIG_MACB)
+#if defined(CONFIG_MACB) || defined(CONFIG_MACB_MODULE)
 	intr_mode = 1;
 #endif
 	ks->intr_mode = intr_mode ? IRQF_TRIGGER_FALLING :

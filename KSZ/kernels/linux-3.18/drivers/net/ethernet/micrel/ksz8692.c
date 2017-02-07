@@ -16,7 +16,7 @@
  * GNU General Public License for more details.
  */
 
-#if 0
+#if 1
 #define DEBUG
 #endif
 
@@ -1011,6 +1011,7 @@ struct dev_priv {
 	struct dev_info *adapter;
 	struct net_device_stats stats;
 
+	struct phy_device dummy_phy;
 	struct phy_device *phydev;
 	struct work_struct phy_pause;
 
@@ -4111,7 +4112,7 @@ static inline int rx_proc(struct dev_info *hw_priv, struct ksz_hw *hw,
 
 #ifdef CONFIG_1588_PTP
 	ptr = ptp;
-	if (sw->features & PTP_HW) {
+	if (sw_is_switch(sw) && sw->features & PTP_HW) {
 		if (ptp->ops->drop_pkt(ptp, skb, sw->vlan_id, &tag, &ptp_tag)) {
 			dev_kfree_skb_irq(skb);
 			return 0;
@@ -4506,6 +4507,7 @@ static int netdev_close(struct net_device *dev)
 #endif
 	int irq;
 
+printk("%s\n", __func__);
 #ifdef CONFIG_NET_PEGASUS_PASSTHRU
 	if (hw_priv->otherdev) {
 		struct dev_priv *other_priv = netdev_priv(hw_priv->otherdev);
@@ -4520,6 +4522,9 @@ static int netdev_close(struct net_device *dev)
 	if (sw_is_switch(sw))
 		sw->net_ops->close_port(sw, dev, &priv->port);
 #endif
+
+	if (priv->phydev->bus)
+		phy_stop(priv->phydev);
 
 	if (priv->multicast)
 		--hw->all_multi;
@@ -4536,6 +4541,16 @@ static int netdev_close(struct net_device *dev)
 	if (hw->features & MII_SWITCH) {
 		sw->net_ops->close(sw);
 		sw->net_ops->stop(sw, true);
+
+#ifdef CONFIG_KSZ_IBA_ONLY
+		sw->net_ops->leave_dev(sw);
+		if (priv->phydev) {
+			phy_detach(priv->phydev);
+			priv->phydev = &priv->dummy_phy;
+		}
+		ksz_remove(sw->dev);
+		hw_priv->sw = NULL;
+#endif
 	}
 #endif
 
@@ -4561,6 +4576,7 @@ static int netdev_close(struct net_device *dev)
 #ifdef DEBUG_MSG
 	dbg_print_work(&db.dbg_print);
 #endif
+printk("%s.\n", __func__);
 
 	return 0;
 }  /* netdev_close */
@@ -4893,9 +4909,9 @@ static int netdev_open(struct net_device *dev)
 		netif_carrier_off(dev);
 
 		ks = kzalloc(sizeof(struct sw_priv), GFP_KERNEL);
-		ks->hw_dev = dev;
-		ks->irq = get_irq(ks, 34);
+
 		ks->dev = &dev->dev;
+		ks->irq = get_irq(ks, &dev->dev, 34);
 
 		ksz_probe_prep(ks, dev);
 		sw = &ks->sw;
@@ -4903,6 +4919,17 @@ static int netdev_open(struct net_device *dev)
 		sw->net_ops->get_state = get_priv_state;
 		sw->net_ops->set_state = set_priv_state;
 		sw->net_ops->get_priv_port = get_priv_port;
+		sw->netdev[0] = dev;
+		sw->dev_count = 1;
+
+#ifdef CONFIG_1588_PTP
+		do {
+			struct ptp_info *ptp = &sw->ptp_hw;
+
+			ptp->get_clk_cnt = get_clk_cnt;
+			ptp->clk_divider = ksz_system_bus_clock;
+		} while (0);
+#endif
 
 		INIT_DELAYED_WORK(&sw->set_ops, netdev_start_iba);
 
@@ -7983,49 +8010,38 @@ static void netdev_free(struct net_device *dev)
 	struct dev_priv *priv = netdev_priv(dev);
 	struct dev_info *hw_priv = priv->adapter;
 
+printk("%s %p\n", __func__, dev);
 	/* Just free net device if not created yet. */
 	if (IS_ERR(priv->phydev)) {
 		free_netdev(dev);
 		return;
 	}
+
+	exit_netdev_sysfs(dev);
+	if (dev == hw_priv->main_dev)
+		exit_sysfs(dev);
+
+	/* netdev_close will be called here if not called before. */
+	if (dev->watchdog_timeo)
+		unregister_netdev(dev);
+
 #ifdef HAVE_KSZ_SWITCH
 	if (priv->phydev) {
 		struct ksz_sw *sw = hw_priv->sw;
 
 		if (sw_is_switch(sw)) {
-#ifdef CONFIG_1588_PTP
-			if (sw->features & PTP_HW) {
-				struct ptp_info *ptp = &sw->ptp_hw;
-
-				ptp->ops->exit(ptp);
-			}
-#endif
-
-#ifdef CONFIG_KSZ_IBA_ONLY
-			ksz_remove(sw->dev);
-#endif
-		}
-		if (hw_priv->hw.features & MII_SWITCH) {
+			sw->net_ops->leave_dev(sw);
 			phy_detach(priv->phydev);
 			priv->phydev = NULL;
 		}
 	}
 #endif
-	/* It is a pseudo placeholder phy device. */
-	if (priv->phydev && !priv->phydev->bus) {
-		kfree(priv->phydev);
-		priv->phydev = NULL;
-	}
-	if (priv->phydev) {
-		phy_stop(priv->phydev);
-		phy_disconnect(priv->phydev);
-	}
 
-	exit_netdev_sysfs(dev);
-	if (dev == hw_priv->main_dev)
-		exit_sysfs(dev);
-	if (dev->watchdog_timeo)
-		unregister_netdev(dev);
+	/* It is a pseudo placeholder phy device. */
+	if (priv->phydev == &priv->dummy_phy)
+		priv->phydev = NULL;
+	if (priv->phydev)
+		phy_disconnect(priv->phydev);
 
 	free_netdev(dev);
 }  /* netdev_free */
@@ -8299,10 +8315,19 @@ static void netdev_start_iba(struct work_struct *work)
 	if (2 != iba->use_iba)
 		return;
 
+	dev = sw->netdev[0];
+	priv = netdev_priv(dev);
+	hw_priv = priv->adapter;
+	hw = &hw_priv->hw;
+
 	sw->reg = &sw_iba_ops;
 	iba->cnt = 0;
-	if (ksz_probe_next(sw->dev))
+	if (ksz_probe_next(sw->dev)) {
+		priv->parent = NULL;
+		hw->features &= ~MII_SWITCH;
+		hw_priv->sw = NULL;
 		return;
+	}
 
 #ifdef CONFIG_1588_PTP
 	ptp->reg = &ptp_iba_ops;
@@ -8319,18 +8344,9 @@ static void netdev_start_iba(struct work_struct *work)
 	sw->net_ops->setup_special(sw, &port_count, &mib_port_count,
 		&dev_count);
 
-	dev = sw->netdev[0];
-	priv = netdev_priv(dev);
-	hw_priv = priv->adapter;
-	hw = &hw_priv->hw;
-
 	priv->phy_addr = sw->net_ops->setup_dev(sw, dev, dev_name, &priv->port,
 		0, port_count, mib_port_count);
 
-#ifdef CONFIG_1588_PTP
-	if (sw->features & PTP_HW)
-		ptp->ops->init(ptp, dev->dev_addr);
-#endif
 	rx_mode = sw->net_ops->open_dev(sw, dev, dev->dev_addr);
 	if (rx_mode & 1) {
 		hw->all_multi = 1;
@@ -8459,6 +8475,7 @@ static int netdev_probe(struct platform_device *pdev)
 	int port_mii = 0;
 #endif
 
+printk("%s 1\n", __func__);
 	info = kzalloc(sizeof(struct platform_info), GFP_KERNEL);
 	if (!info)
 		goto netdev_probe_devinfo_err;
@@ -8475,6 +8492,7 @@ static int netdev_probe(struct platform_device *pdev)
 	hw_priv->sw = sw;
 #endif
 
+printk("%s 2\n", __func__);
 	/* First device is WAN port. */
 	if (0 == pdev->id) {
 		mem_start = (uint) KS_VIO_BASE + KS_WAN_DMA_TX;
@@ -8548,6 +8566,7 @@ static int netdev_probe(struct platform_device *pdev)
 	}
 #endif
 
+printk("%s 3\n", __func__);
 	hw_init(hw);
 
 	/* Default MTU is 1500. */
@@ -8585,6 +8604,7 @@ static int netdev_probe(struct platform_device *pdev)
 	init_waitqueue_head(&hw_priv->counter.counter);
 
 	INIT_WORK(&hw_priv->mib_read, mib_read_work);
+printk("%s 4\n", __func__);
 
 	/* 500 ms timeout */
 	ksz_init_timer(&hw_priv->mib_timer_info, 500 * HZ / 1000,
@@ -8669,6 +8689,7 @@ static int netdev_probe(struct platform_device *pdev)
 			priv->dev = dev;
 		}
 #endif
+printk("%s 5\n", __func__);
 
 		priv->id = net_device_present;
 
@@ -8695,8 +8716,11 @@ static int netdev_probe(struct platform_device *pdev)
 			 */
 			netif_carrier_off(dev);
 		} else {
+#if 0
 			priv->phydev = kzalloc(sizeof(struct phy_device),
 				GFP_KERNEL);
+#endif
+			priv->phydev = &priv->dummy_phy;
 			priv->phydev->link = 1;
 			priv->phydev->duplex = 1;
 #if !defined(CONFIG_KSZ_IBA_ONLY)
@@ -8726,6 +8750,7 @@ static int netdev_probe(struct platform_device *pdev)
 			strlcpy(dev_name, dev->name, IFNAMSIZ);
 #endif
 	}
+printk("%s 6\n", __func__);
 #ifdef HAVE_KSZ_SWITCH
 	if (sw_is_switch(sw)) {
 		dev = sw->netdev[0];
@@ -8754,9 +8779,11 @@ static int netdev_probe(struct platform_device *pdev)
 
 			ptp->get_clk_cnt = get_clk_cnt;
 			ptp->clk_divider = ksz_system_bus_clock;
+#if 0
 			ptp->ops->init(ptp, hw->mac_addr);
 			if (ptp->version < 1)
 				sw->features &= ~VLAN_PORT_REMOVE_TAG;
+#endif
 
 			err = init_ptp_sysfs(&hw_priv->ptp_sysfs, &dev->dev);
 			if (err)
@@ -8778,6 +8805,7 @@ static int netdev_probe(struct platform_device *pdev)
 		info->netdev->name);
 
 	hw_init_cnt(hw);
+printk("%s 7\n", __func__);
 
 	/* tasklet is enabled. */
 	tasklet_init(&hw_priv->rx_tasklet, rx_proc_task,
@@ -8806,6 +8834,7 @@ static int netdev_probe(struct platform_device *pdev)
 		}
 	}
 #endif
+printk("%s 8\n", __func__);
 	return 0;
 
 netdev_probe_reg_err:
@@ -8841,6 +8870,7 @@ static int netdev_remove(struct platform_device *pdev)
 	struct ksz_sw *sw = hw_priv->sw;
 #endif
 
+printk("%s\n", __func__);
 	platform_set_drvdata(pdev, NULL);
 
 #ifdef CONFIG_NET_PEGASUS_PASSTHRU
@@ -8853,6 +8883,7 @@ static int netdev_remove(struct platform_device *pdev)
 		int i;
 		int dev_count = sw->dev_count + sw->dev_offset;
 
+#ifndef CONFIG_KSZ_IBA_ONLY
 		dev = sw->netdev[0];
 		if (dev) {
 #ifdef CONFIG_KSZ_DLR
@@ -8863,8 +8894,10 @@ static int netdev_remove(struct platform_device *pdev)
 			if (sw->features & PTP_HW)
 				exit_ptp_sysfs(&hw_priv->ptp_sysfs, &dev->dev);
 #endif
+printk("%s %p\n", __func__, hw_priv);
 			exit_sw_sysfs(sw, &hw_priv->sysfs, &dev->dev);
 		}
+#endif
 		for (i = 0; i < dev_count; i++) {
 			dev = sw->netdev[i];
 			if (dev)
@@ -9391,6 +9424,7 @@ device_reg_err:
 static void __exit platform_exit(void)
 {
 	platform_driver_unregister(&netdev_driver);
+printk("%s 1\n", __func__);
 	platform_free_devices(device_present);
 #ifndef CONFIG_PEGASUS_NO_MDIO
 	ksz_mdio_exit();
@@ -9410,6 +9444,7 @@ static void __exit platform_exit(void)
 #ifdef CONFIG_KSZ9897_EMBEDDED
 	ksz9897_exit();
 #endif
+printk("%s\n", __func__);
 }  /* platform_exit */
 
 #if defined(CONFIG_SPI_FTDI) && defined(CONFIG_NET_PEGASUS)

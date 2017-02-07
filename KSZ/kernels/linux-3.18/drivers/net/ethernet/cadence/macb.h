@@ -81,6 +81,12 @@
 #define GEM_SA4B				0x00A0
 #define GEM_SA4T				0x00A4
 #define GEM_OTX					0x0100
+#define GEM_OTLO				0x0100
+#define GEM_OTHI				0x0104
+#define GEM_ORLO				0x0150
+#define GEM_ORHI				0x0154
+#define GEM_ROE					0x01A4
+#define GEM_UCE					0x01B0
 #define GEM_DCFG1				0x0280
 #define GEM_DCFG2				0x0284
 #define GEM_DCFG3				0x0288
@@ -116,6 +122,10 @@
 #define MACB_NCR_TPF_SIZE			1
 #define MACB_TZQ_OFFSET				12
 #define MACB_TZQ_SIZE				1
+#define MACB_RX_PBPF_OFFSET			16
+#define MACB_RX_PBPF_SIZE			1
+#define MACB_TX_PBPF_OFFSET			17
+#define MACB_TX_PBPF_SIZE			1
 
 /* Bitfields in NCFGR */
 #define MACB_SPD_OFFSET				0
@@ -647,9 +657,11 @@ struct macb {
 	dma_addr_t skb_physaddr;		/* phys addr from pci_map_single */
 	int skb_length;				/* saved skb length for pci_unmap_single */
 	unsigned int		max_tx_length;
+	u64			counters[sizeof(struct gem_stats) / 4];
 
 #ifdef HAVE_KSZ_SWITCH
 	struct macb		*hw_priv;
+	struct phy_device	dummy_phy;
 	struct ksz_port		port;
 	struct mii_if_info	mii_if;
 	int			phy_addr;

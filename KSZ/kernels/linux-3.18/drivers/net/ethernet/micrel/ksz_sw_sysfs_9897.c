@@ -335,6 +335,7 @@ NETLAN_RD_ENTRY(dev_start);
 NETLAN_RD_ENTRY(vlan_start);
 NETLAN_RD_ENTRY(avb);
 NETLAN_RD_ENTRY(stp);
+NETLAN_RD_ENTRY(two_dev);
 NETLAN_WR_ENTRY(authen);
 
 NETLAN_WR_ENTRY(alu_fid);
@@ -639,6 +640,7 @@ static struct attribute *lan_attrs[] = {
 	&lan_attr_vlan_start.attr,
 	&lan_attr_avb.attr,
 	&lan_attr_stp.attr,
+	&lan_attr_two_dev.attr,
 	&lan_attr_authen.attr,
 
 	&lan_attr_alu_fid.attr,

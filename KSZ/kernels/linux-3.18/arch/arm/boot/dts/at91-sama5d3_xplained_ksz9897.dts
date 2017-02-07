@@ -105,7 +105,8 @@
 			};
 
 			macb0: ethernet@f0028000 {
-				phy-mode = "rgmii";
+				phy-mode = "rgmii-txid";
+				gpios = <&pioB 28 GPIO_ACTIVE_LOW>;
 				status = "okay";
 			};
 
@@ -145,14 +146,14 @@
 				status = "okay";
 
 				ksz9477: ksz9477@0 {
-					compatible = "microchip,ksz9477";
+					compatible = "microchip,ksz9477", "microchip,ksz9893";
 					reg = <0>;
 
 					/* Bus clock is 132 MHz. */
 					spi-max-frequency = <44000000>;
 					spi-cpha;
 					spi-cpol;
-					gpios = <&pioB 10 GPIO_ACTIVE_LOW>;
+					gpios = <&pioB 28 GPIO_ACTIVE_LOW>;
 					status = "okay";
 				};
 			};
@@ -220,7 +221,7 @@
 
 					pinctrl_spi_ksz: spi_ksz {
 						atmel,pins =
-							<AT91_PIOB 10 AT91_PERIPH_GPIO AT91_PINCTRL_DEGLITCH>;
+							<AT91_PIOB 28 AT91_PERIPH_GPIO AT91_PINCTRL_DEGLITCH>;
 					};
 				};
 			};

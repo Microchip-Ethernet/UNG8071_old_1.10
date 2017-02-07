@@ -19,6 +19,7 @@
 #define KSZ_HSR_H
 
 #include "hsr_main.h"
+#include "ksz_hsr_api.h"
 
 
 struct hsr_frame_info {
@@ -46,6 +47,9 @@ struct hsr_ops {
 	void (*set_redbox_id)(struct ksz_hsr_info *info, u8 id);
 	u8 (*get_net_id)(struct ksz_hsr_info *info);
 	void (*set_net_id)(struct ksz_hsr_info *info, u8 id);
+
+	int (*dev_req)(struct ksz_hsr_info *hsr, char *arg, void *info);
+
 };
 
 
@@ -72,7 +76,9 @@ struct ksz_hsr_info {
 	int len;
 	int state;
 	u8 ports[2];
+	u32 cap;
 	u16 member;
+	u16 part_cnt;
 	struct delayed_work chk_ring;
 	u16 seq_num;
 	u16 check:1;
@@ -81,6 +87,9 @@ struct ksz_hsr_info {
 	u16 p2_down:1;
 	u16 p1_lost:1;
 	u16 p2_lost:1;
+
+	struct sw_dev_info *dev_info;
+	uint notifications;
 
 	uint overrides;
 

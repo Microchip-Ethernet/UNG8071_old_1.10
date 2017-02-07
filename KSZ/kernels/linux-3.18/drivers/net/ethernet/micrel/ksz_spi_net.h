@@ -1,7 +1,7 @@
 /**
  * Microchip SPI switch common header
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2012-2015 Micrel, Inc.
@@ -160,6 +160,7 @@ struct dev_priv {
 	struct ksz_timer_info monitor_timer_info;
 	struct net_device_stats stats;
 
+	struct phy_device dummy_phy;
 	struct phy_device *phydev;
 	struct work_struct phy_pause;
 

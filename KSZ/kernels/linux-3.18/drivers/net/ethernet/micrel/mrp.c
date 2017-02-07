@@ -1832,19 +1832,22 @@ static void mrp_uninit_applicant(struct mrp_port *port,
 	/* Delete timer and generate a final TX event to flush out
 	 * all pending messages before the applicant is gone.
 	 */
-	del_timer_sync(&app->join_timer);
-	del_timer_sync(&app->periodic_timer);
-	del_timer_sync(&app->leave_timer);
-	del_timer_sync(&app->lva_timer);
 
+	/* TX event actually may arm several timers. */
 	spin_lock_bh(&app->lock);
 	mrp_mad_event(app, MRP_EVENT_TX);
 	spin_unlock_bh(&app->lock);
 
-	dev_mc_del(app->dev, appl->group_address);
-#if 0
-	kfree_rcu(app, rcu);
-#endif
-}
+	del_timer_sync(&app->join_timer);
+	del_timer_sync(&app->periodic_timer);
+	del_timer_sync(&app->leave_timer);
+	del_timer_sync(&app->lva_timer);
+	flush_work(&app->join_work);
+	flush_work(&app->periodic_work);
+	flush_work(&app->leave_work);
+	flush_work(&app->lva_work);
 
+	dev_mc_del(app->dev, appl->group_address);
+	kfree_rcu(app, rcu);
+}
 

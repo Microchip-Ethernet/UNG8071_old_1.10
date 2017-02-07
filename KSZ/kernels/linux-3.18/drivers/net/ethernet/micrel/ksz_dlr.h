@@ -179,7 +179,6 @@ struct ksz_dlr_beacon_info {
 	struct ksz_dlr_beacon last;
 };
 
-#define DLR_BEACON_LEAK_HACK		(1 << 0)
 #define DLR_BEACON_STATE_HACK		(1 << 1)
 #define DLR_TEST_SEQ			(1 << 30)
 #define DLR_TEST			(1 << 31)
@@ -214,7 +213,6 @@ struct ksz_dlr_info {
 	u32 reset:1;
 	u32 start:1;
 	u32 chk_hw:1;
-	u32 block:1;
 
 	struct ksz_dlr_gateway_capable attrib;
 	struct ksz_dlr_active_node last_sup;
@@ -231,7 +229,7 @@ struct ksz_dlr_info {
 	u8 ring_state;
 	u8 drop_beacon;
 	u32 skip_beacon:1;
-	u32 both_open:1;
+	u32 disable_learn:1;
 	u8 LastBcnRcvPort;
 	struct ksz_dlr_beacon_info beacon_info[2];
 	u32 interval;
@@ -243,9 +241,11 @@ struct ksz_dlr_info {
 	struct ksz_timer_info announce_timeout_timer_info;
 	struct ksz_timer_info neigh_chk_timer_info;
 	struct ksz_timer_info signon_timer_info;
+	struct ksz_timer_info test_timer_info;
 	struct delayed_work announce_tx;
 	u32 beacon_timeout_ports;
 	struct work_struct delay_proc;
+	struct work_struct neigh_chk_proc;
 	struct sk_buff_head rxq;
 	void (*state_machine)(struct ksz_dlr_info *info);
 	struct ksz_dlr_tx_frame last_beacon[2];
@@ -253,7 +253,6 @@ struct ksz_dlr_info {
 	u32 stop:1;
 	u32 tx_signon:1;
 	u32 tx_announce:1;
-	u32 tx_status:1;
 	u32 tx_advertise:1;
 	u32 tx_flush_tables:1;
 	u32 link_change:1;
@@ -286,6 +285,7 @@ struct ksz_dlr_info {
 	u32 seqid_accept[2];
 	u8 ports[2];
 	u16 member;
+	u16 ok_ports;
 
 	struct ksz_dlr_super_info supers[DLR_SUPERVISOR_NUM];
 	struct ksz_dlr_super_info *rogue_super;
@@ -295,6 +295,7 @@ struct ksz_dlr_info {
 	u8 ignore_req;
 	u8 req_cnt[2];
 	u8 link_break;
+	unsigned long fault_jiffies;
 
 	struct sw_dev_info *dev_info;
 	uint notifications;
@@ -311,6 +312,7 @@ struct dlr_attributes {
 	int interval;
 	int timeout;
 	int vid;
+	int cfg;
 	int state;
 	int port;
 

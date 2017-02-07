@@ -676,7 +676,6 @@ static void sw_change(struct work_struct *work)
 	struct ksz_sw *sw = &ks->sw;
 	SW_D status;
 
-	ks->intr_working = true;
 	mutex_lock(&ks->hwlock);
 	mutex_lock(&ks->lock);
 	sw->intr_using++;
@@ -687,7 +686,13 @@ static void sw_change(struct work_struct *work)
 		HW_W(ks, REG_INT_STATUS, status);
 		status &= ~ks->intr_mask;
 		schedule_delayed_work(&ks->link_read, 0);
-	}
+		if (ks->intr_working & 0x80000000)
+			ks->intr_working |= 1;
+		ks->intr_working |= 0x80000000;
+	} else
+		ks->intr_working &= ~0x80000000;
+	if (!(ks->intr_working & 0x80000000))
+		ks->intr_working = 0;
 	sw->intr_using--;
 	mutex_unlock(&ks->lock);
 	if (status) {
@@ -1498,7 +1503,7 @@ static void ksz8895_dev_monitor(unsigned long ptr)
 				schedule_work(&priv->port->link_update);
 		}
 	}
-	if (!hw_priv->intr_working)
+	if (!(hw_priv->intr_working & 1))
 		schedule_delayed_work(&hw_priv->link_read, 0);
 
 	ksz_update_timer(&hw_priv->monitor_timer_info);

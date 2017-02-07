@@ -1,7 +1,7 @@
 /**
  * Microchip HSR code
  *
- * Copyright (c) 2016 Microchip Technology Inc.
+ * Copyright (c) 2016-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright 2011-2014 Autronica Fire and Security AS
@@ -237,6 +237,7 @@ struct hsr_node *hsr_add_node(struct list_head *node_db, unsigned char addr[],
 		not_self = memcmp(addr, info->src_addr, ETH_ALEN);
 		if (not_self)
 			proc_hsr_cfg(info, addr, info->member);
+		info->part_cnt++;
 	} while (0);
 
 	return node;
@@ -324,6 +325,7 @@ void hsr_handle_sup_frame(struct sk_buff *skb, struct hsr_node *node_curr,
 {
 	struct hsr_node *node_real;
 	struct hsr_sup_payload *hsr_sp;
+	struct hsr_sup_type *hsr_stype;
 	struct list_head *node_db;
 	int i;
 
@@ -334,6 +336,15 @@ void hsr_handle_sup_frame(struct sk_buff *skb, struct hsr_node *node_curr,
 	if (ether_addr_equal(eth_hdr(skb)->h_source, hsr_sp->MacAddressA))
 		/* Not sent from MacAddressB of a PICS_SUBS capable node */
 		goto done;
+
+	/* Check frame sent by RedBox. */
+	hsr_stype = (struct hsr_sup_type *)(hsr_sp + 1);
+	if (HSR_TLV_REDBOX == hsr_stype->HSR_TLV_Type) {
+		hsr_sp = (struct hsr_sup_payload *)(hsr_stype + 1);
+		if (ether_addr_equal(eth_hdr(skb)->h_source,
+		    hsr_sp->MacAddressA))
+			goto done;
+	}
 
 	/* Merge node_curr (registered on MacAddressB) into node_real */
 	node_db = &port_rcv->hsr->node_db;
@@ -530,6 +541,35 @@ static struct hsr_port *get_late_port(struct hsr_priv *hsr,
 #endif
 
 
+static void hsr_notify_link_lost(struct ksz_hsr_info *info)
+{
+dbg_msg(" hsr: %u %u:%u %u:%u\n", info->ring,
+	info->p1_down, info->p2_down, info->p1_lost, info->p2_lost);
+	if (info->dev_info) {
+		u8 buf[sizeof(struct ksz_resp_msg) +
+			sizeof(struct ksz_hsr_node)];
+		struct ksz_resp_msg *msg = (struct ksz_resp_msg *) buf;
+		struct ksz_hsr_node active;
+
+		msg->module = DEV_MOD_HSR;
+		msg->cmd = DEV_INFO_HSR_LINK;
+		msg->resp.data[0] = 0;
+		if (info->p1_down)
+			msg->resp.data[0] |= 0x01;
+		if (info->p2_down)
+			msg->resp.data[0] |= 0x02;
+		if (info->p1_lost)
+			msg->resp.data[0] |= 0x04;
+		if (info->p2_lost)
+			msg->resp.data[0] |= 0x08;
+		memcpy(active.addr, info->src_addr, ETH_ALEN);
+		memcpy(&msg->resp.data[1], &active,
+			sizeof(struct ksz_hsr_node));
+		sw_setup_msg(info->dev_info, msg, sizeof(struct ksz_resp_msg) +
+			sizeof(struct ksz_hsr_node), NULL, NULL);
+	}
+}  /* hsr_notify_link_lost */
+
 #ifdef CONFIG_HAVE_HSR_HW
 static void hsr_chk_ring(struct work_struct *work)
 {
@@ -604,8 +644,7 @@ exp_seq[0], exp_seq[1]);
 		change = 1;
 	}
 	if (change)
-dbg_msg(" hsr: %u %u:%u %u:%u\n", info->ring,
-	info->p1_down, info->p2_down, info->p1_lost, info->p2_lost);
+		hsr_notify_link_lost(info);
 	info->check = 0;
 }  /* hsr_chk_ring */
 #endif
@@ -681,8 +720,10 @@ jiffies - timestamp);
 					msecs_to_jiffies(HSR_NODE_FORGET_TIME))) {
 			struct ksz_hsr_info *info = container_of(hsr,
 				struct ksz_hsr_info, hsr);
-			if (!node->slave)
+			if (!node->slave) {
 				proc_hsr_cfg(info, node->MacAddressA, 0);
+				info->part_cnt--;
+			}
 
 #if 1
 dbg_msg("forget: %02x:%02x:%02x:%02x:%02x:%02x %lx %lx %lx; %ld\n",
@@ -804,20 +845,13 @@ static int hsr_dev_xmit(struct ksz_hsr_info *info, struct net_device *dev,
 	struct sk_buff *skb)
 {
 	int rc;
-	struct ksz_sw *sw = info->sw_dev;
 	const struct net_device_ops *ops = dev->netdev_ops;
 
 	skb->dev = dev;
-	do {
-		rc = ops->ndo_start_xmit(skb, skb->dev);
-		if (NETDEV_TX_BUSY == rc) {
-			rc = wait_event_interruptible_timeout(sw->queue,
-				!netif_queue_stopped(dev),
-				50 * HZ / 1000);
-
-			rc = NETDEV_TX_BUSY;
-		}
-	} while (NETDEV_TX_BUSY == rc);
+	rc = ops->ndo_start_xmit(skb, skb->dev);
+	if (NETDEV_TX_BUSY == rc) {
+		dev_kfree_skb_irq(skb);
+	}
 	return rc;
 }  /* hsr_dev_xmit */
 
@@ -967,6 +1001,9 @@ static void prep_hsr_supervision_slave_frame(struct ksz_hsr_info *info)
 
 	hsr_sp = (struct hsr_sup_payload *)(hsr_stype + 1);
 	ether_addr_copy(hsr_sp->MacAddressA, info->redbox->dev_addr);
+
+	/* Cannot have different source MAC address. */
+	ether_addr_copy(hsr_sp->MacAddressA, info->src_addr);
 	len += sizeof(struct hsr_sup_payload);
 
 	/* Last TLV */
@@ -1025,7 +1062,12 @@ static void hsr_announce(unsigned long data)
 		if (1 != node->slave)
 			continue;
 
+		/*
+		 * Cannot use different source MAC address because
+		 * self-address filtering is used to drop frames sent by self.
+		 */
 		memcpy(vlan->h_source, node->MacAddressA, ETH_ALEN);
+		memcpy(vlan->h_source, info->src_addr, ETH_ALEN);
 
 		hsr_stype = (struct hsr_sup_type *)(hsr_stag + 1);
 		hsr_sp = (struct hsr_sup_payload *)(hsr_stype + 1);
@@ -1162,49 +1204,6 @@ static struct sk_buff *create_tagged_skb(struct sk_buff *skb,
 
 	return skb;
 }
-
-static u8 host_only_addr[][ETH_ALEN] = {
-	{ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x00 },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x02 },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x03 },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x04 },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x05 },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x06 },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x07 },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x08 },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x09 },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x0A },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x0B },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x0C },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x0D },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x0F },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x20 },
-	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x21 },
-};
-
-static int need_forward(u8 *addr, u8 *self)
-{
-	/* Check for multicast addresses that are not forwarding. */
-	if (addr[0] & 0x01) {
-		int i;
-
-		for (i = 0; i < sizeof(host_only_addr) / ETH_ALEN; i++) {
-			if (!memcmp(addr, host_only_addr[i], ETH_ALEN)) {
-				if (0 == i)
-					break;
-				else
-					return 0;
-			}
-		}
-		return 2;
-
-	/* Check unicast address to host. */
-	} else if (!memcmp(addr, self, ETH_ALEN))
-		return 0;
-	return 1;
-}  /* need_forward */
 
 /* If the original frame was an HSR tagged frame, just clone it to be sent
  * unchanged. Otherwise, create a private frame especially tagged for 'port'.
@@ -1349,12 +1348,22 @@ dbg_msg(" S ");
 
 		if (!info->redbox)
 			return;
-		forward = need_forward(skb->data, info->src_addr);
+		do {
+			struct ksz_sw *sw = info->sw_dev;
+
+			if (sw->info->forward & FWD_UCAST)
+				forward = 1;
+			else if (sw->info->forward & FWD_MCAST)
+				forward = 2;
+			else
+				forward = 0;
+		} while (0);
+#if 0
 #if 1
 		if (forward && (path_id >> 1) == info->hsr.redbox_id)
 			forward = 0;
 #endif
-#ifdef CONFIG_1588_PTP
+#ifdef CONFIG_1588_PTP_
 		/* Do not forward PTP messages. */
 		if (forward) {
 			struct ksz_sw *sw = info->sw_dev;
@@ -1376,6 +1385,7 @@ dbg_msg(" S ");
 			if (new_skb)
 				hsr_dev_xmit(info, info->redbox, new_skb);
 		}
+#endif
 		return;
 
 	}
@@ -1545,12 +1555,15 @@ static void *check_hsr_frame(u8 *data, struct hsr_frame_info *frame)
 
 static int hsr_chk(struct ksz_hsr_info *info, struct sk_buff *skb, int port)
 {
+#if 0 
 	struct sk_buff *new_skb;
+#endif
 	struct hsr_node *node;
 	struct list_head *node_db;
 	int forward;
 	struct vlan_ethhdr *vlan = (struct vlan_ethhdr *) skb->data;
 	int ret = 2;
+	struct ksz_sw *sw = info->sw_dev;
 
 	if (!info->redbox)
 		return ret;
@@ -1559,19 +1572,14 @@ static int hsr_chk(struct ksz_hsr_info *info, struct sk_buff *skb, int port)
 	if (port == info->ports[0] || port == info->ports[1])
 		return ret;
 
-	forward = need_forward(vlan->h_dest, skb->dev->dev_addr);
+	if (sw->info->forward & FWD_UCAST)
+		forward = 1;
+	else if (sw->info->forward & FWD_MCAST)
+		forward = 2;
+	else
+		forward = 0;
 	if (!forward)
 		return ret;
-
-#if defined(CONFIG_1588_PTP) && defined(CONFIG_HAVE_KSZ9897)
-	/* Do not forward PTP messages. */
-	if (forward) {
-		struct ksz_sw *sw = info->sw_dev;
-
-		if (sw->tag.ports & 0x80)
-			return ret;
-	}
-#endif
 
 	node_db = &info->hsr.node_db;
 	node = find_node_by_AddrA(node_db, vlan->h_source);
@@ -1592,7 +1600,13 @@ static int hsr_chk(struct ksz_hsr_info *info, struct sk_buff *skb, int port)
 		info->hsr_stag = info->slave_hsr_stag;
 
 		vlan = (struct vlan_ethhdr *) info->slave_sup_frame;
+
+		/*
+		 * Cannot use different source MAC address because
+		 * self-address filtering is used to drop frames sent by self.
+		 */
 		memcpy(vlan->h_source, node->MacAddressA, ETH_ALEN);
+		memcpy(vlan->h_source, info->src_addr, ETH_ALEN);
 
 		hsr_stype = (struct hsr_sup_type *)(hsr_stag + 1);
 		hsr_sp = (struct hsr_sup_payload *)(hsr_stype + 1);
@@ -1603,6 +1617,7 @@ static int hsr_chk(struct ksz_hsr_info *info, struct sk_buff *skb, int port)
 		node->time_in[HSR_PT_SLAVE_A] = jiffies;
 		node->time_in_stale[HSR_PT_SLAVE_A] = false;
 	}
+#if 0
 	if (1 == forward) {
 		new_skb = skb;
 		ret = 0;
@@ -1612,8 +1627,12 @@ static int hsr_chk(struct ksz_hsr_info *info, struct sk_buff *skb, int port)
 			return ret;
 	}
 
+	/* Replace source MAC address. */
+	memcpy(&new_skb->data[6], info->src_addr, ETH_ALEN);
+
 	/* Send frame to HSR device. */
 	hsr_dev_xmit(info, info->dev, new_skb);
+#endif
 	return ret;
 }  /* hsr_chk */
 
@@ -1685,6 +1704,7 @@ static void prep_hsr_redbox_addr(struct ksz_hsr_info *info)
 	hsr_stype = (struct hsr_sup_type *)(hsr_sp + 1);
 	hsr_sp = (struct hsr_sup_payload *)(hsr_stype + 1);
 	ether_addr_copy(hsr_sp->MacAddressA, info->redbox->dev_addr);
+	ether_addr_copy(hsr_sp->MacAddressA, info->src_addr);
 }  /* prep_hsr_redbox_addr */
 
 static void hsr_change_addr(struct ksz_hsr_info *info, struct net_device *dev)
@@ -1697,11 +1717,25 @@ static void hsr_change_addr(struct ksz_hsr_info *info, struct net_device *dev)
 	if (info->dev == dev) {
 		if (!memcmp(info->src_addr, dev->dev_addr, ETH_ALEN))
 			return;
-		sw->ops->cfg_mac(sw, 0, info->src_addr, 0,
+		sw->ops->cfg_mac(sw, BRIDGE_ADDR_ENTRY, info->src_addr, 0,
 			false, false, 0);
+		if (sw->eth_cnt > 1) {
+			sw->ops->cfg_mac(sw, DEV_0_ADDR_ENTRY, info->src_addr,
+				0, false, false, sw->eth_maps[0].vlan);
+			sw->ops->cfg_mac(sw, DEV_1_ADDR_ENTRY, info->src_addr,
+				0, false, false, sw->eth_maps[1].vlan);
+		}
 		prep_hsr_addr(info, dev->dev_addr);
-		sw->ops->cfg_mac(sw, 0, info->src_addr, sw->HOST_MASK,
-			false, false, 0);
+		sw->ops->cfg_mac(sw, BRIDGE_ADDR_ENTRY, info->src_addr,
+			sw->HOST_MASK, false, false, 0);
+		if (sw->eth_cnt > 1) {
+			sw->ops->cfg_mac(sw, DEV_0_ADDR_ENTRY, info->src_addr,
+				sw->HOST_MASK, false, false,
+				sw->eth_maps[0].vlan);
+			sw->ops->cfg_mac(sw, DEV_1_ADDR_ENTRY, info->src_addr,
+				sw->HOST_MASK, false, false,
+				sw->eth_maps[1].vlan);
+		}
 	} else {
 		prep_hsr_redbox_addr(info);
 	}
@@ -1713,8 +1747,7 @@ static void hsr_link_change(struct ksz_hsr_info *info, int link1, int link2)
 	info->p2_down = !link2;
 	if (info->ring && (info->p1_down || info->p2_down)) {
 		info->ring = 0;
-dbg_msg(" hsr: %u %u:%u %u:%u\n", info->ring,
-	info->p1_down, info->p2_down, info->p1_lost, info->p2_lost);
+		hsr_notify_link_lost(info);
 	}
 }  /* hsr_link_change */
 
@@ -1826,7 +1859,18 @@ static int hsr_dev_finalize(struct ksz_hsr_info *info)
 static void hsr_dev_destroy(struct ksz_hsr_info *info)
 {
 	struct hsr_priv *hsr = &info->hsr;
+	struct hsr_node *node;
 
+	node = list_first_or_null_rcu(&hsr->self_node_db, struct hsr_node,
+				      mac_list);
+	if (node) {
+		list_del_rcu(&node->mac_list);
+		kfree_rcu(node, rcu_head);
+	}
+	list_for_each_entry_rcu(node, &hsr->node_db, mac_list) {
+		list_del_rcu(&node->mac_list);
+		kfree_rcu(node, rcu_head);
+	}
 	del_timer_sync(&hsr->prune_timer);
 	del_timer_sync(&hsr->announce_timer);
 	info->state = -1;
@@ -1851,6 +1895,166 @@ static void setup_hsr_redbox(struct ksz_hsr_info *info, struct net_device *dev)
 	prep_hsr_supervision_slave_frame(info);
 }  /* setup_hsr_redbox */
 
+static int hsr_get_attrib(struct ksz_hsr_info *info, int subcmd, int size,
+	int *req_size, size_t *len, u8 *data, int *output)
+{
+	struct hsr_node *node;
+	struct ksz_hsr_node *active;
+	struct hsr_priv *hsr = &info->hsr;
+	union hsr_data *attrib = (union hsr_data *) data;
+
+	*len = 0;
+	*output = 0;
+	switch (subcmd) {
+	case HSR_GET_NETWORK_STATUS:
+		*len = 1;
+		attrib->byte = info->ring;
+		break;
+	case HSR_GET_CAPABILITY_FLAGS:
+		*len = 4;
+		attrib->dword = info->cap;
+		break;
+	case HSR_GET_RING_PARTICIPANTS_COUNT:
+		*len = 2;
+		attrib->word = info->part_cnt;
+		break;
+	case HSR_GET_RING_PARTICIPANTS_LIST:
+		*len = sizeof(struct ksz_hsr_node);
+		*len *= info->part_cnt;
+		if (size < *len) {
+			break;
+		}
+		active = (struct ksz_hsr_node *) data;
+		rcu_read_lock();
+		list_for_each_entry_rcu(node, &hsr->node_db, mac_list) {
+			if (!node->slave) {
+				memcpy(&active->addr, node->MacAddressA,
+					ETH_ALEN);
+				active++;
+			}
+		}
+		rcu_read_unlock();
+		break;
+	}
+	if (!*len)
+		return DEV_IOC_INVALID_CMD;
+	if (size < *len) {
+		*req_size = *len + SIZEOF_ksz_request;
+		return DEV_IOC_INVALID_LEN;
+	}
+	return DEV_IOC_OK;
+}  /* hsr_get_attrib */
+
+static int hsr_dev_req(struct ksz_hsr_info *hsr, char *arg, void *info)
+{
+	struct ksz_request *req = (struct ksz_request *) arg;
+	int len;
+	int maincmd;
+	int req_size;
+	int subcmd;
+	int output;
+	size_t param_size;
+	u8 data[PARAM_DATA_SIZE];
+	struct ksz_resp_msg *msg = (struct ksz_resp_msg *) data;
+	int err = 0;
+	int result = 0;
+
+	get_user_data(&req_size, &req->size, info);
+	get_user_data(&maincmd, &req->cmd, info);
+	get_user_data(&subcmd, &req->subcmd, info);
+	get_user_data(&output, &req->output, info);
+	len = req_size - SIZEOF_ksz_request;
+
+	maincmd &= 0xffff;
+	switch (maincmd) {
+	case DEV_CMD_INFO:
+		switch (subcmd) {
+		case DEV_INFO_INIT:
+			req_size = SIZEOF_ksz_request + 4;
+			if (len >= 4) {
+				data[0] = 'M';
+				data[1] = 'i';
+				data[2] = 'c';
+				data[3] = 'r';
+				data[4] = 0;
+				data[5] = hsr->member;
+				err = write_user_data(data, req->param.data,
+					6, info);
+				if (err)
+					goto dev_ioctl_done;
+				hsr->dev_info = info;
+			} else
+				result = DEV_IOC_INVALID_LEN;
+			break;
+		case DEV_INFO_EXIT:
+
+		/* fall through */
+		case DEV_INFO_QUIT:
+
+			/* Not called through char device. */
+			if (!info)
+				break;
+			msg->module = DEV_MOD_HSR;
+			msg->cmd = DEV_INFO_QUIT;
+			msg->resp.data[0] = 0;
+			sw_setup_msg(info, msg, 8, NULL, NULL);
+			hsr->notifications = 0;
+			hsr->dev_info = NULL;
+			break;
+		case DEV_INFO_NOTIFY:
+			if (len >= 4) {
+				uint *notify = (uint *) data;
+
+				_chk_ioctl_size(len, 4, 0, &req_size, &result,
+					&req->param, data, info);
+				hsr->notifications = *notify;
+			}
+			break;
+		default:
+			result = DEV_IOC_INVALID_CMD;
+			break;
+		}
+		break;
+	case DEV_CMD_PUT:
+		if (_chk_ioctl_size(len, len, 0, &req_size, &result,
+		    &req->param, data, info))
+			goto dev_ioctl_resp;
+#if 0
+		result = hsr_set_attrib(hsr, subcmd, len, &req_size, data,
+			&output);
+		if (result)
+			goto dev_ioctl_resp;
+#endif
+		put_user_data(&output, &req->output, info);
+		break;
+	case DEV_CMD_GET:
+		result = hsr_get_attrib(hsr, subcmd, len, &req_size,
+			&param_size, data, &output);
+		if (result)
+			goto dev_ioctl_resp;
+		err = write_user_data(data, req->param.data, param_size, info);
+		if (err)
+			goto dev_ioctl_done;
+		req_size = param_size + SIZEOF_ksz_request;
+		put_user_data(&output, &req->output, info);
+		break;
+	default:
+		result = DEV_IOC_INVALID_CMD;
+		break;
+	}
+
+dev_ioctl_resp:
+	put_user_data(&req_size, &req->size, info);
+	put_user_data(&result, &req->result, info);
+
+	/* Return ERESTARTSYS so that the system call is called again. */
+	if (result < 0)
+		err = result;
+
+dev_ioctl_done:
+	return err;
+}  /* hsr_dev_req */
+
 static struct hsr_ops hsr_ops = {
 	.change_addr		= hsr_change_addr,
 	.link_change		= hsr_link_change,
@@ -1859,6 +2063,8 @@ static struct hsr_ops hsr_ops = {
 	.set_redbox_id		= hsr_set_redbox_id,
 	.get_net_id		= hsr_get_net_id,
 	.set_net_id		= hsr_set_net_id,
+
+	.dev_req		= hsr_dev_req,
 };
 
 static void prep_hsr(struct ksz_hsr_info *info, struct net_device *dev,
@@ -1878,19 +2084,74 @@ static void prep_hsr(struct ksz_hsr_info *info, struct net_device *dev,
 		vlan = (struct vlan_ethhdr *) info->slave_sup_frame;
 		vlan->h_vlan_TCI = htons(info->vid);
 	}
+	do {
+		struct ksz_sw *sw = info->sw_dev;
+
+		sw->ops->cfg_mac(sw, BRIDGE_ADDR_ENTRY, info->src_addr,
+			sw->HOST_MASK, false, false, 0);
+		if (sw->eth_cnt > 1) {
+			sw->ops->cfg_mac(sw, DEV_0_ADDR_ENTRY, info->src_addr,
+				sw->HOST_MASK, false, false,
+				sw->eth_maps[0].vlan);
+			sw->ops->cfg_mac(sw, DEV_1_ADDR_ENTRY, info->src_addr,
+				sw->HOST_MASK, false, false,
+				sw->eth_maps[1].vlan);
+		}
+	} while (0);
 	hsr_dev_finalize(info);
 }  /* prep_hsr */
+
+static void sw_setup_hsr(struct ksz_sw *sw)
+{
+/*
+ * THa  2015/12/06
+ * The HSR register 0x640 needs to be set, even though the value read is 3.
+ * The NODE_UNICAST bit in register 0x644 needs to be turned off for multicast
+ * address to work.
+ * If HSR_LEARN_UCAST_DISABLE bit in register 0x645 is turned on, multicast
+ * address also does not work, even though HSR_LEARN_MCAST_DISABLE bit in
+ * register 0x644 can be used to control that.
+ */
+	SW_D data;
+	int n;
+	u16 mask = 0;
+
+	for (n = 0; n < sw->eth_cnt; n++) {
+		if (sw->eth_maps[n].proto & HSR_HW) {
+			mask = sw->eth_maps[n].mask;
+			break;
+		}
+	}
+	sw->reg->w32(sw, REG_HSR_PORT_MAP__4, mask);
+	data = SW_R(sw, REG_HSR_ALU_CTRL_0__1);
+	data &= ~HSR_NODE_UNICAST;
+	SW_W(sw, REG_HSR_ALU_CTRL_0__1, data);
+	if ((sw->overrides & HAVE_MORE_THAN_2_PORTS) && 1 == sw->eth_cnt)
+		sw_cfg_port_base_vlan(sw, sw->HOST_PORT, mask | sw->HOST_MASK);
+}  /* sw_setup_hsr */
 
 static void stop_hsr(struct ksz_hsr_info *info)
 {
 	hsr_dev_destroy(info);
 }
 
+static void ksz_hsr_exit(struct ksz_hsr_info *info)
+{
+#ifdef CONFIG_HAVE_HSR_HW
+	cancel_delayed_work_sync(&info->chk_ring);
+#endif
+}  /* ksz_hsr_exit */
+
 static void ksz_hsr_init(struct ksz_hsr_info *info, struct ksz_sw *sw)
 {
+	info->state = -1;
 	info->ports[0] = 0;
 	info->ports[1] = 1;
 	info->member = (1 << info->ports[0]) | (1 << info->ports[1]);
+#ifdef CONFIG_HAVE_HSR_HW
+	info->cap = HSR_CAP_DUPLICATE_DISCARD;
+	info->cap |= HSR_CAP_REDBOX_CAPABLE;
+#endif
 	info->sw_dev = sw;
 	info->ops = &hsr_ops;
 

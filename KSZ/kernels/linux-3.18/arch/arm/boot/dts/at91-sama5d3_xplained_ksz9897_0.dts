@@ -105,7 +105,8 @@
 			};
 
 			macb0: ethernet@f0028000 {
-				phy-mode = "rgmii";
+				phy-mode = "rgmii-txid";
+				gpios = <&pioB 10 GPIO_ACTIVE_LOW>;
 				status = "okay";
 			};
 
