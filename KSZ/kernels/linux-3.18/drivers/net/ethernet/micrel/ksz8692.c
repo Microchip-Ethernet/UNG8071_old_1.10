@@ -16,7 +16,7 @@
  * GNU General Public License for more details.
  */
 
-#if 1
+#if 0
 #define DEBUG
 #endif
 
@@ -4507,7 +4507,6 @@ static int netdev_close(struct net_device *dev)
 #endif
 	int irq;
 
-printk("%s\n", __func__);
 #ifdef CONFIG_NET_PEGASUS_PASSTHRU
 	if (hw_priv->otherdev) {
 		struct dev_priv *other_priv = netdev_priv(hw_priv->otherdev);
@@ -4576,7 +4575,6 @@ printk("%s\n", __func__);
 #ifdef DEBUG_MSG
 	dbg_print_work(&db.dbg_print);
 #endif
-printk("%s.\n", __func__);
 
 	return 0;
 }  /* netdev_close */
@@ -4909,7 +4907,7 @@ static int netdev_open(struct net_device *dev)
 		netif_carrier_off(dev);
 
 		ks = kzalloc(sizeof(struct sw_priv), GFP_KERNEL);
-
+		ks->hw_dev = dev;
 		ks->dev = &dev->dev;
 		ks->irq = get_irq(ks, &dev->dev, 34);
 
@@ -8010,7 +8008,6 @@ static void netdev_free(struct net_device *dev)
 	struct dev_priv *priv = netdev_priv(dev);
 	struct dev_info *hw_priv = priv->adapter;
 
-printk("%s %p\n", __func__, dev);
 	/* Just free net device if not created yet. */
 	if (IS_ERR(priv->phydev)) {
 		free_netdev(dev);
@@ -8475,7 +8472,6 @@ static int netdev_probe(struct platform_device *pdev)
 	int port_mii = 0;
 #endif
 
-printk("%s 1\n", __func__);
 	info = kzalloc(sizeof(struct platform_info), GFP_KERNEL);
 	if (!info)
 		goto netdev_probe_devinfo_err;
@@ -8492,7 +8488,6 @@ printk("%s 1\n", __func__);
 	hw_priv->sw = sw;
 #endif
 
-printk("%s 2\n", __func__);
 	/* First device is WAN port. */
 	if (0 == pdev->id) {
 		mem_start = (uint) KS_VIO_BASE + KS_WAN_DMA_TX;
@@ -8566,7 +8561,6 @@ printk("%s 2\n", __func__);
 	}
 #endif
 
-printk("%s 3\n", __func__);
 	hw_init(hw);
 
 	/* Default MTU is 1500. */
@@ -8604,7 +8598,6 @@ printk("%s 3\n", __func__);
 	init_waitqueue_head(&hw_priv->counter.counter);
 
 	INIT_WORK(&hw_priv->mib_read, mib_read_work);
-printk("%s 4\n", __func__);
 
 	/* 500 ms timeout */
 	ksz_init_timer(&hw_priv->mib_timer_info, 500 * HZ / 1000,
@@ -8689,7 +8682,6 @@ printk("%s 4\n", __func__);
 			priv->dev = dev;
 		}
 #endif
-printk("%s 5\n", __func__);
 
 		priv->id = net_device_present;
 
@@ -8716,10 +8708,6 @@ printk("%s 5\n", __func__);
 			 */
 			netif_carrier_off(dev);
 		} else {
-#if 0
-			priv->phydev = kzalloc(sizeof(struct phy_device),
-				GFP_KERNEL);
-#endif
 			priv->phydev = &priv->dummy_phy;
 			priv->phydev->link = 1;
 			priv->phydev->duplex = 1;
@@ -8750,7 +8738,6 @@ printk("%s 5\n", __func__);
 			strlcpy(dev_name, dev->name, IFNAMSIZ);
 #endif
 	}
-printk("%s 6\n", __func__);
 #ifdef HAVE_KSZ_SWITCH
 	if (sw_is_switch(sw)) {
 		dev = sw->netdev[0];
@@ -8779,11 +8766,6 @@ printk("%s 6\n", __func__);
 
 			ptp->get_clk_cnt = get_clk_cnt;
 			ptp->clk_divider = ksz_system_bus_clock;
-#if 0
-			ptp->ops->init(ptp, hw->mac_addr);
-			if (ptp->version < 1)
-				sw->features &= ~VLAN_PORT_REMOVE_TAG;
-#endif
 
 			err = init_ptp_sysfs(&hw_priv->ptp_sysfs, &dev->dev);
 			if (err)
@@ -8805,7 +8787,6 @@ printk("%s 6\n", __func__);
 		info->netdev->name);
 
 	hw_init_cnt(hw);
-printk("%s 7\n", __func__);
 
 	/* tasklet is enabled. */
 	tasklet_init(&hw_priv->rx_tasklet, rx_proc_task,
@@ -8834,7 +8815,6 @@ printk("%s 7\n", __func__);
 		}
 	}
 #endif
-printk("%s 8\n", __func__);
 	return 0;
 
 netdev_probe_reg_err:
@@ -8870,7 +8850,6 @@ static int netdev_remove(struct platform_device *pdev)
 	struct ksz_sw *sw = hw_priv->sw;
 #endif
 
-printk("%s\n", __func__);
 	platform_set_drvdata(pdev, NULL);
 
 #ifdef CONFIG_NET_PEGASUS_PASSTHRU
@@ -8894,7 +8873,6 @@ printk("%s\n", __func__);
 			if (sw->features & PTP_HW)
 				exit_ptp_sysfs(&hw_priv->ptp_sysfs, &dev->dev);
 #endif
-printk("%s %p\n", __func__, hw_priv);
 			exit_sw_sysfs(sw, &hw_priv->sysfs, &dev->dev);
 		}
 #endif
@@ -9424,7 +9402,6 @@ device_reg_err:
 static void __exit platform_exit(void)
 {
 	platform_driver_unregister(&netdev_driver);
-printk("%s 1\n", __func__);
 	platform_free_devices(device_present);
 #ifndef CONFIG_PEGASUS_NO_MDIO
 	ksz_mdio_exit();
@@ -9444,7 +9421,6 @@ printk("%s 1\n", __func__);
 #ifdef CONFIG_KSZ9897_EMBEDDED
 	ksz9897_exit();
 #endif
-printk("%s\n", __func__);
 }  /* platform_exit */
 
 #if defined(CONFIG_SPI_FTDI) && defined(CONFIG_NET_PEGASUS)
