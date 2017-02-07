@@ -15366,9 +15366,12 @@ setup_next:
 	return;
 }  /* sw_setup_zone */
 
+static int phy_offset;
+
 static void sw_setup_special(struct ksz_sw *sw, int *port_cnt,
 	int *mib_port_cnt, int *dev_cnt)
 {
+	phy_offset = 0;
 	sw->dev_offset = 0;
 	sw->phy_offset = 0;
 	if (sw->stp) {
@@ -15453,7 +15456,6 @@ static int sw_setup_dev(struct ksz_sw *sw, struct net_device *dev,
 	int phy_id;
 	u32 features;
 	int header = 0;
-	static int phy_offset = 0;
 
 	if (!phy_offset)
 		phy_offset = sw->phy_offset;
@@ -16507,13 +16509,14 @@ static int ksz_mii_write(struct mii_bus *bus, int phy_id, int regnum, u16 val)
 	return 0;
 }  /* ksz_mii_write */
 
+static int driver_installed;
+
 static int ksz_mii_init(struct sw_priv *ks)
 {
 	struct platform_device *pdev;
 	struct mii_bus *bus;
 	int err;
 	int i;
-	static int driver_installed;
 
 	pdev = platform_device_register_simple("Switch MII bus", ks->sw.id,
 		NULL, 0);
@@ -16605,8 +16608,10 @@ mii_init_free_mii_bus:
 	for (i = 0; i < PHY_MAX_ADDR; i++)
 		if (bus->phy_map[i])
 			kfree(bus->phy_map[i]->priv);
-	if (driver_installed)
+	if (driver_installed) {
 		phy_driver_unregister(&kszsw_phy_driver);
+		driver_installed = false;
+	}
 	mdiobus_free(bus);
 
 mii_init_reg:
@@ -16641,7 +16646,10 @@ static void ksz_mii_exit(struct sw_priv *ks)
 			kfree(bus->phy_map[i]->priv);
 		}
 	mdiobus_unregister(bus);
-	phy_driver_unregister(&kszsw_phy_driver);
+	if (driver_installed) {
+		phy_driver_unregister(&kszsw_phy_driver);
+		driver_installed = false;
+	}
 	mdiobus_free(bus);
 	platform_device_unregister(pdev);
 }  /* ksz_mii_exit */

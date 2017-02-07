@@ -4537,7 +4537,7 @@ static int netdev_close(struct net_device *dev)
 	ksz_stop_timer(&hw_priv->mib_timer_info);
 	flush_work(&hw_priv->mib_read);
 #ifdef HAVE_KSZ_SWITCH
-	if (hw->features & MII_SWITCH) {
+	if (sw_is_switch(sw)) {
 		sw->net_ops->close(sw);
 		sw->net_ops->stop(sw, true);
 
@@ -4549,6 +4549,7 @@ static int netdev_close(struct net_device *dev)
 		}
 		ksz_remove(sw->dev);
 		hw_priv->sw = NULL;
+		hw->features &= ~MII_SWITCH;
 #endif
 	}
 #endif
@@ -4911,6 +4912,7 @@ static int netdev_open(struct net_device *dev)
 		ks->dev = &dev->dev;
 		ks->irq = get_irq(ks, &dev->dev, 34);
 
+		sw_device_present = 0;
 		ksz_probe_prep(ks, dev);
 		sw = &ks->sw;
 
@@ -8344,6 +8346,29 @@ static void netdev_start_iba(struct work_struct *work)
 	priv->phy_addr = sw->net_ops->setup_dev(sw, dev, dev_name, &priv->port,
 		0, port_count, mib_port_count);
 
+	phydev = sw->phydev;
+	phy_mode = phydev->interface;
+	mem_start = dev->mem_start;
+
+	hw_priv->phydev = priv->phydev;
+
+	snprintf(bus_id, MII_BUS_ID_SIZE, "sw.%d", sw_device_seen);
+	snprintf(phy_id, MII_BUS_ID_SIZE, PHY_ID_FMT, bus_id, priv->phy_addr);
+	priv->phydev = phy_attach(dev, phy_id, phy_mode);
+	if (IS_ERR(priv->phydev)) {
+		sw->net_ops->leave_dev(sw);
+		ksz_remove(sw->dev);
+		priv->parent = NULL;
+		priv->phydev = hw_priv->phydev;
+		hw->features &= ~MII_SWITCH;
+		hw_priv->sw = NULL;
+		return;
+	}
+	if (!priv->phy_addr)
+		priv->phydev->adjust_link = sw_adjust_link;
+	priv->mii_if.phy_id = priv->phy_addr;
+	priv->mii_if.supports_gmii = 1;
+
 	rx_mode = sw->net_ops->open_dev(sw, dev, dev->dev_addr);
 	if (rx_mode & 1) {
 		hw->all_multi = 1;
@@ -8357,20 +8382,6 @@ static void netdev_start_iba(struct work_struct *work)
 	sw->net_ops->open(sw);
 
 	sw->net_ops->open_port(sw, dev, &priv->port, &priv->state);
-
-	phydev = sw->phydev;
-	phy_mode = phydev->interface;
-	mem_start = dev->mem_start;
-
-	hw_priv->phydev = priv->phydev;
-
-	snprintf(bus_id, MII_BUS_ID_SIZE, "sw.%d", sw_device_seen);
-	snprintf(phy_id, MII_BUS_ID_SIZE, PHY_ID_FMT, bus_id, priv->phy_addr);
-	priv->phydev = phy_attach(dev, phy_id, phy_mode);
-	if (!priv->phy_addr)
-		priv->phydev->adjust_link = sw_adjust_link;
-	priv->mii_if.phy_id = priv->phy_addr;
-	priv->mii_if.supports_gmii = 1;
 
 	/* Save the base device name. */
 	strlcpy(dev_name, dev->name, IFNAMSIZ);

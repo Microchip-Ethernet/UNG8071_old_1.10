@@ -3352,6 +3352,7 @@ static int create_sw_dev(struct net_device *dev, struct macb *bp)
 	ks->irq = get_irq(ks, &bp->pdev->dev, -1);
 
 	intr_mode = 1;
+	sw_device_present = 0;
 	ksz_probe_prep(ks, dev);
 	sw = &ks->sw;
 
