@@ -255,6 +255,7 @@ static ssize_t store_sw_##name(struct device *d,			\
 static SW_ATTR(name, S_IRUGO | S_IWUSR, show_sw_##name, store_sw_##name)
 
 NETLAN_WR_ENTRY(info);
+NETLAN_RD_ENTRY(version);
 NETLAN_WR_ENTRY(duplex);
 NETLAN_WR_ENTRY(speed);
 NETLAN_WR_ENTRY(force);
@@ -456,6 +457,7 @@ NETSW_RD_ENTRY(acl_table);
 
 static struct attribute *lan_attrs[] = {
 	&lan_attr_info.attr,
+	&lan_attr_version.attr,
 #ifdef USE_SPEED_LINK
 	&lan_attr_duplex.attr,
 	&lan_attr_speed.attr,

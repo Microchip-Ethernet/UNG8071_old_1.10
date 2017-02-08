@@ -128,7 +128,7 @@
 #define KS9897MLI_DEV0			"ksz9897"
 #define KS9897MLI_DEV2			"ksz9897_2"
 
-#define DRV_RELDATE			"Feb 6, 2017"
+#define DRV_RELDATE			"Feb 7, 2017"
 
 /* -------------------------------------------------------------------------- */
 
@@ -763,7 +763,7 @@ static void __exit ksz9897_exit(void)
 }
 #endif
 
-#if !defined(CONFIG_KSZ9897_EMBEDDED) && !defined(CONFIG_KSZ_IBA_ONLY)
+#if !defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 subsys_initcall(ksz9897_init);
 module_exit(ksz9897_exit);
 #endif
@@ -847,7 +847,7 @@ MODULE_PARM_DESC(eth4_proto, "Protocol to use on device 4.");
 MODULE_PARM_DESC(eth5_proto, "Protocol to use on device 5.");
 MODULE_PARM_DESC(eth6_proto, "Protocol to use on device 6.");
 
-#if !defined(CONFIG_KSZ9897_EMBEDDED) && !defined(CONFIG_KSZ_IBA_ONLY)
+#if !defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 MODULE_DESCRIPTION("Microchip KSZ9897 SPI Switch Driver");
 MODULE_AUTHOR("Tristram Ha <Tristram.Ha@microchip.com>");
 MODULE_LICENSE("GPL");

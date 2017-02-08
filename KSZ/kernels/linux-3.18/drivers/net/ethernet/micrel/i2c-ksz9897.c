@@ -1,7 +1,7 @@
 /**
  * Microchip KSZ9897 I2C driver
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -102,7 +102,7 @@
 #endif
 
 
-#define DRV_RELDATE			"Dec 22, 2016"
+#define DRV_RELDATE			"Feb 7, 2017"
 
 /* -------------------------------------------------------------------------- */
 
@@ -545,24 +545,6 @@ static void sw_w32(struct ksz_sw *sw, unsigned reg, unsigned val)
 	HW_W32(sw->dev, reg, val);
 }
 
-#ifdef CONFIG_KSZ_STP
-static u8 get_port_state(struct net_device *dev, struct net_device **br_dev)
-{
-	struct net_bridge_port *p;
-	u8 state;
-
-	/* This state is not defined in kernel. */
-	state = STP_STATE_SIMPLE;
-	if (br_port_exists(dev)) {
-		p = br_port_get_rcu(dev);
-		state = p->state;
-
-		/* Port is under bridge. */
-		*br_dev = p->br->dev;
-	}
-	return state;
-}  /* get_port_state */
-#endif
 
 static void link_update_work(struct work_struct *work);
 
@@ -696,7 +678,7 @@ static void __exit ksz9897_exit(void)
 #endif
 }
 
-#ifndef CONFIG_KSZ9897_EMBEDDED
+#ifndef CONFIG_KSZ_SWITCH_EMBEDDED
 module_init(ksz9897_init);
 module_exit(ksz9897_exit);
 #endif
@@ -770,7 +752,7 @@ MODULE_PARM_DESC(eth4_proto, "Protocol to use on device 4.");
 MODULE_PARM_DESC(eth5_proto, "Protocol to use on device 5.");
 MODULE_PARM_DESC(eth6_proto, "Protocol to use on device 6.");
 
-#ifndef CONFIG_KSZ9897_EMBEDDED
+#ifndef CONFIG_KSZ_SWITCH_EMBEDDED
 MODULE_DESCRIPTION("Microchip KSZ9897 I2C Switch Driver");
 MODULE_AUTHOR("Tristram Ha <Tristram.Ha@microchip.com>");
 MODULE_LICENSE("GPL");

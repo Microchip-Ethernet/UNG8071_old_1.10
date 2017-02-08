@@ -211,6 +211,14 @@ config SPI_KSZ8795
 	---help---
 	  Supports the Microchip KSZ8795 switch.
 
+config KSZ8795_EMBEDDED
+	bool "Microchip KSZ8795 switch support in network controller"
+	depends on SPI_KSZ8795 = n && !NET_DSA_TAG_TAIL
+	select KSZ_SWITCH_EMBEDDED
+	select HAVE_SPI_KSZ8795
+	---help---
+	  Supports the Microchip KSZ8795 switch used within a network controller .
+
 config HAVE_KSZ8895
 	bool
 	default n
@@ -227,6 +235,14 @@ config SPI_KSZ8895
 	select HAVE_SPI_KSZ8895
 	---help---
 	  Supports the Microchip KSZ8895 switch.
+
+config KSZ8895_EMBEDDED
+	bool "Microchip KSZ8895 switch support in network controller"
+	depends on SPI_KSZ8895 = n && !NET_DSA_TAG_TAIL
+	select KSZ_SWITCH_EMBEDDED
+	select HAVE_SPI_KSZ8895
+	---help---
+	  Supports the Microchip KSZ8895 switch used within a network controller .
 
 config HAVE_KSZ9897
 	bool

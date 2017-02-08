@@ -331,6 +331,7 @@ struct ksz_sw_net_ops {
 	int (*setup_dev)(struct ksz_sw *sw, struct net_device *dev,
 		char *dev_name, struct ksz_port *port, int i, int port_cnt,
 		int mib_port_cnt);
+	void (*leave_dev)(struct ksz_sw *sw);
 	u8 (*get_state)(struct net_device *dev);
 	void (*set_state)(struct net_device *dev, u8 state);
 	struct ksz_port *(*get_priv_port)(struct net_device *dev);
@@ -661,6 +662,7 @@ struct ksz_port {
 
 struct lan_attributes {
 	int info;
+	int version;
 	int duplex;
 	int speed;
 	int force;

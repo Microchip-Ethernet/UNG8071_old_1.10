@@ -19,8 +19,11 @@
 
 /* -------------------------------------------------------------------------- */
 
+#define MAX_SYSFS_BUF_SIZE		(4080 - 80)
+
 enum {
 	PROC_SW_INFO,
+	PROC_SW_VERSION,
 
 	PROC_SET_SW_DUPLEX,
 	PROC_SET_SW_SPEED,
@@ -654,7 +657,7 @@ static int sw_r_dyn_mac_table(struct ksz_sw *sw, u16 addr, u8 *mac_addr,
  *
  * This routine dumps dynamic MAC table contents.
  */
-static void sw_d_dyn_mac_table(struct ksz_sw *sw)
+static ssize_t sw_d_dyn_mac_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 	u16 entries = 0;
 	u16 i;
@@ -662,12 +665,25 @@ static void sw_d_dyn_mac_table(struct ksz_sw *sw)
 	u8 ports = 0;
 	u8 timestamp = 0;
 	u8 fid = 0;
+	int first_break = true;
 
 	memset(mac_addr, 0, ETH_ALEN);
 	i = 0;
 	do {
 		if (!sw_r_dyn_mac_table(sw, i, mac_addr, &fid, &ports,
 				&timestamp, &entries)) {
+			if (len >= MAX_SYSFS_BUF_SIZE && first_break) {
+				first_break = false;
+				len += sprintf(buf + len, "...\n");
+			}
+			if (len < MAX_SYSFS_BUF_SIZE)
+			len += sprintf(buf + len,
+				"%02X:%02X:%02X:%02X:%02X:%02X  "
+				"f:%2x  p:%x  t:%x\n",
+				mac_addr[0], mac_addr[1], mac_addr[2],
+				mac_addr[3], mac_addr[4], mac_addr[5],
+				fid, ports, timestamp);
+			else
 			printk(KERN_INFO
 				"%02X:%02X:%02X:%02X:%02X:%02X  "
 				"f:%2x  p:%x  t:%x\n",
@@ -677,8 +693,13 @@ static void sw_d_dyn_mac_table(struct ksz_sw *sw)
 		}
 		i++;
 	} while (i < entries);
-	if (entries)
-		printk(KERN_INFO "=%03x\n", entries);
+	if (entries) {
+		if (len < MAX_SYSFS_BUF_SIZE)
+			sprintf(buf + len, "=%03x\n", entries);
+		else
+			printk(KERN_INFO "=%03x\n", entries);
+	}
+	return len;
 }  /* sw_d_dyn_mac_table */
 
 /**
@@ -761,7 +782,7 @@ static void sw_w_sta_mac_table(struct ksz_sw *sw, u16 addr,
  *
  * This routine dumps static MAC table contents.
  */
-static void sw_d_sta_mac_table(struct ksz_sw *sw)
+static ssize_t sw_d_sta_mac_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 	u16 i;
 	struct ksz_mac_table mac;
@@ -769,7 +790,7 @@ static void sw_d_sta_mac_table(struct ksz_sw *sw)
 	i = 0;
 	do {
 		if (!sw_r_sta_mac_table(sw, i, &mac)) {
-			printk(KERN_INFO
+			len += sprintf(buf + len,
 				"%2x: %02X:%02X:%02X:%02X:%02X:%02X  "
 				"%02x  %u  %u:%x\n",
 				i, mac.addr[0], mac.addr[1], mac.addr[2],
@@ -778,9 +799,10 @@ static void sw_d_sta_mac_table(struct ksz_sw *sw)
 		}
 		i++;
 	} while (i < STATIC_MAC_TABLE_ENTRIES);
+	return len;
 }  /* sw_d_sta_mac_table */
 
-static void sw_d_mac_table(struct ksz_sw *sw)
+static ssize_t sw_d_mac_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 #if 0
 	struct ksz_mac_table *entry;
@@ -790,7 +812,7 @@ static void sw_d_mac_table(struct ksz_sw *sw)
 	do {
 		entry = &sw->info->mac_table[i];
 		if (entry->valid) {
-			printk(KERN_INFO
+			len += sprintf(buf + len,
 				"%x: %02X:%02X:%02X:%02X:%02X:%02X  "
 				"%x  %u  %u:%x\n",
 				i, entry->mac_addr[0], entry->mac_addr[1],
@@ -804,7 +826,8 @@ static void sw_d_mac_table(struct ksz_sw *sw)
 			printk(KERN_INFO "\n");
 	} while (i < MULTI_MAC_TABLE_ENTRIES);
 #endif
-}
+	return len;
+}  /* sw_d_mac_table */
 
 /* -------------------------------------------------------------------------- */
 
@@ -915,7 +938,7 @@ static void sw_w_vlan_table(struct ksz_sw *sw, u16 vid,
  *
  * This routine dumps the VLAN table.
  */
-static void sw_d_vlan_table(struct ksz_sw *sw)
+static ssize_t sw_d_vlan_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 	u16 i;
 	u16 j;
@@ -923,21 +946,34 @@ static void sw_d_vlan_table(struct ksz_sw *sw)
 	u8 fid[4];
 	u8 member[4];
 	u8 valid[4];
+	int first_break = true;
 
 	i = 0;
 	do {
 		if (!sw_r_vlan_entries(sw, i, valid, fid, member)) {
 			vid = i * 4;
 			for (j = 0; j < 4; j++, vid++) {
-				if (valid[j])
+				if (!valid[j])
+					continue;
+				if (len >= MAX_SYSFS_BUF_SIZE && first_break) {
+					first_break = false;
+					len += sprintf(buf + len, "...\n");
+				}
+				if (len < MAX_SYSFS_BUF_SIZE)
+					len += sprintf(buf + len,
+						"0x%03x: %2x  %2x\n", vid,
+						fid[j], member[j]);
+				else
 					printk(KERN_INFO
-					"0x%03x: %2x  %2x\n", vid,
-					fid[j], member[j]);
+						"0x%03x: %2x  %2x\n", vid,
+						fid[j], member[j]);
 			}
 		}
+		if (len >= MAX_SYSFS_BUF_SIZE)
 		yield();
 		i++;
 	} while (i < VLAN_TABLE_ENTRIES);
+	return len;
 }  /* sw_d_vlan_table */
 
 /* -------------------------------------------------------------------------- */
@@ -2131,14 +2167,13 @@ static int acl_info(struct ksz_acl_table *acl, u16 index, char *buf, int len)
  *
  * This routine dumps ACL table of the port.
  */
-static void sw_d_acl_table(struct ksz_sw *sw, int port)
+static ssize_t sw_d_acl_table(struct ksz_sw *sw, int port, char *buf,
+	ssize_t len)
 {
 	struct ksz_port_cfg *cfg = &sw->info->port_cfg[port];
 	struct ksz_acl_table *acl;
 	int i;
-	char buf[100];
 	int acl_on;
-	int len;
 	int min = 0;
 
 	sw->ops->acquire(sw);
@@ -2158,27 +2193,26 @@ static void sw_d_acl_table(struct ksz_sw *sw, int port)
 		if (!acl->mode)
 			continue;
 		if (!min)
-			printk(KERN_INFO "rules:\n");
-		len = acl_info(acl, i, buf, 0);
-		printk(KERN_INFO "%s", buf);
+			len += sprintf(buf + len, "rules:\n");
+		len = acl_info(acl, i, buf, len);
 		min = 1;
 	}
 	if (min)
-		printk(KERN_INFO "\n");
+		len += sprintf(buf + len, "\n");
 	min = 0;
 	for (i = 0; i < ACL_TABLE_ENTRIES; i++) {
 		acl = &cfg->acl_info[i];
 		if (!acl->ruleset)
 			continue;
 		if (!min)
-			printk(KERN_INFO "rulesets:\n");
+			len += sprintf(buf + len, "rulesets:\n");
 		cfg->acl_info[acl->first_rule].action_selected = true;
-		len = acl_ruleset_info(acl, i, buf, 0);
+		len = acl_ruleset_info(acl, i, buf, len);
 		printk(KERN_INFO "%s", buf);
 		min = 1;
 	}
 	if (min)
-		printk(KERN_INFO "\n");
+		len += sprintf(buf + len, "\n");
 	min = 0;
 	for (i = 0; i < ACL_TABLE_ENTRIES; i++) {
 		acl = &cfg->acl_info[i];
@@ -2191,8 +2225,8 @@ static void sw_d_acl_table(struct ksz_sw *sw, int port)
 		    ACL_ENABLE_2_COUNT == acl->enable)
 			continue;
 		if (!min)
-			printk(KERN_INFO "actions:\n");
-		len = acl_action_info(acl, i, buf, 0);
+			len += sprintf(buf + len, "actions:\n");
+		len = acl_action_info(acl, i, buf, len);
 		printk(KERN_INFO "%s", buf);
 		min = 1;
 	}
@@ -2201,6 +2235,7 @@ static void sw_d_acl_table(struct ksz_sw *sw, int port)
 		port_cfg_acl(sw, port, false);
 		sw->ops->release(sw);
 	}
+	return len;
 }  /* sw_d_acl_table */
 
 static void sw_reset_acl(struct ksz_sw *sw)
@@ -5661,6 +5696,9 @@ static ssize_t sysfs_sw_read(struct ksz_sw *sw, int proc_num,
 	case PROC_SW_INFO:
 		len = display_sw_info(sw->mib_port_cnt, buf, len);
 		break;
+	case PROC_SW_VERSION:
+		len += sprintf(buf + len, "%s\n", DRV_RELDATE);
+		break;
 	case PROC_SET_SW_DUPLEX:
 		if (!port)
 			break;
@@ -5821,14 +5859,14 @@ static ssize_t sysfs_sw_read(struct ksz_sw *sw, int proc_num,
 			TAIL_TAGGING);
 		break;
 	case PROC_DYNAMIC:
-		sw_d_dyn_mac_table(sw);
+		len = sw_d_dyn_mac_table(sw, buf, len);
 		break;
 	case PROC_STATIC:
-		sw_d_sta_mac_table(sw);
-		sw_d_mac_table(sw);
+		len = sw_d_sta_mac_table(sw, buf, len);
+		len = sw_d_mac_table(sw, buf, len);
 		break;
 	case PROC_VLAN:
-		sw_d_vlan_table(sw);
+		len = sw_d_vlan_table(sw, buf, len);
 		break;
 	}
 	return len;
@@ -7235,7 +7273,7 @@ static ssize_t sysfs_acl_read(struct ksz_sw *sw, int proc_num, int port,
 		len += acl_info(acl, cfg->acl_index, buf, len);
 		break;
 	case PROC_GET_ACL_TABLE:
-		sw_d_acl_table(sw, port);
+		len = sw_d_acl_table(sw, port, buf, len);
 		break;
 	}
 	return sysfs_show(len, buf, type, chk, note, sw->verbose);
@@ -9530,9 +9568,12 @@ setup_next:
 	return;
 }  /* sw_setup_zone */
 
+static int phy_offset;
+
 static void sw_setup_special(struct ksz_sw *sw, int *port_cnt,
 	int *mib_port_cnt, int *dev_cnt)
 {
+	phy_offset = 0;
 	sw->dev_offset = 0;
 	sw->phy_offset = 0;
 	if (sw->stp) {
@@ -9575,6 +9616,22 @@ static void sw_setup_special(struct ksz_sw *sw, int *port_cnt,
 		(*dev_cnt)++;
 }  /* sw_setup_special */
 
+static void sw_leave_dev(struct ksz_sw *sw)
+{
+	int i;
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->features & STP_SUPPORT)
+		leave_stp(&sw->info->rstp);
+#endif
+	for (i = 0; i < sw->dev_count; i++)
+		sw->netdev[i] = NULL;
+	sw->eth_cnt = 0;
+	sw->dev_count = 0;
+	sw->dev_offset = 0;
+	sw->phy_offset = 0;
+}  /* sw_leave_dev */
+
 static int sw_setup_dev(struct ksz_sw *sw, struct net_device *dev,
 	char *dev_name, struct ksz_port *port, int i, int port_cnt,
 	int mib_port_cnt)
@@ -9584,7 +9641,6 @@ static int sw_setup_dev(struct ksz_sw *sw, struct net_device *dev,
 	int pi;
 	int phy_id;
 	u32 features;
-	static int phy_offset = 0;
 
 	if (!phy_offset)
 		phy_offset = sw->phy_offset;
@@ -9790,8 +9846,9 @@ static void sw_netdev_wake_queue(struct ksz_sw *sw, struct net_device *dev)
 }
 
 static struct ksz_sw_net_ops sw_net_ops = {
-	.setup_dev		= sw_setup_dev,
 	.setup_special		= sw_setup_special,
+	.setup_dev		= sw_setup_dev,
+	.leave_dev		= sw_leave_dev,
 	.get_state		= sw_get_priv_state,
 	.set_state		= sw_set_priv_state,
 

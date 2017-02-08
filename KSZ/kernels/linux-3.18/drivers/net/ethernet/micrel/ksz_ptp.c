@@ -1490,12 +1490,76 @@ static void prepare_pps(struct ptp_info *ptp)
 
 /* -------------------------------------------------------------------------- */
 
+static void ptp_check(struct ptp_info *ptp)
+{
+	struct ptp_utime cur;
+	struct ptp_utime now;
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
+
+	ptp->features |= PTP_ADJ_HACK;
+	ptp->ops->acquire(ptp);
+	sw->cached.ptp_clk_ctrl = ptp->reg->read(ptp, ADDR_16, PTP_CLK_CTRL);
+	ptp->reg->get_time(ptp, &cur);
+	ptp->reg->adjust_time(ptp, true, 10, 0, true);
+	ptp->reg->get_time(ptp, &now);
+	if (now.sec - cur.sec >= 10) {
+		ptp->features &= ~PTP_ADJ_HACK;
+		ptp->features |= PTP_ADJ_SEC;
+		ptp->features |= PTP_PDELAY_HACK;
+		ptp->reg->adjust_time(ptp, false, 10, 0, true);
+		ptp->version = 1;
+	}
+/*
+ * THa  2013/01/08
+ * The Rev. D chip has a problem of decrementing nanosecond that is bigger than
+ * the current nanosecond when continual clock adjustment is enabled.  The
+ * workaround is to use the PTP_ADJ_HACK code although the actual problem
+ * avoided is now different.
+ */
+	if (!(ptp->features & PTP_ADJ_HACK)) {
+		u16 data;
+
+		data = sw->cached.ptp_clk_ctrl;
+		sw->cached.ptp_clk_ctrl |= PTP_CLK_ADJ_ENABLE;
+		ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL,
+			sw->cached.ptp_clk_ctrl);
+		if (cur.sec < 1)
+			cur.sec = 1;
+		cur.nsec = 0;
+		ptp->reg->set_time(ptp, &cur);
+		ptp->reg->adjust_time(ptp, false, 0, 800000000, false);
+		ptp->reg->get_time(ptp, &now);
+		dbg_msg("%x:%u %x:%u\n", cur.sec, cur.nsec, now.sec, now.nsec);
+		if (abs(now.sec - cur.sec) > 2) {
+			ptp->reg->get_time(ptp, &now);
+			dbg_msg("! %x:%u\n", now.sec, now.nsec);
+			ptp->features |= PTP_ADJ_HACK;
+			ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL, data);
+
+			ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL,
+				data | PTP_CLK_ADJ_ENABLE);
+			ptp->reg->set_time(ptp, &cur);
+			ptp->reg->adjust_time(ptp, false, 0, 800000000, true);
+			ptp->reg->get_time(ptp, &now);
+			dbg_msg("ok %x:%u\n", now.sec, now.nsec);
+		}
+		sw->cached.ptp_clk_ctrl = data;
+		ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL, data);
+	}
+	ptp->ops->release(ptp);
+}  /* ptp_check */
+
 static void ptp_start(struct ptp_info *ptp, int init)
 {
 	u16 ctrl;
 	struct timespec ts;
 	struct ptp_utime t;
 
+	if (!ptp->features) {
+		ptp_check(ptp);
+		if (ptp->test_access_time)
+			ptp->test_access_time(ptp);
+	}
 	ptp_acquire(ptp);
 	ctrl = ptp_read(ptp, ADDR_16, PTP_MSG_CONF1);
 	if (ctrl == ptp->mode) {
@@ -1719,6 +1783,8 @@ static int ptp_stop(struct ptp_info *ptp)
 	flush_work(&ptp->adj_clk);
 	flush_workqueue(ptp->access);
 #endif
+	cancel_delayed_work_sync(&ptp->check_pps);
+	cancel_delayed_work_sync(&ptp->update_sec);
 	ptp->update_sec_jiffies = 0;
 	ptp->ops->acquire(ptp);
 	ptp->reg->write(ptp, ADDR_16, REG_RESET_CTRL,
@@ -1729,6 +1795,8 @@ static int ptp_stop(struct ptp_info *ptp)
 	ptp->ptp_synt = false;
 	ptp->started = false;
 	ptp->first_drift = ptp->drift = 0;
+	ptp->reg->write(ptp, ADDR_16, TRIG_INT_ENABLE, 0);
+	ptp->reg->write(ptp, ADDR_16, TS_INT_ENABLE, 0);
 	ptp->ops->release(ptp);
 	return false;
 }  /* ptp_stop */
@@ -3738,6 +3806,19 @@ hw_access_end:
 	return ret;
 }  /* proc_ptp_hw_access */
 
+static void exit_ptp_work(struct ptp_info *ptp)
+{
+	struct ptp_access *access;
+	struct ptp_work *work;
+	int i;
+
+	access = &ptp->hw_access;
+	for (i = 0; i < PTP_WORK_NUM; i++) {
+		work = &access->works[i];
+		flush_work(&work->work);
+	}
+}  /* exit_ptp_work */
+
 static void init_ptp_work(struct ptp_info *ptp)
 {
 	struct ptp_access *access;
@@ -4870,65 +4951,6 @@ static void exit_ptp_device(int dev_major, char *dev_name)
 	unregister_chrdev(dev_major, dev_name);
 }  /* exit_ptp_device */
 
-static void ptp_check(struct ptp_info *ptp)
-{
-	struct ptp_utime cur;
-	struct ptp_utime now;
-	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
-
-	ptp->features |= PTP_ADJ_HACK;
-	ptp->ops->acquire(ptp);
-	sw->cached.ptp_clk_ctrl = ptp->reg->read(ptp, ADDR_16, PTP_CLK_CTRL);
-	ptp->reg->get_time(ptp, &cur);
-	ptp->reg->adjust_time(ptp, true, 10, 0, true);
-	ptp->reg->get_time(ptp, &now);
-	if (now.sec - cur.sec >= 10) {
-		ptp->features &= ~PTP_ADJ_HACK;
-		ptp->features |= PTP_ADJ_SEC;
-		ptp->features |= PTP_PDELAY_HACK;
-		ptp->reg->adjust_time(ptp, false, 10, 0, true);
-		ptp->version = 1;
-	}
-/*
- * THa  2013/01/08
- * The Rev. D chip has a problem of decrementing nanosecond that is bigger than
- * the current nanosecond when continual clock adjustment is enabled.  The
- * workaround is to use the PTP_ADJ_HACK code although the actual problem
- * avoided is now different.
- */
-	if (!(ptp->features & PTP_ADJ_HACK)) {
-		u16 data;
-
-		data = sw->cached.ptp_clk_ctrl;
-		sw->cached.ptp_clk_ctrl |= PTP_CLK_ADJ_ENABLE;
-		ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL,
-			sw->cached.ptp_clk_ctrl);
-		if (cur.sec < 1)
-			cur.sec = 1;
-		cur.nsec = 0;
-		ptp->reg->set_time(ptp, &cur);
-		ptp->reg->adjust_time(ptp, false, 0, 800000000, false);
-		ptp->reg->get_time(ptp, &now);
-		dbg_msg("%x:%u %x:%u\n", cur.sec, cur.nsec, now.sec, now.nsec);
-		if (abs(now.sec - cur.sec) > 2) {
-			ptp->reg->get_time(ptp, &now);
-			dbg_msg("! %x:%u\n", now.sec, now.nsec);
-			ptp->features |= PTP_ADJ_HACK;
-			ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL, data);
-
-			ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL,
-				data | PTP_CLK_ADJ_ENABLE);
-			ptp->reg->set_time(ptp, &cur);
-			ptp->reg->adjust_time(ptp, false, 0, 800000000, true);
-			ptp->reg->get_time(ptp, &now);
-			dbg_msg("ok %x:%u\n", now.sec, now.nsec);
-		}
-		sw->cached.ptp_clk_ctrl = data;
-		ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL, data);
-	}
-	ptp->ops->release(ptp);
-}  /* ptp_check */
-
 static void ptp_set_identity(struct ptp_info *ptp, u8 *addr)
 {
 	memcpy(&ptp->clockIdentity.addr[0], &addr[0], 3);
@@ -4959,13 +4981,10 @@ static void ptp_init(struct ptp_info *ptp, u8 *mac_addr)
 	ptp_set_identity(ptp, mac_addr);
 
 	ptp->ports = MAX_PTP_PORT;
-	ptp_check(ptp);
 	if (!ptp->get_clk_cnt)
 		ptp->get_clk_cnt = _get_clk_cnt;
 	if (!ptp->test_access_time)
 		ptp->test_access_time = _test_access_time;
-	if (ptp->test_access_time)
-		ptp->test_access_time(ptp);
 
 	ptp->mode = PTP_ENABLE |
 		PTP_IPV4_UDP_ENABLE |
@@ -5010,11 +5029,7 @@ static void ptp_init(struct ptp_info *ptp, u8 *mac_addr)
 
 static void ptp_exit(struct ptp_info *ptp)
 {
-	ptp->ops->acquire(ptp);
-	ptp->reg->write(ptp, ADDR_16, TRIG_INT_ENABLE, 0);
-	ptp->reg->write(ptp, ADDR_16, TS_INT_ENABLE, 0);
-	ptp->ops->release(ptp);
-
+	exit_ptp_work(ptp);
 #ifdef PTP_SPI
 	if (ptp->access) {
 		destroy_workqueue(ptp->access);

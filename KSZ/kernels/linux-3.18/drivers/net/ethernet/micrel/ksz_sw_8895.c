@@ -17,8 +17,11 @@
 
 /* -------------------------------------------------------------------------- */
 
+#define MAX_SYSFS_BUF_SIZE		(4080 - 80)
+
 enum {
 	PROC_SW_INFO,
+	PROC_SW_VERSION,
 
 	PROC_SET_SW_DUPLEX,
 	PROC_SET_SW_SPEED,
@@ -490,7 +493,7 @@ static int sw_r_dyn_mac_table(struct ksz_sw *sw, u16 addr, u8 *mac_addr,
  *
  * This routine dumps dynamic MAC table contents.
  */
-static void sw_d_dyn_mac_table(struct ksz_sw *sw)
+static ssize_t sw_d_dyn_mac_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 	u16 entries = 0;
 	u16 i;
@@ -498,12 +501,25 @@ static void sw_d_dyn_mac_table(struct ksz_sw *sw)
 	u8 ports = 0;
 	u8 timestamp = 0;
 	u8 fid = 0;
+	int first_break = true;
 
 	memset(mac_addr, 0, ETH_ALEN);
 	i = 0;
 	do {
 		if (!sw_r_dyn_mac_table(sw, i, mac_addr, &fid, &ports,
 				&timestamp, &entries)) {
+			if (len >= MAX_SYSFS_BUF_SIZE && first_break) {
+				first_break = false;
+				len += sprintf(buf + len, "...\n");
+			}
+			if (len < MAX_SYSFS_BUF_SIZE)
+			len += sprintf(buf + len,
+				"%02X:%02X:%02X:%02X:%02X:%02X  "
+				"f:%2x  p:%x  t:%x\n",
+				mac_addr[0], mac_addr[1], mac_addr[2],
+				mac_addr[3], mac_addr[4], mac_addr[5],
+				fid, ports, timestamp);
+			else
 			printk(KERN_INFO
 				"%02X:%02X:%02X:%02X:%02X:%02X  "
 				"f:%2x  p:%x  t:%x\n",
@@ -513,8 +529,13 @@ static void sw_d_dyn_mac_table(struct ksz_sw *sw)
 		}
 		i++;
 	} while (i < entries);
-	if (entries)
-		printk(KERN_INFO "=%03x\n", entries);
+	if (entries) {
+		if (len < MAX_SYSFS_BUF_SIZE)
+			sprintf(buf + len, "=%03x\n", entries);
+		else
+			printk(KERN_INFO "=%03x\n", entries);
+	}
+	return len;
 }  /* sw_d_dyn_mac_table */
 
 /**
@@ -597,7 +618,7 @@ static void sw_w_sta_mac_table(struct ksz_sw *sw, u16 addr,
  *
  * This routine dumps static MAC table contents.
  */
-static void sw_d_sta_mac_table(struct ksz_sw *sw)
+static ssize_t sw_d_sta_mac_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 	u16 i;
 	struct ksz_mac_table mac;
@@ -605,7 +626,7 @@ static void sw_d_sta_mac_table(struct ksz_sw *sw)
 	i = 0;
 	do {
 		if (!sw_r_sta_mac_table(sw, i, &mac)) {
-			printk(KERN_INFO
+			len += sprintf(buf + len,
 				"%2x: %02X:%02X:%02X:%02X:%02X:%02X  "
 				"%02x  %u  %u:%x\n",
 				i, mac.addr[0], mac.addr[1], mac.addr[2],
@@ -614,9 +635,10 @@ static void sw_d_sta_mac_table(struct ksz_sw *sw)
 		}
 		i++;
 	} while (i < STATIC_MAC_TABLE_ENTRIES);
+	return len;
 }  /* sw_d_sta_mac_table */
 
-static void sw_d_mac_table(struct ksz_sw *sw)
+static ssize_t sw_d_mac_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 #if 0
 	struct ksz_mac_table *entry;
@@ -626,7 +648,7 @@ static void sw_d_mac_table(struct ksz_sw *sw)
 	do {
 		entry = &sw->info->mac_table[i];
 		if (entry->valid) {
-			printk(KERN_INFO
+			len += sprintf(buf + len,
 				"%x: %02X:%02X:%02X:%02X:%02X:%02X  "
 				"%x  %u  %u:%x\n",
 				i, entry->mac_addr[0], entry->mac_addr[1],
@@ -640,7 +662,8 @@ static void sw_d_mac_table(struct ksz_sw *sw)
 			printk(KERN_INFO "\n");
 	} while (i < MULTI_MAC_TABLE_ENTRIES);
 #endif
-}
+	return len;
+}  /* sw_d_mac_table */
 
 /* -------------------------------------------------------------------------- */
 
@@ -758,7 +781,7 @@ static void sw_w_vlan_table(struct ksz_sw *sw, u16 vid,
  *
  * This routine dumps the VLAN table.
  */
-static void sw_d_vlan_table(struct ksz_sw *sw)
+static ssize_t sw_d_vlan_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 	u16 i;
 	u16 j;
@@ -766,21 +789,35 @@ static void sw_d_vlan_table(struct ksz_sw *sw)
 	u8 fid[4];
 	u8 member[4];
 	u8 valid[4];
+	int first_break = true;
 
 	i = 0;
 	do {
 		if (!sw_r_vlan_entries(sw, i, valid, fid, member)) {
 			vid = i * 4;
 			for (j = 0; j < 4; j++, vid++) {
-				if (valid[j])
+				if (!valid[j])
+					continue;
+					continue;
+				if (len >= MAX_SYSFS_BUF_SIZE && first_break) {
+					first_break = false;
+					len += sprintf(buf + len, "...\n");
+				}
+				if (len < MAX_SYSFS_BUF_SIZE)
+					len += sprintf(buf + len,
+						"0x%03x: %2x  %2x\n", vid,
+						fid[j], member[j]);
+				else
 					printk(KERN_INFO
-					"0x%03x: %2x  %2x\n", vid,
-					fid[j], member[j]);
+						"0x%03x: %2x  %2x\n", vid,
+						fid[j], member[j]);
 			}
 		}
+		if (len >= MAX_SYSFS_BUF_SIZE)
 		yield();
 		i++;
 	} while (i < VLAN_TABLE_ENTRIES);
+	return len;
 }  /* sw_d_vlan_table */
 
 /* -------------------------------------------------------------------------- */
@@ -3076,7 +3113,6 @@ static void bridge_change(struct ksz_sw *sw)
 }  /* bridge_change */
 #endif
 
-#ifdef USE_REQ
 #define MAX_SW_LEN			1500
 
 static void sw_setup_msg(struct sw_dev_info *info, void *data, int len,
@@ -3105,7 +3141,6 @@ static void sw_setup_msg(struct sw_dev_info *info, void *data, int len,
 		mutex_unlock(&info->lock);
 	wake_up_interruptible(&info->wait_msg);
 }  /* sw_setup_msg */
-#endif
 
 #ifdef CONFIG_KSZ_STP
 #include "ksz_stp.c"
@@ -3179,7 +3214,7 @@ static u8 sw_determine_flow_ctrl(struct ksz_sw *sw, struct ksz_port *port,
 		flow |= 0x01;
 	if (tx)
 		flow |= 0x02;
-#ifdef DEBUG
+#ifdef DBG_LINK
 	printk(KERN_INFO "pause: %d, %d; %02x %02x\n",
 		rx, tx, local, remote);
 #endif
@@ -3316,7 +3351,7 @@ static int port_get_link_speed(struct ksz_port *port)
 		if (local == info->advertised && link == info->link)
 			continue;
 
-#ifdef DEBUG
+#ifdef DBG_LINK
 		printk(KERN_INFO
 			"%d=advertised: %02X-%02X; partner: %02X-%02X"
 			"; link: %02X-%02X\n", p,
@@ -3337,7 +3372,7 @@ static int port_get_link_speed(struct ksz_port *port)
 			if (status & PORT_STAT_FULL_DUPLEX)
 				info->duplex = 2;
 
-#ifdef DEBUG
+#ifdef DBG_LINK
 			printk(KERN_INFO "flow_ctrl: "SW_SIZE_STR"\n", status &
 				(PORT_RX_FLOW_CTRL | PORT_TX_FLOW_CTRL));
 #endif
@@ -3374,7 +3409,7 @@ static int port_get_link_speed(struct ksz_port *port)
 	if (linked && media_disconnected == port->linked->state)
 		port->linked = linked;
 
-#ifdef DEBUG
+#ifdef DBG_LINK
 	if (change)
 		dbp_link(port, sw, change);
 #endif
@@ -3794,7 +3829,7 @@ static void hw_get_link_md(struct ksz_sw *sw, int port)
 			len = data & PORT_CABLE_FAULT_COUNTER_H;
 			len <<= 16;
 			len |= link;
-			len *= CABLE_LEN_MULTIPLER;
+			len *= CABLE_LEN_MULTIPLIER;
 			len /= 100;
 			port_info->length[i] = len;
 			if (data & PORT_CABLE_10M_SHORT)
@@ -4384,6 +4419,9 @@ static ssize_t sysfs_sw_read(struct ksz_sw *sw, int proc_num,
 	case PROC_SW_INFO:
 		len = display_sw_info(sw->mib_port_cnt, buf, len);
 		break;
+	case PROC_SW_VERSION:
+		len += sprintf(buf + len, "%s\n", DRV_RELDATE);
+		break;
 	case PROC_SET_SW_DUPLEX:
 		if (!port)
 			break;
@@ -4538,14 +4576,14 @@ static ssize_t sysfs_sw_read(struct ksz_sw *sw, int proc_num,
 			TAIL_TAGGING);
 		break;
 	case PROC_DYNAMIC:
-		sw_d_dyn_mac_table(sw);
+		len = sw_d_dyn_mac_table(sw, buf, len);
 		break;
 	case PROC_STATIC:
-		sw_d_sta_mac_table(sw);
-		sw_d_mac_table(sw);
+		len = sw_d_sta_mac_table(sw, buf, len);
+		len = sw_d_mac_table(sw, buf, len);
 		break;
 	case PROC_VLAN:
-		sw_d_vlan_table(sw);
+		len = sw_d_vlan_table(sw, buf, len);
 		break;
 	}
 	return len;
@@ -6624,6 +6662,10 @@ static void sw_start(struct ksz_sw *sw, u8 *addr)
 		entry.member = sw->PORT_MASK;
 		entry.valid = 1;
 		sw_w_vlan_table(sw, 1, &entry);
+		entry.fid = 0;
+		entry.member = sw->PORT_MASK;
+		entry.valid = 1;
+		sw_w_vlan_table(sw, 0, &entry);
 		sw->ops->acquire(sw);
 		sw_ena_vlan(sw);
 	}
@@ -6849,7 +6891,6 @@ static u8 sw_set_mac_addr(struct ksz_sw *sw, struct net_device *dev,
 	return promiscuous;
 }  /* sw_set_mac_addr */
 
-#ifdef USE_REQ
 static struct ksz_sw *sw_priv;
 
 static struct sw_dev_info *alloc_sw_dev_info(unsigned int minor)
@@ -6922,12 +6963,231 @@ static int sw_dev_release(struct inode *inode, struct file *filp)
 	filp->private_data = NULL;
 	return 0;
 }  /* sw_dev_release */
+
+static int sw_get_attrib(struct ksz_sw *sw, int subcmd, int size,
+	int *req_size, size_t *len, u8 *data, int *output)
+{
+	struct ksz_info_opt *opt = (struct ksz_info_opt *) data;
+	struct ksz_info_cfg *cfg = &opt->data.cfg;
+	int i;
+	int n;
+	int p;
+
+	*len = 0;
+	*output = 0;
+	switch (subcmd) {
+	case DEV_SW_CFG:
+		n = opt->num;
+		p = opt->port;
+		if (!n)
+			n = 1;
+		*len = 2 + n * sizeof(struct ksz_info_cfg);
+		break;
+	}
+	if (!*len)
+		return DEV_IOC_INVALID_CMD;
+	if (size < *len) {
+		*req_size = *len + SIZEOF_ksz_request;
+		return DEV_IOC_INVALID_LEN;
+	}
+	switch (subcmd) {
+	case DEV_SW_CFG:
+		sw->ops->acquire(sw);
+		for (i = 0; i < opt->num; i++, p++) {
+			cfg->on_off = 0;
+			if (cfg->set & SP_LEARN) {
+				if (!port_chk_dis_learn(sw, p))
+					cfg->on_off |= SP_LEARN;
+			}
+			if (cfg->set & SP_RX) {
+				if (port_chk_rx(sw, p))
+					cfg->on_off |= SP_RX;
+			}
+			if (cfg->set & SP_TX) {
+				if (port_chk_tx(sw, p))
+					cfg->on_off |= SP_TX;
+			}
+			if (p == sw->HOST_PORT)
+				continue;
+#if 0
+			if (cfg->set & SP_PHY_POWER) {
+				if (port_chk_power(sw, p))
+					cfg->on_off |= SP_PHY_POWER;
+			}
 #endif
+			cfg++;
+		}
+		sw->ops->release(sw);
+		break;
+	}
+	return DEV_IOC_OK;
+}  /* sw_get_attrib */
+
+static int sw_set_attrib(struct ksz_sw *sw, int subcmd, int size,
+	int *req_size, u8 *data, int *output)
+{
+	struct ksz_info_opt *opt = (struct ksz_info_opt *) data;
+	struct ksz_info_cfg *cfg = &opt->data.cfg;
+	int len;
+	int i;
+	int n;
+	int p;
+
+	*output = 0;
+	switch (subcmd) {
+	case DEV_SW_CFG:
+		n = opt->num;
+		p = opt->port;
+		if (!n)
+			n = 1;
+		len = 2 + n * sizeof(struct ksz_info_cfg);
+		if (size < len)
+			goto not_enough;
+		sw->ops->acquire(sw);
+		for (i = 0; i < opt->num; i++, p++) {
+			if (cfg->set & SP_LEARN)
+				port_cfg_dis_learn(sw, p,
+					!(cfg->on_off & SP_LEARN));
+			if (cfg->set & SP_RX)
+				port_cfg_rx(sw, p,
+					!!(cfg->on_off & SP_RX));
+			if (cfg->set & SP_TX)
+				port_cfg_tx(sw, p,
+					!!(cfg->on_off & SP_TX));
+			if (p == sw->HOST_PORT)
+				continue;
+#if 0
+			if (cfg->set & SP_PHY_POWER)
+				port_cfg_power(sw, p,
+					!!(cfg->on_off & SP_PHY_POWER));
+#endif
+			cfg++;
+		}
+		sw->ops->release(sw);
+		break;
+	default:
+		return DEV_IOC_INVALID_CMD;
+	}
+	return DEV_IOC_OK;
+
+not_enough:
+	*req_size = len + SIZEOF_ksz_request;
+	return DEV_IOC_INVALID_LEN;
+}  /* sw_set_attrib */
+
+static int base_dev_req(struct ksz_sw *sw, char *arg, void *info)
+{
+	struct ksz_request *req = (struct ksz_request *) arg;
+	int len;
+	int maincmd;
+	int req_size;
+	int subcmd;
+	int output;
+	size_t param_size;
+	u8 data[PARAM_DATA_SIZE];
+	struct ksz_resp_msg *msg = (struct ksz_resp_msg *) data;
+	int err = 0;
+	int result = 0;
+
+	get_user_data(&req_size, &req->size, info);
+	get_user_data(&maincmd, &req->cmd, info);
+	get_user_data(&subcmd, &req->subcmd, info);
+	get_user_data(&output, &req->output, info);
+	len = req_size - SIZEOF_ksz_request;
+
+	maincmd &= 0xffff;
+	switch (maincmd) {
+	case DEV_CMD_INFO:
+		switch (subcmd) {
+		case DEV_INFO_INIT:
+			req_size = SIZEOF_ksz_request + 4;
+			if (len >= 4) {
+				data[0] = 'M';
+				data[1] = 'i';
+				data[2] = 'c';
+				data[3] = 'r';
+				data[4] = 0;
+				err = write_user_data(data, req->param.data,
+					6, info);
+				if (err)
+					goto dev_ioctl_done;
+				sw->dev_info = info;
+			} else
+				result = DEV_IOC_INVALID_LEN;
+			break;
+		case DEV_INFO_EXIT:
+
+		/* fall through */
+		case DEV_INFO_QUIT:
+
+			/* Not called through char device. */
+			if (!info)
+				break;
+			msg->module = DEV_MOD_BASE;
+			msg->cmd = DEV_INFO_QUIT;
+			msg->resp.data[0] = 0;
+			sw_setup_msg(info, msg, 8, NULL, NULL);
+			sw->notifications = 0;
+			sw->dev_info = NULL;
+			break;
+		case DEV_INFO_NOTIFY:
+			if (len >= 4) {
+				uint *notify = (uint *) data;
+
+				_chk_ioctl_size(len, 4, 0, &req_size, &result,
+					&req->param, data, info);
+				sw->notifications = *notify;
+			}
+			break;
+		default:
+			result = DEV_IOC_INVALID_CMD;
+			break;
+		}
+		break;
+	case DEV_CMD_PUT:
+		if (_chk_ioctl_size(len, len, 0, &req_size, &result,
+		    &req->param, data, info))
+			goto dev_ioctl_resp;
+		result = sw_set_attrib(sw, subcmd, len, &req_size, data,
+			&output);
+		if (result)
+			goto dev_ioctl_resp;
+		put_user_data(&output, &req->output, info);
+		break;
+	case DEV_CMD_GET:
+		if (_chk_ioctl_size(len, len, 0, &req_size, &result,
+		    &req->param, data, info))
+			goto dev_ioctl_resp;
+		result = sw_get_attrib(sw, subcmd, len, &req_size,
+			&param_size, data, &output);
+		if (result)
+			goto dev_ioctl_resp;
+		err = write_user_data(data, req->param.data, param_size, info);
+		if (err)
+			goto dev_ioctl_done;
+		req_size = param_size + SIZEOF_ksz_request;
+		put_user_data(&output, &req->output, info);
+		break;
+	default:
+		result = DEV_IOC_INVALID_CMD;
+		break;
+	}
+
+dev_ioctl_resp:
+	put_user_data(&req_size, &req->size, info);
+	put_user_data(&result, &req->result, info);
+
+	/* Return ERESTARTSYS so that the system call is called again. */
+	if (result < 0)
+		err = result;
+
+dev_ioctl_done:
+	return err;
+}  /* base_dev_req */
 
 static int sw_dev_req(struct ksz_sw *sw, int start, char *arg,
 	struct sw_dev_info *info)
 {
-#ifdef USE_REQ
 	struct ksz_request *req = (struct ksz_request *) arg;
 	int maincmd;
 	int req_size;
@@ -6944,6 +7204,10 @@ static int sw_dev_req(struct ksz_sw *sw, int start, char *arg,
 	get_user_data(&maincmd, &req->cmd, info);
 	maincmd >>= 16;
 	switch (maincmd) {
+	case DEV_MOD_BASE:
+		err = base_dev_req(sw, arg, info);
+		result = 0;
+		break;
 	default:
 		break;
 	}
@@ -6965,12 +7229,8 @@ dev_ioctl_done:
 		err = result;
 
 	return err;
-#else
-	return -1;
-#endif
 }  /* sw_dev_req */
 
-#ifdef USE_REQ
 static ssize_t sw_dev_read(struct file *filp, char *buf, size_t count,
 	loff_t *offp)
 {
@@ -7131,25 +7391,20 @@ static void exit_sw_dev(int dev_major, char *dev_name)
 	class_destroy(sw_class);
 	unregister_chrdev(dev_major, dev_name);
 }  /* exit_sw_dev */
-#endif
 
 static void sw_init_dev(struct ksz_sw *sw)
 {
-#ifdef USE_REQ
 	sw_priv = sw;
 	sprintf(sw->dev_name, "sw_dev");
 	sw->dev_major = init_sw_dev(0, sw->dev_name);
 	sw->msg_buf = kzalloc(MAX_SW_LEN, GFP_KERNEL);
-#endif
 }  /* sw_init_dev */
 
 static void sw_exit_dev(struct ksz_sw *sw)
 {
-#ifdef USE_REQ
 	kfree(sw->msg_buf);
 	if (sw->dev_major >= 0)
 		exit_sw_dev(sw->dev_major, sw->dev_name);
-#endif
 }  /* sw_exit_dev */
 
 #if 0
@@ -7394,9 +7649,12 @@ setup_next:
 	return;
 }  /* sw_setup_zone */
 
+static int phy_offset;
+
 static void sw_setup_special(struct ksz_sw *sw, int *port_cnt,
 	int *mib_port_cnt, int *dev_cnt)
 {
+	phy_offset = 0;
 	sw->dev_offset = 0;
 	sw->phy_offset = 0;
 	if (sw->stp) {
@@ -7439,6 +7697,22 @@ static void sw_setup_special(struct ksz_sw *sw, int *port_cnt,
 		(*dev_cnt)++;
 }  /* sw_setup_special */
 
+static void sw_leave_dev(struct ksz_sw *sw)
+{
+	int i;
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->features & STP_SUPPORT)
+		leave_stp(&sw->info->rstp);
+#endif
+	for (i = 0; i < sw->dev_count; i++)
+		sw->netdev[i] = NULL;
+	sw->eth_cnt = 0;
+	sw->dev_count = 0;
+	sw->dev_offset = 0;
+	sw->phy_offset = 0;
+}  /* sw_leave_dev */
+
 static int sw_setup_dev(struct ksz_sw *sw, struct net_device *dev,
 	char *dev_name, struct ksz_port *port, int i, int port_cnt,
 	int mib_port_cnt)
@@ -7448,7 +7722,6 @@ static int sw_setup_dev(struct ksz_sw *sw, struct net_device *dev,
 	int pi;
 	int phy_id;
 	u32 features;
-	static int phy_offset = 0;
 
 	if (!phy_offset)
 		phy_offset = sw->phy_offset;
@@ -7527,6 +7800,10 @@ static int sw_setup_dev(struct ksz_sw *sw, struct net_device *dev,
 		sw->info->port_cfg[pi].index = i;
 	}
 	sw->netdev[i] = dev;
+	if (sw->dev_count > 1 && i && !(sw->features & DIFF_MAC_ADDR)) {
+		if (memcmp(dev->dev_addr, sw->netdev[0]->dev_addr, ETH_ALEN))
+			sw->features |= DIFF_MAC_ADDR;
+	}
 
 	INIT_WORK(&port->link_update, link_update_work);
 	features = sw->features;
@@ -7643,8 +7920,9 @@ static void sw_netdev_wake_queue(struct ksz_sw *sw, struct net_device *dev)
 }
 
 static struct ksz_sw_net_ops sw_net_ops = {
-	.setup_dev		= sw_setup_dev,
 	.setup_special		= sw_setup_special,
+	.setup_dev		= sw_setup_dev,
+	.leave_dev		= sw_leave_dev,
 	.get_state		= sw_get_priv_state,
 	.set_state		= sw_set_priv_state,
 

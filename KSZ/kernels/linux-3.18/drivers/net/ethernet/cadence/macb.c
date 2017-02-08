@@ -35,7 +35,7 @@
 #define HAVE_KSZ_SWITCH
 #endif
 
-#if defined(CONFIG_KSZ9897_EMBEDDED) || defined(CONFIG_KSZ_IBA_ONLY)
+#if defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 #include <linux/crc32.h>
 #include <linux/ip.h>
 #include <linux/if_vlan.h>
@@ -43,8 +43,6 @@
 #include <net/ipv6.h>
 #include <linux/of_gpio.h>
 #include <linux/gpio.h>
-
-#if defined(CONFIG_KSZ_IBA_ONLY)
 
 /* Need to predefine get_sysfs_data. */
 
@@ -55,8 +53,6 @@ static void get_sysfs_data_(struct net_device *dev,
 	struct semaphore **proc_sem, struct ksz_port **port);
 
 #define get_sysfs_data		get_sysfs_data_
-#endif
-
 #endif
 
 static void copy_old_skb(struct sk_buff *old, struct sk_buff *skb);
@@ -75,7 +71,7 @@ static void copy_old_skb(struct sk_buff *old, struct sk_buff *skb);
 
 #ifdef HAVE_KSZ_SWITCH
 
-#if !defined(get_sysfs_data) || defined(CONFIG_KSZ_IBA_ONLY)
+#if !defined(get_sysfs_data) || defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 static void get_sysfs_data_(struct net_device *dev,
 	struct semaphore **proc_sem, struct ksz_port **port)
 {
@@ -92,7 +88,7 @@ static void get_sysfs_data_(struct net_device *dev,
 #define get_sysfs_data		get_sysfs_data_
 #endif
 
-#if !defined(CONFIG_KSZ_SWITCH_EMBEDDED) && !defined(CONFIG_KSZ_IBA_ONLY)
+#if !defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 #define USE_SPEED_LINK
 #define USE_MIB
 #include "../micrel/ksz_sw_sysfs_9897.c"
@@ -2432,6 +2428,7 @@ static int macb_close(struct net_device *dev)
 				netif_carrier_off(dev);
 				return 0;
 			}
+
 #ifdef CONFIG_KSZ_IBA_ONLY
 			sw->net_ops->leave_dev(sw);
 			phy_detach(bp->phy_dev);

@@ -1,7 +1,7 @@
 /**
  * Microchip KSZ8692 Ethernet driver
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2009-2015 Micrel, Inc.
@@ -805,7 +805,7 @@ static inline void copy_old_skb(struct sk_buff *old, struct sk_buff *skb)
 	dev_kfree_skb(old);
 }  /* copy_old_skb */
 
-#if defined(CONFIG_KSZ_IBA_ONLY)
+#if defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 
 /* Need to predefine get_sysfs_data. */
 
@@ -845,7 +845,7 @@ static void get_sysfs_data_(struct net_device *dev,
 #include "ksz_cfg_8895.h"
 #endif
 
-#if defined(CONFIG_KSZ_IBA_ONLY)
+#if defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 static void get_sysfs_data_(struct net_device *dev,
 	struct semaphore **proc_sem, struct ksz_port **port)
 {
@@ -6697,8 +6697,7 @@ static int get_num_val_(const char *buf)
 #define get_num_val		get_num_val_
 #endif
 
-#if defined(HAVE_KSZ_SWITCH) && !defined(CONFIG_KSZ_SWITCH_EMBEDDED) && \
-	!defined(CONFIG_KSZ_IBA_ONLY)
+#if defined(HAVE_KSZ_SWITCH) && !defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 
 #ifndef get_sysfs_data
 static void get_sysfs_data_(struct net_device *dev,
@@ -8244,8 +8243,7 @@ static void sw_adjust_link(struct net_device *dev)
 static int sw_device_seen;
 #endif
 
-#if defined(HAVE_KSZ_SWITCH) && !defined(CONFIG_KSZ_SWITCH_EMBEDDED) && \
-	!defined(CONFIG_KSZ_IBA_ONLY)
+#if defined(HAVE_KSZ_SWITCH) && !defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 /*
  * This enables multiple network device mode for the switch, which contains at
  * least two physical ports.  Some users like to take control of the ports for

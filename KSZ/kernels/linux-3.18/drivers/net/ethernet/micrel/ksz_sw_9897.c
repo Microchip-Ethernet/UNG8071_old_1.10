@@ -17475,10 +17475,12 @@ info->tx_rate / TX_RATE_UNIT, info->duplex);
 	sw->ops->release(sw);
 	sw->ops->init(sw);
 
+#if !defined(CONFIG_KSZ9897_EMBEDDED)
 	init_sw_sysfs(sw, &ks->sysfs, ks->dev);
 #ifdef CONFIG_KSZ_DLR
 	if (sw->features & DLR_HW)
 		init_dlr_sysfs(ks->dev);
+#endif
 #endif
 	ret = sysfs_create_bin_file(&ks->dev->kobj,
 		&kszsw_registers_attr);
@@ -17637,7 +17639,7 @@ static int ksz_remove(struct sw_priv *ks)
 
 	sysfs_remove_bin_file(&ks->dev->kobj, &kszsw_registers_attr);
 
-#if !defined(CONFIG_KSZ_SWITCH_EMBEDDED) || defined(CONFIG_KSZ_IBA_ONLY)
+#if !defined(CONFIG_KSZ9897_EMBEDDED)
 #ifdef CONFIG_KSZ_DLR
 	if (sw->features & DLR_HW)
 		exit_dlr_sysfs(ks->dev);

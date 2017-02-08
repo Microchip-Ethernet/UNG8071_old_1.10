@@ -52,7 +52,7 @@
 
 #define KS8895_DEV			"ksz8895"
 
-#define DRV_RELDATE			"Jan 8, 2017"
+#define DRV_RELDATE			"Feb 7, 2017"
 
 /* -------------------------------------------------------------------------- */
 
@@ -348,9 +348,7 @@ static void delay_milli(uint millisec)
 #define USE_SHOW_HELP
 #include "ksz_common.c"
 
-#ifdef USE_REQ
 #include "ksz_req.c"
-#endif
 
 #ifndef CONFIG_KSZ_SWITCH_EMBEDDED
 static inline void copy_old_skb(struct sk_buff *old, struct sk_buff *skb)
@@ -1135,13 +1133,14 @@ static int ksz_mii_write(struct mii_bus *bus, int phy_id, int regnum, u16 val)
 	return 0;
 }  /* ksz_mii_write */
 
+static int driver_installed;
+
 static int ksz_mii_init(struct sw_priv *ks)
 {
 	struct platform_device *pdev;
 	struct mii_bus *bus;
 	int err;
 	int i;
-	static int driver_installed;
 
 	pdev = platform_device_register_simple("Switch MII bus", ks->sw.id,
 		NULL, 0);
@@ -1234,8 +1233,10 @@ mii_init_free_mii_bus:
 	for (i = 0; i < PHY_MAX_ADDR; i++)
 		if (bus->phy_map[i])
 			kfree(bus->phy_map[i]->priv);
-	if (driver_installed)
+	if (driver_installed) {
 		phy_driver_unregister(&kszsw_phy_driver);
+		driver_installed = false;
+	}
 	mdiobus_free(bus);
 
 mii_init_reg:
@@ -1257,10 +1258,18 @@ static void ksz_mii_exit(struct sw_priv *ks)
 		sw_stop_interrupt(ks);
 	}
 	for (i = 0; i < PHY_MAX_ADDR; i++)
-		if (bus->phy_map[i])
+		if (bus->phy_map[i]) {
+			struct ksz_port *port;
+
+			port = & ks->ports[i];
+			flush_work(&port->link_update);
 			kfree(bus->phy_map[i]->priv);
+		}
 	mdiobus_unregister(bus);
-	phy_driver_unregister(&kszsw_phy_driver);
+	if (driver_installed) {
+		phy_driver_unregister(&kszsw_phy_driver);
+		driver_installed = false;
+	}
 	mdiobus_free(bus);
 	platform_device_unregister(pdev);
 }  /* ksz_mii_exit */
@@ -1684,7 +1693,7 @@ static int ksz8895_probe(struct spi_device *spi)
 	sw->ops->release(sw);
 	sw->ops->init(sw);
 
-#ifndef CONFIG_KSZ_SWITCH_EMBEDDED
+#ifndef CONFIG_KSZ8895_EMBEDDED
 	init_sw_sysfs(sw, &ks->sysfs, ks->dev);
 #endif
 	ret = sysfs_create_bin_file(&ks->dev->kobj,
@@ -1760,23 +1769,25 @@ static int ksz8895_remove(struct spi_device *spi)
 #ifdef CONFIG_NET_DSA_TAG_TAIL
 	ksz_dsa_cleanup();
 #endif
+	ksz_mii_exit(ks);
 	ksz_stop_timer(&ks->monitor_timer_info);
 	ksz_stop_timer(&ks->mib_timer_info);
 	flush_work(&ks->mib_read);
 
-	sw->ops->exit(sw);
 	sysfs_remove_bin_file(&ks->dev->kobj, &kszsw_registers_attr);
-#ifndef CONFIG_KSZ_SWITCH_EMBEDDED
+
+#ifndef CONFIG_KSZ8895_EMBEDDED
 	exit_sw_sysfs(sw, &ks->sysfs, ks->dev);
 #endif
+	sw->ops->exit(sw);
 	cancel_delayed_work_sync(&ks->link_read);
+
 	delete_debugfs(ks);
 
 #ifdef CONFIG_KSZ_STP
 	ksz_stp_exit(&sw->info->rstp);
 #endif
 	kfree(sw->info);
-	ksz_mii_exit(ks);
 	kfree(ks->hw_dev);
 	kfree(ks);
 

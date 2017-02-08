@@ -19,8 +19,11 @@
 
 /* -------------------------------------------------------------------------- */
 
+#define MAX_SYSFS_BUF_SIZE		(4080 - 80)
+
 enum {
 	PROC_SW_INFO,
+	PROC_SW_VERSION,
 
 	PROC_SET_SW_DUPLEX,
 	PROC_SET_SW_SPEED,
@@ -506,7 +509,7 @@ static int sw_r_dyn_mac_table(struct ksz_sw *sw, u16 addr, u8 *mac_addr,
 	return rc;
 }
 
-static void sw_d_dyn_mac_table(struct ksz_sw *sw)
+static ssize_t sw_d_dyn_mac_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 	u16 entries = 0;
 	u16 i;
@@ -515,6 +518,7 @@ static void sw_d_dyn_mac_table(struct ksz_sw *sw)
 	u8 timestamp = 0;
 	u8 fid = 0;
 	int locked = mutex_is_locked(&sw->lock);
+	int first_break = true;
 
 	if (locked)
 		mutex_unlock(sw->reglock);
@@ -523,6 +527,17 @@ static void sw_d_dyn_mac_table(struct ksz_sw *sw)
 	do {
 		if (!sw_r_dyn_mac_table(sw, i, mac_addr, &fid, &ports,
 				&timestamp, &entries)) {
+			if (len >= MAX_SYSFS_BUF_SIZE && first_break) {
+				first_break = false;
+				len += sprintf(buf + len, "...\n");
+			}
+			if (len < MAX_SYSFS_BUF_SIZE)
+			len += sprintf(buf + len,
+				"%02X:%02X:%02X:%02X:%02X:%02X %x %x %x %03x\n",
+				mac_addr[0], mac_addr[1], mac_addr[2],
+				mac_addr[3], mac_addr[4], mac_addr[5],
+				fid, ports, timestamp, entries);
+			else
 			printk(KERN_INFO
 				"%02X:%02X:%02X:%02X:%02X:%02X %x %x %x %03x\n",
 				mac_addr[0], mac_addr[1], mac_addr[2],
@@ -533,6 +548,7 @@ static void sw_d_dyn_mac_table(struct ksz_sw *sw)
 	} while (i < entries);
 	if (locked)
 		mutex_lock(sw->reglock);
+	return len;
 }
 
 /**
@@ -626,7 +642,7 @@ static void sw_w_sta_mac_table(struct ksz_sw *sw, u16 addr, u8 *mac_addr,
 		mutex_lock(sw->reglock);
 }
 
-static void sw_d_sta_mac_table(struct ksz_sw *sw)
+static ssize_t sw_d_sta_mac_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 	u16 i;
 	u8 mac_addr[ETH_ALEN];
@@ -639,7 +655,7 @@ static void sw_d_sta_mac_table(struct ksz_sw *sw)
 	do {
 		if (!sw_r_sta_mac_table(sw, i, mac_addr, &ports, &override,
 				&use_fid, &fid)) {
-			printk(KERN_INFO
+			len += sprintf(buf + len,
 				"%d: %02X:%02X:%02X:%02X:%02X:%02X "
 				"%x %u %u:%x\n",
 				i, mac_addr[0], mac_addr[1], mac_addr[2],
@@ -648,9 +664,10 @@ static void sw_d_sta_mac_table(struct ksz_sw *sw)
 		}
 		i++;
 	} while (i < STATIC_MAC_TABLE_ENTRIES);
+	return len;
 }
 
-static void sw_d_mac_table(struct ksz_sw *sw)
+static ssize_t sw_d_mac_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 	struct ksz_mac_table *entry;
 	struct ksz_alu_table *alu;
@@ -663,10 +680,10 @@ static void sw_d_mac_table(struct ksz_sw *sw)
 		if (entry->valid) {
 			if (first_static) {
 				first_static = false;
-				printk(KERN_INFO "\n");
+				len += sprintf(buf + len, "\n");
 			}
 			alu = &sw->info->alu_table[i];
-			printk(KERN_INFO
+			len += sprintf(buf + len,
 				"%2x: %02X:%02X:%02X:%02X:%02X:%02X "
 				"%x %u %u:%x  %02x:%x\n",
 				i, entry->mac_addr[0], entry->mac_addr[1],
@@ -680,6 +697,7 @@ static void sw_d_mac_table(struct ksz_sw *sw)
 		if (SWITCH_MAC_TABLE_ENTRIES == i)
 			first_static = true;
 	} while (i < MULTI_MAC_TABLE_ENTRIES);
+	return len;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -759,7 +777,7 @@ static void sw_w_vlan_table(struct ksz_sw *sw, u16 addr, u16 vid, u8 fid,
 	info->vlan_table[entry].valid = valid;
 }
 
-static void sw_d_vlan_table(struct ksz_sw *sw)
+static ssize_t sw_d_vlan_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 	u16 i;
 	u16 vid;
@@ -774,12 +792,13 @@ static void sw_d_vlan_table(struct ksz_sw *sw)
 			info->vlan_table[i].fid = fid;
 			info->vlan_table[i].member = member;
 			info->vlan_table[i].valid = 1;
-			printk(KERN_INFO
+			len += sprintf(buf + len,
 				"%x: 0x%03x %x %x\n", i, vid, fid, member);
 		} else
 			info->vlan_table[i].valid = 0;
 		i++;
 	} while (i < VLAN_TABLE_ENTRIES);
+	return len;
 }
 
 #ifdef CONFIG_MRP
@@ -4581,6 +4600,9 @@ static ssize_t sysfs_sw_read(struct ksz_sw *sw, int proc_num,
 	case PROC_SW_INFO:
 		len = display_sw_info(sw->mib_port_cnt, buf, len);
 		break;
+	case PROC_SW_VERSION:
+		len += sprintf(buf + len, "%s\n", DRV_RELDATE);
+		break;
 	case PROC_SET_SW_DUPLEX:
 		if (!port)
 			break;
@@ -4874,16 +4896,16 @@ static ssize_t sysfs_sw_read_hw(struct ksz_sw *sw, int proc_num, ssize_t len,
 		chk = sw_chk(sw, S_LINK_AGING_CTRL, SWITCH_PASS_PAUSE);
 		break;
 	case PROC_DYNAMIC:
-		sw_d_dyn_mac_table(sw);
+		len = sw_d_dyn_mac_table(sw, buf, len);
 		type = SHOW_HELP_NONE;
 		break;
 	case PROC_STATIC:
-		sw_d_sta_mac_table(sw);
-		sw_d_mac_table(sw);
+		len = sw_d_sta_mac_table(sw, buf, len);
+		len = sw_d_mac_table(sw, buf, len);
 		type = SHOW_HELP_NONE;
 		break;
 	case PROC_VLAN:
-		sw_d_vlan_table(sw);
+		len = sw_d_vlan_table(sw, buf, len);
 		type = SHOW_HELP_NONE;
 		break;
 	default:
@@ -7631,9 +7653,12 @@ static void sw_setup_zone(struct ksz_sw *sw)
 #endif
 }  /* sw_setup_zone */
 
+static int phy_offset;
+
 static void sw_setup_special(struct ksz_sw *sw, int *port_cnt,
 	int *mib_port_cnt, int *dev_cnt)
 {
+	phy_offset = 0;
 	sw->dev_offset = 0;
 	sw->phy_offset = 0;
 	if (sw->stp) {
@@ -7678,6 +7703,22 @@ static void sw_setup_special(struct ksz_sw *sw, int *port_cnt,
 #endif
 }  /* sw_setup_special */
 
+static void sw_leave_dev(struct ksz_sw *sw)
+{
+	int i;
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->features & STP_SUPPORT)
+		leave_stp(&sw->info->rstp);
+#endif
+	for (i = 0; i < sw->dev_count; i++)
+		sw->netdev[i] = NULL;
+	sw->eth_cnt = 0;
+	sw->dev_count = 0;
+	sw->dev_offset = 0;
+	sw->phy_offset = 0;
+}  /* sw_leave_dev */
+
 static int sw_setup_dev(struct ksz_sw *sw, struct net_device *dev,
 	char *dev_name, struct ksz_port *port, int i, int port_cnt,
 	int mib_port_cnt)
@@ -7686,7 +7727,6 @@ static int sw_setup_dev(struct ksz_sw *sw, struct net_device *dev,
 	int p;
 	int pi;
 	int phy_id;
-	static int phy_offset = 0;
 
 	if (!phy_offset)
 		phy_offset = sw->phy_offset;
@@ -7876,8 +7916,9 @@ static void sw_netdev_wake_queue(struct ksz_sw *sw, struct net_device *dev)
 }
 
 static struct ksz_sw_net_ops sw_net_ops = {
-	.setup_dev		= sw_setup_dev,
 	.setup_special		= sw_setup_special,
+	.setup_dev		= sw_setup_dev,
+	.leave_dev		= sw_leave_dev,
 	.get_state		= sw_get_priv_state,
 	.set_state		= sw_set_priv_state,
 
