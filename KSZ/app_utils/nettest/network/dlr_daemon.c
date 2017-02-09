@@ -1,3 +1,24 @@
+/*********************************************************************************************************
+Copyright (C) 2016-2017 Microchip Technology Inc. and its subsidiaries (Microchip).  All rights reserved.
+
+You are permitted to use the software and its derivatives with Microchip products. 
+See the license agreement accompanying this software, 
+if any, for additional info regarding your rights and obligations.
+
+SOFTWARE AND DOCUMENTATION ARE PROVIDED “AS IS” WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESS OR IMPLIED, 
+INCLUDING WITHOUT LIMITATION, ANY WARRANTY OF MERCHANTABILITY, TITLE, NON-INFRINGEMENT AND FITNESS FOR A PARTICULAR PURPOSE. 
+IN NO EVENT SHALL MICROCHIP, SMSC, OR ITS LICENSORS BE LIABLE OR OBLIGATED UNDER CONTRACT, NEGLIGENCE, 
+STRICT LIABILITY, CONTRIBUTION, BREACH OF WARRANTY, OR OTHER LEGAL EQUITABLE THEORY FOR ANY DIRECT OR INDIRECT DAMAGES OR 
+EXPENSES INCLUDING BUT NOT LIMITED TO ANY INCIDENTAL, SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES, 
+OR OTHER SIMILAR COSTS. TO THE FULLEST EXTENT ALLOWED BY LAW, MICROCHIP AND ITS LICENSORS LIABILITY WILL NOT EXCEED 
+THE AMOUNT OF FEES, IF ANY, THAT YOU PAID DIRECTLY TO MICROCHIP TO USE THIS SOFTWARE.  MICROCHIP PROVIDES THIS SOFTWARE 
+CONDITIONALLY UPON YOUR ACCEPTANCE OF THESE TERMS.
+
+Author:  David Cai <david.cai@microchip.com>         
+
+*********************************************************************************************************/
+
+
 #include "wnp.h"
 #include "unpifi.h"
 #include "datatype.h"
@@ -28,6 +49,8 @@
 
 
 //#define USE_NOTIFY
+//defbie RUN_FOREGROUND
+static Boolean debugmsg=MCHP_FALSE;
 
 #define IPBUFSIZE			32
 #define MYBUFSIZ 512
@@ -39,17 +62,11 @@
 #define mph_unlock(x)  pthread_mutex_unlock(x)
 
 static mhp_mutex g_mutex;
-
-
-static void cmdProcess(CMD_PKT * pcmd, const char * prmtip);
-static void  printCmdString(unsigned long cmdid);
-
 static struct dev_info dlrdev;
 static DLR_SUPERVISOR_STATUS m_nodeType=DLR_RING_NODE;
 static DLR_NET_STATUS  net_status=DLR_RING_FAULT;
 static int all_nodes=0;
 static struct ksz_dlr_active_node  * gpnode_list=NULL; 
-
 static char m_sendbuf[MYBUFSIZ];
 static DLR_NODE_INFO m_nodeinfo;
 static DLR_SUPERVISOR  m_supinfo;
@@ -60,9 +77,8 @@ static Boolean get_mac(char * pv);
 static Boolean wait_event_ack(DLR_HSR_EVENT event);
 static char value[MYBUFSIZ];
 static char cmdbuf[MYBUFSIZ];
-
-
 static Boolean fTaskExit=MCHP_FALSE;
+
 #ifdef USE_NOTIFY
 static pthread_t taskT;
 #endif
@@ -79,7 +95,7 @@ static Boolean get_mac(char * pv);
 static char * get_word(char * pin, char ** ppnext);
 static Boolean get_ip(char * pv);
 static void printCmdString(unsigned long cmdid);
-Boolean wait_event_ack(DLR_HSR_EVENT event);
+static Boolean wait_event_ack(DLR_HSR_EVENT event);
 static void cmdProcess(CMD_PKT * pcmd, const char * prmtip);
 static void print_status(u8 status);
 static int linux_kbhit(void);
@@ -99,7 +115,10 @@ static Boolean notify_dlr_manager(DLR_HSR_EVENT event,unsigned char * pdata, int
 {
 			int result,i;
 			if(strlen(server_ip)==0){
-				printf("? ");
+			 
+			 if(debugmsg){	
+					printf(". ");
+				}
 				return MCHP_FALSE;
 		  }
 		  
@@ -133,7 +152,9 @@ static Boolean build_node_list()
 	  printf("%s: get_dlr_ring_part_cnt error rc=%d \n",__FUNCTION__,rc);
 	  return MCHP_FALSE;
 	}	
-  printf("get_dlr_ring_part_cnt rc=%d cnt=%d \n",rc,cnt);
+  
+  //printf("get_dlr_ring_part_cnt rc=%d cnt=%d \n",rc,cnt);
+  
   if(!cnt) { /* it may happen, at first DLR start time*/
   	return MCHP_FALSE;
   }
@@ -189,9 +210,7 @@ void check_network()
 			 /* a new suppervisor happen, we need to update the node list*/
 			/*the build node list may fail, it may happen at first time DLR network start, and 
 			set a suppervisor, but the network still be broken (not connect to ring )yet*/ 
-			//if(!build_node_list())
-		    //  return;
-			 //printf("build node list++++++++++++++\n");		
+			build_node_list();
 		
 			
 			m_supinfo.enable=1;
@@ -207,13 +226,13 @@ void check_network()
 			suinfo.precedence=cfg.prec;
 			suinfo.vlanid=cfg.vid;
 			
-		  
-			/*now we need to resport to DLR manager*/
-			printf("new supervisor notify the DLR manager\n");
 		  get_dlr_network(fd,(u8 *)&net_status); /*update net_status*/
-		  
-			if(notify_dlr_manager(DLR_SUPERVISOR_SELECTED,(unsigned char *)&suinfo,sizeof(suinfo))){
-	        m_nodeType=node_type; /*every thing is ok, then we update the  m_nodeType*/			
+			/*now we need to resport to DLR manager*/
+		  if(notify_dlr_manager(DLR_SUPERVISOR_SELECTED,(unsigned char *)&suinfo,sizeof(suinfo))){
+					if(debugmsg)	{
+							printf("new supervisor notify the DLR manager\n");
+					}
+					m_nodeType=node_type; /*every thing is ok, then we update the  m_nodeType*/			
 			}
 					 		 
 		
@@ -221,7 +240,9 @@ void check_network()
 	
 	if((m_nodeType !=node_type)  && (node_type!=DLR_ACTIVE_SUPER)){
 		/*node type changes, such as from DLR_ACTIVE_SUPER to DLR_BACKUP_SUPER*/
-		 printf("AAxxxxxxxxxxx m_nodeType=%d node_type=%d \n",m_nodeType,node_type);
+		if(debugmsg){	
+				printf("AA m_nodeType=%d node_type=%d \n",m_nodeType,node_type);
+		 }
 		 m_nodeType=node_type;
 	}
 	/*now we check the network status*/
@@ -233,19 +254,23 @@ void check_network()
 	
 	if(net_status != network && network != DLR_NET_NORMAL){
 		/*network become broken, let get broken location, if I am a suppervisor*/
-		printf("network may broken old=%d new=%d \n",net_status,network);
+		if(debugmsg){	
+			printf("network may broken old=%d new=%d \n",net_status,network);
+		}
 		if(m_nodeType==DLR_ACTIVE_SUPER){
-			 rc=get_dlr_active_node(fd, 0, &ksz_node);
+			
+			if(!gpnode_list) /*only may happen at begining with ring broken*/
+			   build_node_list();
+		
+		rc=get_dlr_active_node(fd, 0, &ksz_node);
 		if(rc){
 		 printf("%s: get_dlr_active_node (0) rc=%d \n",__FUNCTION__,rc);
 	   return;
 		}				
+	if(debugmsg){	
 		print_node(&ksz_node);
-		/*
-		sprintf(&fault_info.last_active_node_on_port1.ipv4[0],"%d.%d.%d.%d",(u8)(ksz_node.ip_addr >> 24),
-					(u8)(ksz_node.ip_addr >> 16),
-					(u8)(ksz_node.ip_addr >> 8),	(u8)(ksz_node.ip_addr));				
-		*/
+	}
+	
 		convertip(&fault_info.last_active_node_on_port1.ipv4[0],&ksz_node);
 		memcpy(&fault_info.last_active_node_on_port1.mac[0], &ksz_node.addr[0],6);
 		rc=get_dlr_active_node(fd, 1, &ksz_node);
@@ -253,18 +278,16 @@ void check_network()
 		 printf("%s: get_dlr_active_node (1) rc=%d \n",__FUNCTION__,rc);
 	   return;
 		}				 		
+	if(debugmsg){	
 		print_node(&ksz_node);
-   			/*
-   			sprintf(&fault_info.last_active_node_on_port2.ipv4[0],"%d.%d.%d.%d",(u8)(ksz_node.ip_addr >> 24),
-				(u8)(ksz_node.ip_addr >> 16),
-				(u8)(ksz_node.ip_addr >> 8),	(u8)(ksz_node.ip_addr));				
-		    */
+	 }
+   		
 		    convertip(&fault_info.last_active_node_on_port2.ipv4[0],&ksz_node);
 		    memcpy(&fault_info.last_active_node_on_port2.mac[0], &ksz_node.addr[0],6);
 		/*check if these nodes are valid node or not, because driver's timing issue, some time the suppervisor
 		has not collect all broken node's infomation yet*/
 		if(get_node_index(&fault_info.last_active_node_on_port1.ipv4[0])<0){
-			printf("last_active_node(1) ip is invalid\n");
+			printf("(2)last_active_node(1) ip is invalid\n");
 			return;
 		} 
 	
@@ -272,7 +295,9 @@ void check_network()
 			printf("last_active_node(2) ip is invalid\n");
 			return;
 		} 
-		  printf("ring broken notify the DLR manager\n");
+	 if(debugmsg) {
+		 printf("ring broken notify the DLR manager\n");
+		}
 		 if( notify_dlr_manager(DLR_RING_FAULT_DETECTED,(unsigned char *)&fault_info,sizeof(DLR_RING_FAULT_INFO ))){
 		    net_status=network;	
 		 }
@@ -284,12 +309,17 @@ void check_network()
 	if(net_status != network && network == DLR_NET_NORMAL){
 		/*network restored, if I am a suppervisor*/
 		if(m_nodeType==DLR_ACTIVE_SUPER){
+		
 			/*after network restored, it may change the nodes number or position, for example added a new node*/
 			/* we need to rebuild node list*/
-			if(!build_node_list())
+			if(!build_node_list()){
+				printf("ring restored, but fail to get node list \n");
 				return;
+			}
+		if(debugmsg){	
+			printf("ring restored, notify DLR manager \n");
+		}
 			/*notify the DLR manager*/
-			printf("ring restored \n");
 			if(notify_dlr_manager(DLR_RING_RESTORED,NULL,0)){
 				net_status=network;	
 			}	
@@ -308,16 +338,12 @@ static int get_node_index(const char * ip)
 	}
 	
 	for(i=0;i<all_nodes;i++){
-		/*
-		sprintf(&ipv4[0],"%d.%d.%d.%d",(u8)((gpnode_list+i)->ip_addr >> 24),
-				(u8)((gpnode_list+i)->ip_addr >> 16),
-				(u8)((gpnode_list+i)->ip_addr >> 8),	(u8)((gpnode_list+i)->ip_addr));	
-		*/
+	
 		convertip(&ipv4[0],(gpnode_list+i));
 		if(strcmp(ip,&ipv4[0])==0)
 			return i;
 	}
-	//printf("error: fail to find nodes\n");
+	
 	return -1;
 }
 																																				
@@ -530,7 +556,7 @@ static Boolean wait_event_ack(DLR_HSR_EVENT event)
 											  if(magic==DEMO_MAGICNUMBER){
 											  	  ev=ntohl(pevepkt->event);
 											  	  if(ev==EVENT_ACK){
-        											printf("!get event ack size=%d \n",n_read);
+        											//printf("!get event ack size=%d \n",n_read);
         											f=MCHP_TRUE;
         										}
         								}
@@ -552,6 +578,7 @@ static void cmdProcess(CMD_PKT * pcmd, const char * prmtip)
 	int i,rc,reuseFlag;
 	u8 err;
 	u16 cnt=0;
+	u8 status=0;
 	struct ksz_dlr_super_cfg cfg;
 	struct ksz_dlr_active_node ksz_node;
 	void *fd = &dlrdev;
@@ -559,7 +586,8 @@ static void cmdProcess(CMD_PKT * pcmd, const char * prmtip)
 	unsigned long magic=ntohl(pcmd->magic_number);
 
 	if(magic==DEMO_MAGICNUMBER){
-		  unsigned long cmdid=ntohl(pcmd->cmd);
+	unsigned long cmdid=ntohl(pcmd->cmd);
+	if(debugmsg)	  
 		  printCmdString(cmdid);
     
 	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -595,7 +623,8 @@ static void cmdProcess(CMD_PKT * pcmd, const char * prmtip)
 				eve.event=(DLR_HSR_EVENT)htonl(DLR_REPORT_NODE_INFO);
 				pnr=(DLR_NODE_REPORT *)&eve.event_data[0];
 				memcpy(&pnr->nodeinfo,&m_nodeinfo,sizeof(DLR_NODE_INFO));
-				pnr->status=(DLR_SUPERVISOR_STATUS)htonl(m_nodeType);
+				rc = get_dlr_super_status(fd, &status);
+				pnr->status=(DLR_SUPERVISOR_STATUS)htonl(status);
 				for(i=0;i<3;i++){
 					result=sendto(sockfd,(char *)&eve,sizeof(EVENT_PKT),0,(struct sockaddr *)&servaddr,sizeof(servaddr));
 						/*wait for event ack*/
@@ -628,7 +657,7 @@ static void cmdProcess(CMD_PKT * pcmd, const char * prmtip)
 			
 			case DLR_GET_SUPERVISOR_STATUS:{
 						DLR_SUPERVISOR_STATUS_DATA * pus;
-						u8 status=0;
+						
 						pcmdsend->cmd=(DLR_HSR_CMD)htonl(DLR_GET_SUPERVISOR_STATUS);
 						pus=(DLR_SUPERVISOR_STATUS_DATA *)&pcmdsend->cmd_data[0];
 						rc = get_dlr_super_status(fd, &status);
@@ -694,8 +723,6 @@ static void cmdProcess(CMD_PKT * pcmd, const char * prmtip)
 			  cfg.beacon_timeout=m_supinfo.beacon_timeout;
 			  cfg.prec=m_supinfo.precedence;
 			  cfg.vid=m_supinfo.vlanid;
-if (cfg.prec)
-	cfg.enable = 1;
 			  rc = set_dlr_super_cfg(fd, &cfg, &err);
 			  if(rc)
 			  	pcmdsend->return_code=htonl(0);
@@ -761,10 +788,7 @@ if (cfg.prec)
 			      struct ksz_dlr_active_node * pn=gpnode_list;
 			      pls->ring_nodes=htonl(all_nodes);
 			      for(i=0;i<all_nodes;i++){
-			      	/*
-					      	sprintf(&plsnode->ipv4[0],"%d.%d.%d.%d",(u8)(pn->ip_addr >> 24),(u8)(pn->ip_addr >> 16),
-									(u8)(pn->ip_addr >> 8),	(u8)(pn->ip_addr));
-					     */
+			      	
 					     convertip( &plsnode->ipv4[0],pn);
 					      	memcpy(&plsnode->mac[0],&pn->addr[0],6);
 					      	pn++;
@@ -799,10 +823,7 @@ if (cfg.prec)
 					if(rc)
 						pcmdsend->return_code=htonl(0);
 					else{
-						/*
-						sprintf(&node1.ipv4[0],"%d.%d.%d.%d",(u8)(ksz_node.ip_addr >> 24),(u8)(ksz_node.ip_addr >> 16),
-							(u8)(ksz_node.ip_addr >> 8),	(u8)(ksz_node.ip_addr));
-						*/
+					
 						convertip(&node1.ipv4[0],&ksz_node);
 						memcpy(&node1.mac[0],&ksz_node.addr[0],6);
 					}
@@ -811,10 +832,7 @@ if (cfg.prec)
 					if(rc)
 						pcmdsend->return_code=htonl(0);
 					else{
-						/*
-						sprintf(&node2.ipv4[0],"%d.%d.%d.%d",(u8)(ksz_node.ip_addr >> 24),(u8)(ksz_node.ip_addr >> 16),
-							(u8)(ksz_node.ip_addr >> 8),	(u8)(ksz_node.ip_addr));
-						*/
+					
 						convertip(&node2.ipv4[0],&ksz_node);
 						memcpy(&node2.mac[0],&ksz_node.addr[0],6);
 					}
@@ -837,17 +855,13 @@ if (cfg.prec)
 						pcmdsend->cmd=(DLR_HSR_CMD)htonl(DLR_GET_SUPERVISOR_ADDR);
 				
 				    rc = get_dlr_active_super_addr(fd, &ksz_node);
-			      printf("get_dlr_active_super_addr rc=%d \n",rc);
-		 				if(rc)
+			      if(rc)
 		 					pcmdsend->return_code=htonl(0);
 		 				else{
+		 					if(debugmsg){	
 		 						print_node(&ksz_node);
+		 					}
 		 						pnode=(DLR_NODE_INFO *)&pcmdsend->cmd_data[0];
-		 						/*
-		 	  				sprintf(&pnode->ipv4[0],"%d.%d.%d.%d",(u8)(ksz_node.ip_addr >> 24),
-									(u8)(ksz_node.ip_addr >> 16),
-									(u8)(ksz_node.ip_addr >> 8),	(u8)(ksz_node.ip_addr));				
-		 						*/
 		 						convertip(&pnode->ipv4[0],&ksz_node);
 		 						
 		 						memcpy(&pnode->mac[0], &ksz_node.addr[0],6);
@@ -1147,14 +1161,9 @@ static void console_cmd(int key)
 					
 					 pn=plist;
 					 for(i=0;i<cnt;i++){
-					 	/*
-					      	sprintf(&ipv4[0],"%d.%d.%d.%d",(u8)(pn->ip_addr >> 24),(u8)(pn->ip_addr >> 16),
-									(u8)(pn->ip_addr >> 8),	(u8)(pn->ip_addr));
-					    */
-					    convertip(&ipv4[0],pn);
+							    convertip(&ipv4[0],pn);
 					      	print_node(pn);
 					      	pn++;
-					      	//printf(" ip%d=%s \n",i,ipv4);
 					      }
 				  free(plist);		
 					 	  
@@ -1215,7 +1224,7 @@ static void console_cmd(int key)
 
 int main (int argc, const char * argv[])
 {
-#define APP_VERSION					61
+#define APP_VERSION					68
 
 int		 sockfd, result;
 u8 err;
@@ -1232,12 +1241,15 @@ unsigned long int nonBlockingMode = 1;
 struct ksz_dlr_active_node node;
  
 	if (argc < 2) {
-		printf("usage: %s <local_if>\n",
+		printf("usage: %s <local_if> [debugflag]\n",
 			argv[0]);
 		return 1;
 	}
 	strncpy(devname, argv[1], sizeof(devname));
 
+  if(argc==3)
+  	debugmsg=atoi(argv[2]);
+  	
      	 printf("DLR Daemon runing cmdport=%d event_port=%d version=1.%d\n", CMD_PORT,EVENT_PORT, APP_VERSION);   
   		
   		mhp_mutex_init(&g_mutex);
@@ -1357,8 +1369,10 @@ struct ksz_dlr_active_node node;
 												check_network();
 											#endif
 												//printf("i ");
-												key = linux_kbhit();
-												console_cmd(key);
+												#ifdef RUN_FOREGROUND
+													key = linux_kbhit();
+													console_cmd(key);
+												#endif
 											  fflush(stdout);
 												 
 								}
