@@ -9,6 +9,8 @@ FILE=/etc/network/interfaces
 update_interfaces() {
     [ -x /sbin/fw_printenv ] || exit 1
 
+    [ -d /sys/class/net/eth0 ] || exit 1
+
     ETHADDR=$(fw_printenv -n ethaddr 2> /dev/null)
     IPADDR=$(fw_printenv -n ipaddr 2> /dev/null)
     NETMASK=$(fw_printenv -n netmask 2> /dev/null)
