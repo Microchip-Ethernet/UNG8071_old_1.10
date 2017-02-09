@@ -17,6 +17,7 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+
 #if 0
 #define DEBUG
 #define DBG
@@ -50,17 +51,15 @@
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
 
-#define MAX_REQUEST_SIZE		40
+#define MAX_REQUEST_SIZE		80
 
 #include "ksz_cfg_9897.h"
 
-#if 0
-#define NO_ACL
-#endif
 
 #if 1
 #define NO_EEE
 #endif
+
 
 #ifdef CONFIG_KSZ_DLR
 /* Have ACL to handle beacon timeout. */
@@ -68,6 +67,10 @@
 
 /* Have DLR to transmit beacons. */
 #define CONFIG_HAVE_DLR_HW
+#endif
+
+#ifdef CONFIG_KSZ_HSR
+#define CONFIG_HAVE_HSR_HW
 #endif
 
 #if 0
@@ -102,7 +105,8 @@
 #endif
 
 
-#define DRV_RELDATE			"Feb 7, 2017"
+#define DRV_RELDATE			"Feb 8, 2017"
+#define DRV_VERSION			"1.1.0"
 
 /* -------------------------------------------------------------------------- */
 
@@ -427,9 +431,11 @@ static void delay_milli(uint millisec)
 static inline void copy_old_skb(struct sk_buff *old, struct sk_buff *skb)
 {
 	skb->dev = old->dev;
+	skb->sk = old->sk;
 	skb->protocol = old->protocol;
 	skb->ip_summed = old->ip_summed;
 	skb->csum = old->csum;
+	skb_shinfo(skb)->tx_flags = skb_shinfo(old)->tx_flags;
 	skb_set_network_header(skb, ETH_HLEN);
 
 	dev_kfree_skb(old);
@@ -687,10 +693,12 @@ module_param(fast_aging, int, 0);
 module_param(multi_dev, int, 0);
 module_param(stp, int, 0);
 module_param(avb, int, 0);
+module_param(authen, int, 0);
 MODULE_PARM_DESC(fast_aging, "Fast aging");
 MODULE_PARM_DESC(multi_dev, "Multiple device interfaces");
 MODULE_PARM_DESC(stp, "STP support");
 MODULE_PARM_DESC(avb, "AVB support");
+MODULE_PARM_DESC(authen, "802.1X Authentication");
 
 #ifdef CONFIG_KSZ_IBA
 module_param(iba, int, 0);

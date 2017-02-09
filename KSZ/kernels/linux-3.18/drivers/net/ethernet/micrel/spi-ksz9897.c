@@ -22,9 +22,6 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#if 0
-#define IMX6_KSZ9567
-#endif
 
 #if 0
 #define DEBUG
@@ -128,7 +125,8 @@
 #define KS9897MLI_DEV0			"ksz9897"
 #define KS9897MLI_DEV2			"ksz9897_2"
 
-#define DRV_RELDATE			"Feb 7, 2017"
+#define DRV_RELDATE			"Feb 8, 2017"
+#define DRV_VERSION			"1.1.0"
 
 /* -------------------------------------------------------------------------- */
 
@@ -847,7 +845,7 @@ MODULE_PARM_DESC(eth4_proto, "Protocol to use on device 4.");
 MODULE_PARM_DESC(eth5_proto, "Protocol to use on device 5.");
 MODULE_PARM_DESC(eth6_proto, "Protocol to use on device 6.");
 
-#if !defined(CONFIG_KSZ_SWITCH_EMBEDDED)
+#ifndef CONFIG_KSZ_SWITCH_EMBEDDED
 MODULE_DESCRIPTION("Microchip KSZ9897 SPI Switch Driver");
 MODULE_AUTHOR("Tristram Ha <Tristram.Ha@microchip.com>");
 MODULE_LICENSE("GPL");

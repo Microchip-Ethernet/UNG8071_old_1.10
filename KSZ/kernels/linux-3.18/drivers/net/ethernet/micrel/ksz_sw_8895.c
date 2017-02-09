@@ -4420,7 +4420,8 @@ static ssize_t sysfs_sw_read(struct ksz_sw *sw, int proc_num,
 		len = display_sw_info(sw->mib_port_cnt, buf, len);
 		break;
 	case PROC_SW_VERSION:
-		len += sprintf(buf + len, "%s\n", DRV_RELDATE);
+		len += sprintf(buf + len, "%s  %s\n",
+			DRV_VERSION, DRV_RELDATE);
 		break;
 	case PROC_SET_SW_DUPLEX:
 		if (!port)

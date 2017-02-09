@@ -86,7 +86,8 @@
 #define KS8795_DEV0			"ksz8795"
 #define KS8795_DEV2			"ksz8795_2"
 
-#define DRV_RELDATE			"Feb 7, 2017"
+#define DRV_RELDATE			"Feb 8, 2017"
+#define DRV_VERSION			"1.1.0"
 
 /* -------------------------------------------------------------------------- */
 

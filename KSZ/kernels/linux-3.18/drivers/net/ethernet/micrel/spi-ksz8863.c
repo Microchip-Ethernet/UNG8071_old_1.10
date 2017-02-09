@@ -61,7 +61,8 @@
 #define KS8863MLI_DEV0			"ksz8863"
 #define KS8863MLI_DEV2			"ksz8863_2"
 
-#define DRV_RELDATE			"Feb 7, 2017"
+#define DRV_RELDATE			"Feb 8, 2017"
+#define DRV_VERSION			"1.1.0"
 
 /* -------------------------------------------------------------------------- */
 

@@ -60,7 +60,8 @@
 #define KS8463MLI_DEV0			"ksz8463"
 #define KS8463MLI_DEV2			"ksz8463_2"
 
-#define DRV_RELDATE			"Feb 7, 2017"
+#define DRV_RELDATE			"Feb 8, 2017"
+#define DRV_VERSION			"1.1.0"
 
 /* -------------------------------------------------------------------------- */
 

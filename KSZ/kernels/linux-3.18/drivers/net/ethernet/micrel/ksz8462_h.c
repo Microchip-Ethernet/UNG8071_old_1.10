@@ -108,8 +108,8 @@
 #endif
 
 #define DRV_NAME			"ksz8462_hli"
-#define DRV_VERSION			"1.0.0"
-#define DRV_RELDATE			"Feb 7, 2017"
+#define DRV_VERSION			"1.1.0"
+#define DRV_RELDATE			"Feb 8, 2017"
 
 #define MAX_RECV_FRAMES			180 /* 32 */
 #define MAX_BUF_SIZE			2048
