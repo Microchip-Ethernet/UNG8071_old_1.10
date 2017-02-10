@@ -1,7 +1,7 @@
 /**
- * Micrel MRP driver header
+ * Microchip MRP driver header
  *
- * Copyright (c) 2015 Microchp Technology Inc.
+ * Copyright (c) 2015-2016 Microchp Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2014-2015 Micrel, Inc.
@@ -22,7 +22,32 @@
 
 #include "ksz_mrp_api.h"
 
+#if 1
+/* Process MRP in driver. */
+#define PROC_MRP
+#endif
 
+#ifdef PROC_MRP
+#if 0
+#define DBG_MRP
+#endif
+#if 0
+#define DBG_MRP_RX
+#endif
+#if 0
+#define DBG_MRP_TX
+#endif
+#if 1
+#define MRP_BASIC
+#endif
+#if 0
+#define MRP_PASSTHRU
+#endif
+#include "mrp.h"
+#endif
+
+
+#ifdef CONFIG_KSZ_MSRP
 struct SRP_bridge_base {
 	uint msrpEnabledStatus:1;
 	uint msrpTalkerPruning:1;
@@ -114,8 +139,9 @@ struct mrp_traffic_info {
 	u32 bandwidth_used;
 	u32 bandwidth_set;
 	u32 max_frame_size;
-	u8 prio;
+	u8 queue;
 };
+#endif
 
 struct mrp_report {
 	void *attrib;
@@ -125,7 +151,13 @@ struct mrp_report {
 	struct mrp_report *next;
 };
 
+#define SRP_PORT_AVAIL			((1 << (mrp->ports + 1)) - 1)
+#define SRP_PORT_IGNORE			(1 << 13)
+#define SRP_PORT_BLACKLIST		(1 << 14)
+#define SRP_PORT_READY			(1 << 15)
+
 struct mrp_mac_info {
+	u16 fid;
 	u8 addr[ETH_ALEN];
 	u16 ports;
 	u16 mrp_ports;
@@ -136,6 +168,7 @@ struct mrp_mac_info {
 
 struct mrp_vlan_info {
 	u16 vid;
+	u16 fid;
 	u8 addr[ETH_ALEN];
 	u16 ports;
 	u16 tx_ports;
@@ -159,16 +192,17 @@ struct mrp_node_anchor {
 	struct mrp_node anchor;
 	struct mrp_node *last;
 };
-	
+
+#ifdef CONFIG_KSZ_MSRP	
 struct mrp_port_info {
 	u32 bandwidth_max;
 	u32 bandwidth_left;
 	u32 speed;
-	struct mrp_traffic_info traffic[3];
+	struct mrp_traffic_info traffic[2];
 
 	struct SRP_bridge_port status;
 	struct SRP_latency_parameter latency[2];
-	struct SRP_bandwidth_availability_parameter bandwidth[3];
+	struct SRP_bandwidth_availability_parameter bandwidth[2];
 	struct SRP_transmission_selection_algorithm algorithm[4];
 	struct SRP_priority_regeneration_override priority[8];
 
@@ -178,6 +212,7 @@ struct mrp_port_info {
 	struct mrp_node_anchor active;
 	struct mrp_node_anchor passive;
 };
+#endif
 
 struct mrp_info;
 
@@ -185,30 +220,36 @@ struct mrp_work {
 	struct work_struct work;
 	struct completion done;
 	struct mrp_info *mrp;
+	struct sk_buff *skb;
 	int cmd;
 	int subcmd;
 	int option;
 	int output;
 	int result;
 	int used;
+	int index;
 	union {
 		struct mrp_cfg_options cfg;
 		u8 data[8];
 	} param;
+	struct mrp_work *prev;
 };
 
 #define MRP_WORK_NUM			(1 << 4)
 #define MRP_WORK_LAST			(MRP_WORK_NUM - 1)
 
 struct mrp_access {
+	struct work_struct work;
 	int index;
+	int head;
+	int tail;
 	struct mrp_work works[MRP_WORK_NUM];
 };
 
 struct mrp_ops {
 	void (*init)(struct mrp_info *ptp);
 	void (*exit)(struct mrp_info *ptp);
-	int (*dev_req)(struct mrp_info *ptp, char *arg);
+	int (*dev_req)(struct mrp_info *ptp, int start, char *arg);
 };
 
 struct mrp_info {
@@ -218,12 +259,14 @@ struct mrp_info {
 	u8 version;
 	u8 ports;
 	uint no_report;
+	int listeners;
 
 	const struct mrp_ops *ops;
 
+#ifdef CONFIG_KSZ_MSRP
 	u8 id[8];
 	u8 tc[8];
-	u8 prio[4];
+	u8 prio[SR_CLASS_NUM];
 	u32 max_interference_size;
 
 	struct mrp_port_info port_info[TOTAL_PORT_NUM];
@@ -237,11 +280,16 @@ struct mrp_info {
 	struct mrp_node_anchor mac_up;
 	struct mrp_node_anchor vlan_down;
 	struct mrp_node_anchor vlan_up;
+#endif
 	struct mrp_node_anchor mac_list;
 	struct mrp_node_anchor vlan_list;
 
 	struct mrp_report *report_head;
 	struct mrp_report *report_tail;
+
+#ifdef PROC_MRP
+	struct mrp_port mrp_ports[TOTAL_PORT_NUM];
+#endif
 };
 
 #endif

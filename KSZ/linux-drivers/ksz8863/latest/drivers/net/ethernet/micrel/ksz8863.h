@@ -1,5 +1,5 @@
 /**
- * Micrel KSZ8863 definition file
+ * Microchip KSZ8863 definition file
  *
  * Copyright (c) 2015-2016 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
@@ -132,7 +132,7 @@
 #define PORT_PORT_PRIO_3		0x18
 #define PORT_INSERT_TAG			(1 << 2)
 #define PORT_REMOVE_TAG			(1 << 1)
-#define PORT_4_PRIORITIES_ENABLE	(1 << 0)
+#define PORT_4_QUEUES_ENABLE		(1 << 0)
 
 #define REG_PORT_1_CTRL_1		0x11
 #define REG_PORT_2_CTRL_1		0x21
@@ -149,7 +149,7 @@
 #define REG_PORT_2_CTRL_2		0x22
 #define REG_PORT_3_CTRL_2		0x32
 
-#define PORT_2_PRIORITIES_ENABLE	(1 << 7)
+#define PORT_2_QUEUES_ENABLE		(1 << 7)
 #define PORT_INGRESS_FILTER		(1 << 6)
 #define PORT_DISCARD_NON_VID		(1 << 5)
 #define PORT_FORCE_FLOW_CTRL		(1 << 4)
@@ -580,7 +580,7 @@
 
 #define KS_PRIO_IN_REG			4
 
-#define SWITCH_PORT_NUM			2
+#define TOTAL_PORT_NUM			3
 
 #define KSZ8863_COUNTER_NUM		0x20
 #define TOTAL_KSZ8863_COUNTER_NUM	(KSZ8863_COUNTER_NUM + 2)
@@ -609,6 +609,8 @@
 #define P_SPEED_STATUS			REG_PORT_STATUS_1
 #define P_RATE_LIMIT_CTRL		REG_PORT_CTRL_5
 #define P_SA_MAC_CTRL			REG_PORT_CTRL_5
+#define P_4_QUEUE_CTRL			REG_PORT_CTRL_0
+#define P_2_QUEUE_CTRL			REG_PORT_CTRL_2
 
 #define S_LINK_AGING_CTRL		REG_SWITCH_CTRL_0
 #define S_MIRROR_CTRL			REG_SWITCH_CTRL_3

@@ -1,7 +1,7 @@
 /**
- * Micrel DLR driver API header
+ * Microchip DLR driver API header
  *
- * Copyright (c) 2015 Microchip Technology Inc.
+ * Copyright (c) 2015-2016 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,6 +21,15 @@
 #ifndef ETH_ALEN
 #define ETH_ALEN				6
 #endif
+
+
+enum {
+	DEV_INFO_DLR_LINK = DEV_INFO_LAST,
+	DEV_INFO_DLR_CFG,
+};
+
+#define DLR_INFO_LINK_LOST			(1 << 0)
+#define DLR_INFO_CFG_CHANGE			(1 << 1)
 
 
 #define STATUS_INVALID_ATTRIB_VALUE		0x09
@@ -66,6 +75,7 @@
 #define DLR_GET_REDUNDANT_GATEWAY_STATUS	14
 #define DLR_GET_ACTIVE_GATEWAY_ADDRESS		15
 #define DLR_GET_ACTIVE_GATEWAY_PRECEDENCE	16
+#define DLR_SET_IP_ADDRESS			17
 
 #define SVC_DLR_VERIFY_FAULT_LOCATION		0x4B
 #define SVC_DLR_CLEAR_RAPID_FAULTS		0x4C

@@ -1,7 +1,7 @@
 /**
- * Micrel PTP common header
+ * Microchip PTP common header
  *
- * Copyright (c) 2015 Microchip Technology Inc.
+ * Copyright (c) 2015-2016 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2010-2015 Micrel, Inc.
@@ -600,7 +600,7 @@ struct ptp_udp_msg {
 #define NANOSEC_IN_SEC			1000000000
 
 /* Host port can be any one of the ports. */
-#define MAX_PTP_PORT			(SWITCH_PORT_NUM + 1)
+#define MAX_PTP_PORT			SWITCH_PORT_NUM
 
 #define MAX_TSM_UDP_LEN			100
 #define MAX_TSM_UDP_CNT			(1 << 6)
@@ -768,9 +768,13 @@ struct ptp_ops {
 	int (*hwtstamp_ioctl)(struct ptp_info *ptp, struct ifreq *ifr);
 	int (*ixxat_ioctl)(struct ptp_info *ptp, unsigned int cmd,
 		struct ifreq *ifr);
-	int (*dev_req)(struct ptp_info *ptp, char *arg,
+	int (*dev_req)(struct ptp_info *ptp, int start, char *arg,
 		struct ptp_dev_info *info);
 	void (*proc_intr)(struct ptp_info *ptp);
+#ifdef ETHTOOL_GET_TS_INFO
+	int (*get_ts_info)(struct ptp_info *ptp, struct net_device *dev,
+		struct ethtool_ts_info *info);
+#endif
 
 	ssize_t (*sysfs_read)(struct ptp_info *ptp, int proc_num, ssize_t len,
 		char *buf);
@@ -812,8 +816,10 @@ struct ptp_ops {
 #define PTP_PORT_FORWARD		(1 << 0)
 #define PTP_PORT_TX_FORWARD		(1 << 1)
 
+#define PTP_CHECK_PATH_DELAY		(1 << 7)
 #define PTP_VERIFY_TIMESTAMP		(1 << 8)
 #define PTP_ZERO_RESERVED_FIELD		(1 << 9)
+#define PTP_UPDATE_PDELAY_RESP_PORT	(1 << 10)
 #define PTP_CHECK_SYS_TIME		(1 << 16)
 #define PTP_CHECK_SYNC_TIME		(1 << 24)
 #define PTP_TEST_TX_INFO		(1 << 28)
@@ -961,6 +967,8 @@ struct ptp_info {
 	u64 total_jiffies;
 	union ktime first_ktime;
 	int first_drift;
+	struct ptp_ts last_rx_ts;
+	struct ptp_ts last_tx_ts;
 
 	uint features;
 	uint overrides;

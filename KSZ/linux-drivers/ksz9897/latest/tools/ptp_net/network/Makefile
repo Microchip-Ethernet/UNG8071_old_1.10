@@ -3,12 +3,13 @@
 
 GCC ?= $(CROSS_COMPILE)gcc
 
-ifeq (gnueabi, $(findstring gnueabi, $(CROSS_COMPILE)))
+ifeq (-gnueabi-, $(findstring -gnueabi-, $(CROSS_COMPILE)))
 	CFLAGS += -march=armv4t
 	LDFLAGS += -march=armv4t
 endif
 
-CFLAGS += -Wall -Wno-array-bounds
+CFLAGS += -Wall -Wno-array-bounds -Wno-unused-variable -Wno-unused-function \
+	-Wno-unused-but-set-variable
 
 SOCKDIR = ../socket
 
@@ -29,7 +30,7 @@ INCDIR  = -I$(SOCKDIR)
 OBJS = error.o inetfunc.o iofunc.o wrapsock.o wrapstdio.o ip.o wrapmcast.o
 OBJS += sockntop.o unpifi.o
 
-EXE=ptp prifinfo rstptest acltest
+EXE=ptp prifinfo rstptest acltest authtest kszsw dlr dlr_daemon
 
 all: $(EXE)
 
@@ -56,6 +57,19 @@ rstptest: rstptest.c $(HEADERS) $(OBJS) wrapthread.o
 
 acltest: acltest.c $(HEADERS) $(OBJS) wrapthread.o
 	$(GCC) $(INCDIR) -O2 $(CFLAGS) -o $@ $< $(OBJS) wrapthread.o -pthread
+
+authtest: authtest.c $(HEADERS) $(OBJS) wrapthread.o
+	$(GCC) $(INCDIR) -O2 $(CFLAGS) -o $@ $< $(OBJS) wrapthread.o -pthread
+
+kszsw: kszsw.c $(HEADERS) $(OBJS) wrapthread.o
+	$(GCC) $(INCDIR) -O2 $(CFLAGS) -o $@ $< $(OBJS) wrapthread.o -pthread
+
+dlr: dlr.c $(HEADERS) $(OBJS) wrapthread.o
+	$(GCC) $(INCDIR) -O2 $(CFLAGS) -o $@ $< $(OBJS) wrapthread.o -pthread
+
+dlr_daemon: dlr_daemon.c $(HEADERS) $(OBJS) wrapthread.o
+	$(GCC) $(INCDIR) -O2 $(CFLAGS) -o $@ $< $(OBJS) wrapthread.o -pthread
+
 clean:
 	@rm -f *.o
 

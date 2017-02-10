@@ -101,9 +101,7 @@ static void proc_get_attribute(void)
 void get_cmd(FILE *fp)
 {
 	int count;
-#if 0
 	int hcount;
-#endif
 	unsigned int num[10];
 	unsigned int hex[10];
 	int rc;
@@ -179,7 +177,7 @@ void get_cmd(FILE *fp)
 			(unsigned int *) &num[7],
 			(unsigned int *) &num[8],
 			(unsigned int *) &num[9]);
-#if 0
+		hex[0] = 0;
 		hcount = sscanf(line, "%s %x %x %x %x %x %x %x %x %x %x", cmd,
 			(unsigned int *) &hex[0],
 			(unsigned int *) &hex[1],
@@ -191,7 +189,6 @@ void get_cmd(FILE *fp)
 			(unsigned int *) &hex[7],
 			(unsigned int *) &hex[8],
 			(unsigned int *) &hex[9]);
-#endif
 		if (count > 1 && !num[0] && hex[0])
 			for (rc = 0; rc < count - 1; rc++)
 				num[rc] = hex[rc];
@@ -248,6 +245,16 @@ void get_cmd(FILE *fp)
 				}
 			} else
 				printf("vid = %d\n", vid);
+		} else if (!strcmp(cmd, "nd")) {
+			if (sid[7] < 255)
+				sid[7]++;
+			if (dest[5] < 255)
+				dest[5]++;
+		} else if (!strcmp(cmd, "pd")) {
+			if (sid[7])
+				sid[7]--;
+			if (dest[5])
+				dest[5]--;
 		} else if ('m' == line[1]) {
 			memcpy(mac.addr, dest, ETH_ALEN);
 			switch (line[0]) {
@@ -280,6 +287,10 @@ void get_cmd(FILE *fp)
 					break;
 				if (num[0] > mrp_ports)
 					break;
+				if (count > 2) {
+					if (0 <= hex[1] && hex[1] <= 0xff)
+						mac.addr[5] = hex[1];
+				}
 				rc = set_mac_on(fd, num[0], &mac);
 				print_mrp_err(rc);
 				break;
@@ -288,7 +299,35 @@ void get_cmd(FILE *fp)
 					break;
 				if (num[0] > mrp_ports)
 					break;
+				if (count > 2) {
+					if (0 <= hex[1] && hex[1] <= 0xff)
+						mac.addr[5] = hex[1];
+				}
 				rc = set_mac_off(fd, num[0], &mac);
+				print_mrp_err(rc);
+				break;
+			case 'm':
+				if (count < 2)
+					break;
+				if (num[0] > mrp_ports)
+					break;
+				if (count > 2) {
+					if (0 <= hex[1] && hex[1] <= 0xff)
+						mac.addr[5] = hex[1];
+				}
+				rc = set_mac_decl(fd, num[0], &mac);
+				print_mrp_err(rc);
+				break;
+			case 'n':
+				if (count < 2)
+					break;
+				if (num[0] > mrp_ports)
+					break;
+				if (count > 2) {
+					if (0 <= hex[1] && hex[1] <= 0xff)
+						mac.addr[5] = hex[1];
+				}
+				rc = set_mac_drop(fd, num[0], &mac);
 				print_mrp_err(rc);
 				break;
 			case 'd':
@@ -331,6 +370,9 @@ void get_cmd(FILE *fp)
 					break;
 				if (count < 3)
 					num[1] = vid;
+				else if (num[1] <= 0 || num[1] >= 0xfff) {
+					break;
+				}
 				vlan.id = num[1];
 				rc = set_vlan_on(fd, num[0], &vlan);
 				print_mrp_err(rc);
@@ -342,8 +384,39 @@ void get_cmd(FILE *fp)
 					break;
 				if (count < 3)
 					num[1] = vid;
+				else if (num[1] <= 0 || num[1] >= 0xfff) {
+					break;
+				}
 				vlan.id = num[1];
 				rc = set_vlan_off(fd, num[0], &vlan);
+				print_mrp_err(rc);
+				break;
+			case 'm':
+				if (count < 2)
+					break;
+				if (num[0] > mrp_ports)
+					break;
+				if (count < 3)
+					num[1] = vid;
+				else if (num[1] <= 0 || num[1] >= 0xfff) {
+					break;
+				}
+				vlan.id = num[1];
+				rc = set_vlan_decl(fd, num[0], &vlan);
+				print_mrp_err(rc);
+				break;
+			case 'n':
+				if (count < 2)
+					break;
+				if (num[0] > mrp_ports)
+					break;
+				if (count < 3)
+					num[1] = vid;
+				else if (num[1] <= 0 || num[1] >= 0xfff) {
+					break;
+				}
+				vlan.id = num[1];
+				rc = set_vlan_drop(fd, num[0], &vlan);
 				print_mrp_err(rc);
 				break;
 			}
@@ -381,6 +454,40 @@ void get_cmd(FILE *fp)
 				domain.priority = num[2];
 				domain.vlan_id = num[3];
 				rc = set_domain_lv(fd, num[0], &domain);
+				print_mrp_err(rc);
+				break;
+			case 'm':
+				if (count < 2)
+					break;
+				if (num[0] > mrp_ports)
+					break;
+				if (count < 3)
+					num[1] = SR_CLASS_B_ID;
+				if (count < 4)
+					num[2] = srp_priority;
+				if (count < 5)
+					num[3] = vid;
+				domain.id = num[1];
+				domain.priority = num[2];
+				domain.vlan_id = num[3];
+				rc = set_domain_decl(fd, num[0], &domain);
+				print_mrp_err(rc);
+				break;
+			case 'n':
+				if (count < 2)
+					break;
+				if (num[0] > mrp_ports)
+					break;
+				if (count < 3)
+					num[1] = SR_CLASS_B_ID;
+				if (count < 4)
+					num[2] = srp_priority;
+				if (count < 5)
+					num[3] = vid;
+				domain.id = num[1];
+				domain.priority = num[2];
+				domain.vlan_id = num[3];
+				rc = set_domain_drop(fd, num[0], &domain);
 				print_mrp_err(rc);
 				break;
 			}
@@ -427,11 +534,59 @@ void get_cmd(FILE *fp)
 					printf("->\n");
 				print_mrp_err(rc);
 				break;
+			case 'a':
+				if (count < 2)
+					break;
+				if (num[0] > mrp_ports)
+					break;
+				if (count > 2) {
+					if (0 <= num[1] && num[1] <= 0xff)
+						listener.id[7] = num[1];
+				}
+				listener.substate = SRP_READY;
+				rc = set_listener_on(fd, num[0], &listener);
+				print_mrp_err(rc);
+				break;
+			case 'z':
+				if (count < 2)
+					break;
+				if (num[0] > mrp_ports)
+					break;
+				if (count > 2) {
+					if (0 <= num[1] && num[1] <= 0xff)
+						listener.id[7] = num[1];
+				}
+				listener.substate = SRP_ASKING_FAILED;
+				rc = set_listener_off(fd, num[0], &listener);
+				print_mrp_err(rc);
+				break;
+			case 'm':
+				if (count < 2)
+					break;
+				if (num[0] > mrp_ports)
+					break;
+				if (count > 2) {
+					if (0 <= num[1] && num[1] <= 0xff)
+						listener.id[7] = num[1];
+				}
+				listener.substate = SRP_READY;
+				rc = set_listener_decl(fd, num[0], &listener);
+				print_mrp_err(rc);
+				break;
+			case 'n':
+				if (count < 2)
+					break;
+				if (num[0] > mrp_ports)
+					break;
+				if (count > 2) {
+					if (0 <= num[1] && num[1] <= 0xff)
+						listener.id[7] = num[1];
+				}
+				listener.substate = SRP_ASKING_FAILED;
+				rc = set_listener_drop(fd, num[0], &listener);
+				print_mrp_err(rc);
+				break;
 			case 'd':
-#if 0
-				rc = delete_listener(fd, &listener);
-				print_err(rc);
-#endif
 				break;
 			case 's':
 				if (count >= 2) {
@@ -439,6 +594,24 @@ void get_cmd(FILE *fp)
 					listener.substate = num[0];
 				} else
 					printf("state = %d\n", srp_state);
+				break;
+			case 'l':
+				if (count < 2)
+					break;
+				if (num[0] > mrp_ports)
+					break;
+				if (count > 2) {
+					rc = set_port_speed(fd, num[0],
+						num[1]);
+					print_mrp_err(rc);
+				} else {
+					int speed;
+
+					rc = get_port_speed(fd, num[0],
+						&speed);
+					print_mrp_err(rc);
+					printf("speed = %d\n", speed);
+				}
 				break;
 			}
 		} else if ('t' == line[1]) {
@@ -490,6 +663,12 @@ void get_cmd(FILE *fp)
 					break;
 				if (num[0] > mrp_ports)
 					break;
+				if (count > 2) {
+					if (0 <= num[1] && num[1] <= 0xff) {
+						talker.id[7] = num[1];
+						talker.dest[5] = num[1];
+					}
+				}
 				rc = set_talker_on(fd, num[0], &talker);
 				print_mrp_err(rc);
 				break;
@@ -498,14 +677,46 @@ void get_cmd(FILE *fp)
 					break;
 				if (num[0] > mrp_ports)
 					break;
+				if (count > 2) {
+					if (0 <= num[1] && num[1] <= 0xff) {
+						talker.id[7] = num[1];
+						talker.dest[5] = num[1];
+					}
+				}
 				rc = set_talker_off(fd, num[0], &talker);
 				print_mrp_err(rc);
 				break;
+			case 'm':
+				if (count < 2)
+					break;
+				if (num[0] > mrp_ports)
+					break;
+				if (count > 2) {
+					if (0 <= num[1] && num[1] <= 0xff) {
+						talker.id[7] = num[1];
+						talker.dest[5] = num[1];
+					}
+				}
+				rc = set_talker_decl(fd, num[0], &talker);
+				print_mrp_err(rc);
+				break;
+			case 'n':
+				if (count < 2)
+					break;
+				if (num[0] > mrp_ports)
+					break;
+				if (count > 2) {
+					if (0 <= num[1] && num[1] <= 0xff) {
+						talker.id[7] = num[1];
+						talker.dest[5] = num[1];
+					}
+				}
+				rc = set_talker_drop(fd, num[0], &talker);
+				print_mrp_err(rc);
+				break;
 			case 'd':
-#if 0
-				rc = delete_talker(fd, &talker);
-				print_err(rc);
-#endif
+				rc = set_talker_dbg(fd, 0, &talker);
+				print_mrp_err(rc);
 				break;
 			case 'f':
 				if (count >= 2) {
@@ -572,27 +783,43 @@ void get_cmd(FILE *fp)
 			printf("\trm port [:::::dest]\t\trx mac\n");
 			printf("\tvm port [:::::dest]\t\tlv mac\n");
 			printf("\tam port\t\t\t\tactivate mac\n");
+			printf("\tzm port\t\t\t\tdisable mac\n");
+			printf("\tmm port\t\t\t\tdeclare mac\n");
+			printf("\tnm port\t\t\t\tdrop mac\n");
 			printf("\trv port [vid]\t\t\trx vlan\n");
 			printf("\tvv port [vid]\t\t\tlv vlan\n");
 			printf("\tav port\t\t\t\tactivate vlan\n");
+			printf("\tzv port\t\t\t\tdisable vlan\n");
+			printf("\tmv port\t\t\t\tdeclare vlan\n");
+			printf("\tnv port\t\t\t\tdrop vlan\n");
 			printf("\n");
 			printf("\trd port [id] [prio] [vid]\trx domain\n");
 			printf("\tvd port [id] [prio] [vid]\tlv domain\n");
+			printf("\tmd port [id] [prio] [vid]\tdeclare domain\n");
+			printf("\tnd port [id] [prio] [vid]\tdrop domain\n");
 			printf("\n");
 			printf("\trl port [substate]\t\trx listener\n");
 			printf("\tvl port [substate]\t\tlv listener\n");
+			printf("\tal port\t\t\t\tactivate listener\n");
+			printf("\tzl port\t\t\t\tdisable listener\n");
+			printf("\tml port\t\t\t\tdeclare listener\n");
+			printf("\tnl port\t\t\t\tdrop listener\n");
 			printf("\tsl [substate]\n");
+			printf("\tll port [speed]\n");
 			printf("\n");
 			printf("\trt port\t\t\t\trx talker\n");
 			printf("\tvt port\t\t\t\tlv talker\n");
 			printf("\tat port\t\t\t\tactivate talker\n");
 			printf("\tzt port\t\t\t\tdisable talker\n");
+			printf("\tmt port\t\t\t\tdeclare talker\n");
+			printf("\tnt port\t\t\t\tdrop talker\n");
 			printf("\tpt [priority]\n");
 			printf("\tkt [rank]\n");
 			printf("\tft [MaxFrameSize]\n");
 			printf("\tit [MaxIntervalFrames]\n");
 			printf("\tlt [AccumulatedLatency]\n");
 			printf("\tct [FailureCode]\n");
+			printf("\tdt \t\t\t\tdebug\n");
 			printf("\n");
 			break;
 		case 'q':

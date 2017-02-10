@@ -1,7 +1,7 @@
 /**
- * Micrel PTP common code in IBA format
+ * Microchip PTP common code in IBA format
  *
- * Copyright (c) 2015 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2009-2015 Micrel, Inc.
@@ -1292,6 +1292,15 @@ static void ptp_start_iba(struct ptp_info *ptp, int init)
 	struct timespec ts;
 	struct ptp_utime t;
 
+	if (!ptp->version) {
+		ptp_hw_enable(ptp);
+		ptp_check(ptp);
+		if (ptp->test_access_time)
+			ptp->test_access_time(ptp);
+		ptp_init_hw(ptp);
+	} else
+	if (init && (sw->features & NEW_CAP))
+		ptp_hw_enable(ptp);
 	ptp->ops->acquire(ptp);
 	iba_req(info, data, data, NULL, start_pre_1, start_post_1);
 	ctrl = data[0];
@@ -1314,14 +1323,9 @@ static void ptp_start_iba(struct ptp_info *ptp, int init)
 	dbg_msg("ptp_start: %04x %04x\n",
 		ptp->mode, ptp->cfg);
 	iba_req(info, data, NULL, ptp, start_pre_2, NULL);
+	ptp->tx_intr = PTP_PORT_XDELAY_REQ_INT;
 	ptp_tx_intr_enable(ptp);
 	ptp->ops->release(ptp);
-#if 0
-test_iba_access = 0;
-	if (ptp->test_access_time)
-		ptp->test_access_time(ptp);
-test_iba_access = 0;
-#endif
 
 	ts = ktime_to_timespec(ktime_get_real());
 	t.sec = ts.tv_sec;
@@ -1336,7 +1340,7 @@ test_iba_access = 0;
 }  /* ptp_start_iba */
 
 
-struct ptp_reg_ops ptp_iba_ops = {
+static struct ptp_reg_ops ptp_iba_ops = {
 	.get_time		= get_ptp_time_iba,
 	.set_time		= set_ptp_time_iba,
 	.adjust_time		= adjust_ptp_time_iba,

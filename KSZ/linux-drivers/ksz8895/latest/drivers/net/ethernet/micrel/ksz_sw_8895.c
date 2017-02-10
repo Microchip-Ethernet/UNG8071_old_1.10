@@ -1,7 +1,7 @@
 /**
- * Micrel KSZ8895 switch common code
+ * Microchip KSZ8895 switch common code
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -17,8 +17,11 @@
 
 /* -------------------------------------------------------------------------- */
 
+#define MAX_SYSFS_BUF_SIZE		(4080 - 80)
+
 enum {
 	PROC_SW_INFO,
+	PROC_SW_VERSION,
 
 	PROC_SET_SW_DUPLEX,
 	PROC_SET_SW_SPEED,
@@ -42,6 +45,7 @@ enum {
 
 	PROC_SET_BROADCAST_STORM,
 	PROC_SET_MULTICAST_STORM,
+	PROC_SET_TX_RATE_QUEUE_BASED,
 	PROC_SET_DIFFSERV,
 	PROC_SET_802_1P,
 
@@ -82,6 +86,7 @@ enum {
 	PROC_SET_INS_TAG,
 
 	PROC_SET_PASS_ALL,
+
 	PROC_SET_PASS_PAUSE,
 	PROC_SET_HI_PRIO_QUEUES,
 
@@ -104,6 +109,17 @@ enum {
 	PROC_SET_VLAN_FID,
 	PROC_SET_VLAN_VID,
 	PROC_GET_VLAN_INFO,
+
+#ifdef CONFIG_KSZ_STP
+	PROC_GET_STP_BR_INFO,
+	PROC_SET_STP_BR_ON,
+	PROC_SET_STP_BR_PRIO,
+	PROC_SET_STP_BR_FWD_DELAY,
+	PROC_SET_STP_BR_MAX_AGE,
+	PROC_SET_STP_BR_HELLO_TIME,
+	PROC_SET_STP_BR_TX_HOLD,
+	PROC_SET_STP_VERSION,
+#endif
 };
 
 enum {
@@ -172,13 +188,44 @@ enum {
 	PROC_SET_UNKNOWN_VID_PORT,
 	PROC_SET_UNKNOWN_IP_MULTICAST_PORT,
 
-	PROC_GET_PORT_DUPLEX,
-	PROC_GET_PORT_SPEED,
+	PROC_SET_PORT_DUPLEX,
+	PROC_SET_PORT_SPEED,
 	PROC_SET_LINK_MD,
+
+#ifdef CONFIG_KSZ_STP
+	PROC_GET_STP_INFO,
+	PROC_SET_STP_ON,
+	PROC_SET_STP_PRIO,
+	PROC_SET_STP_ADMIN_PATH_COST,
+	PROC_SET_STP_PATH_COST,
+	PROC_SET_STP_ADMIN_EDGE,
+	PROC_SET_STP_AUTO_EDGE,
+	PROC_SET_STP_MCHECK,
+	PROC_SET_STP_ADMIN_P2P,
+#endif
 
 };
 
 /* -------------------------------------------------------------------------- */
+
+static int get_first_port(struct ksz_sw *sw)
+{
+	int p = 0;
+
+#ifdef SKIP_FIRST_PORT
+	p = sw->first_port;
+#endif
+	return p;
+}  /* get_first_port */
+
+static int chk_last_port(struct ksz_sw *sw, int p)
+{
+#ifdef USE_FEWER_PORTS
+	if (sw->last_port && p == sw->last_port)
+		p = sw->HOST_PORT;
+#endif
+	return p;
+}  /* chk_last_port */
 
 static void sw_acquire(struct ksz_sw *sw)
 {
@@ -303,10 +350,10 @@ static void sw_r_table_64(struct ksz_sw *sw, int table, u16 addr, u32 *data_hi,
 
 	ctrl_addr = IND_ACC_TABLE(table | TABLE_READ) | addr;
 
-	mutex_lock(sw->reglock);
+	sw->ops->acquire(sw);
 	sw->reg->w16(sw, REG_IND_CTRL_0, ctrl_addr);
 	sw_r(sw, REG_IND_DATA_HI, &buf, sizeof(buf));
-	mutex_unlock(sw->reglock);
+	sw->ops->release(sw);
 	buf = be64_to_cpu(buf);
 	*data_hi = (u32)(buf >> 32);
 	*data_lo = (u32) buf;
@@ -335,10 +382,10 @@ static void sw_w_table_64(struct ksz_sw *sw, int table, u16 addr, u32 data_hi,
 	buf |= data_lo;
 	buf = cpu_to_be64(buf);
 
-	mutex_lock(sw->reglock);
+	sw->ops->acquire(sw);
 	sw_w(sw, REG_IND_DATA_HI, &buf, sizeof(buf));
 	sw->reg->w16(sw, REG_IND_CTRL_0, ctrl_addr);
-	mutex_unlock(sw->reglock);
+	sw->ops->release(sw);
 }  /* sw_w_table_64 */
 
 static inline int valid_dyn_entry(struct ksz_sw *sw, u8 *data)
@@ -393,7 +440,7 @@ static int sw_r_dyn_mac_table(struct ksz_sw *sw, u16 addr, u8 *mac_addr,
 
 	ctrl_addr = IND_ACC_TABLE(TABLE_DYNAMIC_MAC | TABLE_READ) | addr;
 
-	mutex_lock(sw->reglock);
+	sw->ops->acquire(sw);
 	sw->reg->w16(sw, REG_IND_CTRL_0, ctrl_addr);
 
 	rc = valid_dyn_entry(sw, &data);
@@ -435,7 +482,7 @@ static int sw_r_dyn_mac_table(struct ksz_sw *sw, u16 addr, u8 *mac_addr,
 		mac_addr[0] = (u8)(data_hi >> 8);
 		rc = 0;
 	}
-	mutex_unlock(sw->reglock);
+	sw->ops->release(sw);
 
 	return rc;
 }  /* sw_r_dyn_mac_table */
@@ -446,7 +493,7 @@ static int sw_r_dyn_mac_table(struct ksz_sw *sw, u16 addr, u8 *mac_addr,
  *
  * This routine dumps dynamic MAC table contents.
  */
-static void sw_d_dyn_mac_table(struct ksz_sw *sw)
+static ssize_t sw_d_dyn_mac_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 	u16 entries = 0;
 	u16 i;
@@ -454,25 +501,41 @@ static void sw_d_dyn_mac_table(struct ksz_sw *sw)
 	u8 ports = 0;
 	u8 timestamp = 0;
 	u8 fid = 0;
-	int locked = mutex_is_locked(&sw->lock);
+	int first_break = true;
 
-	if (locked)
-		mutex_unlock(sw->reglock);
 	memset(mac_addr, 0, ETH_ALEN);
 	i = 0;
 	do {
 		if (!sw_r_dyn_mac_table(sw, i, mac_addr, &fid, &ports,
 				&timestamp, &entries)) {
-			printk(KERN_INFO
-				"%02X:%02X:%02X:%02X:%02X:%02X %x %x %x %03x\n",
+			if (len >= MAX_SYSFS_BUF_SIZE && first_break) {
+				first_break = false;
+				len += sprintf(buf + len, "...\n");
+			}
+			if (len < MAX_SYSFS_BUF_SIZE)
+			len += sprintf(buf + len,
+				"%02X:%02X:%02X:%02X:%02X:%02X  "
+				"f:%2x  p:%x  t:%x\n",
 				mac_addr[0], mac_addr[1], mac_addr[2],
 				mac_addr[3], mac_addr[4], mac_addr[5],
-				fid, ports, timestamp, entries);
+				fid, ports, timestamp);
+			else
+			printk(KERN_INFO
+				"%02X:%02X:%02X:%02X:%02X:%02X  "
+				"f:%2x  p:%x  t:%x\n",
+				mac_addr[0], mac_addr[1], mac_addr[2],
+				mac_addr[3], mac_addr[4], mac_addr[5],
+				fid, ports, timestamp);
 		}
 		i++;
 	} while (i < entries);
-	if (locked)
-		mutex_lock(sw->reglock);
+	if (entries) {
+		if (len < MAX_SYSFS_BUF_SIZE)
+			sprintf(buf + len, "=%03x\n", entries);
+		else
+			printk(KERN_INFO "=%03x\n", entries);
+	}
+	return len;
 }  /* sw_d_dyn_mac_table */
 
 /**
@@ -491,13 +554,8 @@ static int sw_r_sta_mac_table(struct ksz_sw *sw, u16 addr,
 {
 	u32 data_hi;
 	u32 data_lo;
-	int locked = mutex_is_locked(&sw->lock);
 
-	if (locked)
-		mutex_unlock(sw->reglock);
 	sw_r_table_64(sw, TABLE_STATIC_MAC, addr, &data_hi, &data_lo);
-	if (locked)
-		mutex_lock(sw->reglock);
 	if (data_hi & (STATIC_MAC_TABLE_VALID | STATIC_MAC_TABLE_OVERRIDE)) {
 		mac->addr[5] = (u8) data_lo;
 		mac->addr[4] = (u8)(data_lo >> 8);
@@ -532,7 +590,6 @@ static void sw_w_sta_mac_table(struct ksz_sw *sw, u16 addr,
 {
 	u32 data_hi;
 	u32 data_lo;
-	int locked = mutex_is_locked(&sw->lock);
 
 	data_lo = ((u32) mac->addr[2] << 24) |
 		((u32) mac->addr[3] << 16) |
@@ -551,11 +608,7 @@ static void sw_w_sta_mac_table(struct ksz_sw *sw, u16 addr,
 	else
 		data_hi &= ~STATIC_MAC_TABLE_OVERRIDE;
 
-	if (locked)
-		mutex_unlock(sw->reglock);
 	sw_w_table_64(sw, TABLE_STATIC_MAC, addr, data_hi, data_lo);
-	if (locked)
-		mutex_lock(sw->reglock);
 	mac->dirty = 0;
 }  /* sw_w_sta_mac_table */
 
@@ -565,7 +618,7 @@ static void sw_w_sta_mac_table(struct ksz_sw *sw, u16 addr,
  *
  * This routine dumps static MAC table contents.
  */
-static void sw_d_sta_mac_table(struct ksz_sw *sw)
+static ssize_t sw_d_sta_mac_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 	u16 i;
 	struct ksz_mac_table mac;
@@ -573,18 +626,19 @@ static void sw_d_sta_mac_table(struct ksz_sw *sw)
 	i = 0;
 	do {
 		if (!sw_r_sta_mac_table(sw, i, &mac)) {
-			printk(KERN_INFO
-				"%2x: %02X:%02X:%02X:%02X:%02X:%02X "
-				"%x %u %u:%x\n",
+			len += sprintf(buf + len,
+				"%2x: %02X:%02X:%02X:%02X:%02X:%02X  "
+				"%02x  %u  %u:%x\n",
 				i, mac.addr[0], mac.addr[1], mac.addr[2],
 				mac.addr[3], mac.addr[4], mac.addr[5],
 				mac.ports, mac.override, mac.use_fid, mac.fid);
 		}
 		i++;
 	} while (i < STATIC_MAC_TABLE_ENTRIES);
+	return len;
 }  /* sw_d_sta_mac_table */
 
-static void sw_d_mac_table(struct ksz_sw *sw)
+static ssize_t sw_d_mac_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 #if 0
 	struct ksz_mac_table *entry;
@@ -594,9 +648,9 @@ static void sw_d_mac_table(struct ksz_sw *sw)
 	do {
 		entry = &sw->info->mac_table[i];
 		if (entry->valid) {
-			printk(KERN_INFO
-				"%x: %02X:%02X:%02X:%02X:%02X:%02X "
-				"%x %u %u:%x\n",
+			len += sprintf(buf + len,
+				"%x: %02X:%02X:%02X:%02X:%02X:%02X  "
+				"%x  %u  %u:%x\n",
 				i, entry->mac_addr[0], entry->mac_addr[1],
 				entry->mac_addr[2], entry->mac_addr[3],
 				entry->mac_addr[4], entry->mac_addr[5],
@@ -608,7 +662,8 @@ static void sw_d_mac_table(struct ksz_sw *sw)
 			printk(KERN_INFO "\n");
 	} while (i < MULTI_MAC_TABLE_ENTRIES);
 #endif
-}
+	return len;
+}  /* sw_d_mac_table */
 
 /* -------------------------------------------------------------------------- */
 
@@ -633,14 +688,9 @@ static int sw_r_vlan_entries(struct ksz_sw *sw, u16 addr, u8 *valid, u8 *fid,
 	u32 *data_hi = data_lo + 1;
 	u16 data;
 	int i;
-	int locked = mutex_is_locked(&sw->lock);
 	int ret = -1;
 
-	if (locked)
-		mutex_unlock(sw->reglock);
 	sw_r_table_64(sw, TABLE_VLAN, addr, data_hi, data_lo);
-	if (locked)
-		mutex_lock(sw->reglock);
 	for (i = 0; i < 4; i++) {
 		data = (u16) buf;
 		*valid = 0;
@@ -676,15 +726,10 @@ static void sw_r_vlan_table(struct ksz_sw *sw, u16 vid,
 	u32 *data_hi = data_lo + 1;
 	u16 addr;
 	int index;
-	int locked = mutex_is_locked(&sw->lock);
 
 	addr = vid / 4;
 	index = vid & 3;
-	if (locked)
-		mutex_unlock(sw->reglock);
 	sw_r_table_64(sw, TABLE_VLAN, addr, data_hi, data_lo);
-	if (locked)
-		mutex_lock(sw->reglock);
 	buf >>= VLAN_TABLE_S * index;
 	buf &= (1 << VLAN_TABLE_S) - 1;
 	vlan->fid = (u8)(buf & VLAN_TABLE_FID);
@@ -713,12 +758,9 @@ static void sw_w_vlan_table(struct ksz_sw *sw, u16 vid,
 	u32 *data_hi = data_lo + 1;
 	u16 addr;
 	int index;
-	int locked = mutex_is_locked(&sw->lock);
 
 	addr = vid / 4;
 	index = vid & 3;
-	if (locked)
-		mutex_unlock(sw->reglock);
 	sw_r_table_64(sw, TABLE_VLAN, addr, data_hi, data_lo);
 	mask = (1 << VLAN_TABLE_S) - 1;
 	mask <<= VLAN_TABLE_S * index;
@@ -730,8 +772,6 @@ static void sw_w_vlan_table(struct ksz_sw *sw, u16 vid,
 	buf &= ~mask;
 	buf |= val;
 	sw_w_table_64(sw, TABLE_VLAN, addr, *data_hi, *data_lo);
-	if (locked)
-		mutex_lock(sw->reglock);
 	vlan->dirty = 0;
 }  /* sw_w_vlan_table */
 
@@ -741,7 +781,7 @@ static void sw_w_vlan_table(struct ksz_sw *sw, u16 vid,
  *
  * This routine dumps the VLAN table.
  */
-static void sw_d_vlan_table(struct ksz_sw *sw)
+static ssize_t sw_d_vlan_table(struct ksz_sw *sw, char *buf, ssize_t len)
 {
 	u16 i;
 	u16 j;
@@ -749,21 +789,35 @@ static void sw_d_vlan_table(struct ksz_sw *sw)
 	u8 fid[4];
 	u8 member[4];
 	u8 valid[4];
+	int first_break = true;
 
 	i = 0;
 	do {
 		if (!sw_r_vlan_entries(sw, i, valid, fid, member)) {
 			vid = i * 4;
 			for (j = 0; j < 4; j++, vid++) {
-				if (valid[j])
+				if (!valid[j])
+					continue;
+					continue;
+				if (len >= MAX_SYSFS_BUF_SIZE && first_break) {
+					first_break = false;
+					len += sprintf(buf + len, "...\n");
+				}
+				if (len < MAX_SYSFS_BUF_SIZE)
+					len += sprintf(buf + len,
+						"0x%03x: %2x  %2x\n", vid,
+						fid[j], member[j]);
+				else
 					printk(KERN_INFO
-					"0x%03x: %2x %2x\n", vid,
-					fid[j], member[j]);
+						"0x%03x: %2x  %2x\n", vid,
+						fid[j], member[j]);
 			}
 		}
+		if (len >= MAX_SYSFS_BUF_SIZE)
 		yield();
 		i++;
 	} while (i < VLAN_TABLE_ENTRIES);
+	return len;
 }  /* sw_d_vlan_table */
 
 /* -------------------------------------------------------------------------- */
@@ -830,7 +884,7 @@ static void port_r_mib_cnt(struct ksz_sw *sw, int port, u16 addr, u64 *cnt)
 
 	ctrl_addr = addr + SWITCH_COUNTER_NUM * port;
 
-	mutex_lock(sw->reglock);
+	sw->ops->acquire(sw);
 
 	ctrl_addr |= IND_ACC_TABLE(TABLE_MIB | TABLE_READ);
 	sw->reg->w16(sw, REG_IND_CTRL_0, ctrl_addr);
@@ -847,7 +901,7 @@ static void port_r_mib_cnt(struct ksz_sw *sw, int port, u16 addr, u64 *cnt)
 		}
 	}
 
-	mutex_unlock(sw->reglock);
+	sw->ops->release(sw);
 }  /* port_r_mib_cnt */
 
 /**
@@ -871,13 +925,13 @@ static void port_r_mib_pkt(struct ksz_sw *sw, int port, u16 addr, u32 *last,
 		KS_MIB_PACKET_DROPPED_RX_0;
 	ctrl_addr += port;
 
-	mutex_lock(sw->reglock);
+	sw->ops->acquire(sw);
 
 	ctrl_addr |= IND_ACC_TABLE(TABLE_MIB | TABLE_READ);
 	sw->reg->w16(sw, REG_IND_CTRL_0, ctrl_addr);
 
 	data = sw->reg->r32(sw, REG_IND_DATA_LO);
-	mutex_unlock(sw->reglock);
+	sw->ops->release(sw);
 	data &= MIB_PACKET_DROPPED;
 	cur = last[addr];
 	if (data != cur) {
@@ -951,15 +1005,20 @@ static void sw_cfg_mib_counter_ctrl(struct ksz_sw *sw, int ctrl, int port)
 		start = port;
 		stop = port + 1;
 	} else {
-		start = 0;
+		start = get_first_port(sw);
 		stop = sw->mib_port_cnt;
 	}
 	if (ctrl & 1)
 		for (count = start; count < stop; count++) {
-			struct ksz_port_mib *mib = &sw->port_mib[count];
+			struct ksz_port_mib *mib;
 
+			count = chk_last_port(sw, count);
+			mib = &sw->port_mib[count];
 			memset((void *) mib->counter, 0, sizeof(u64) *
 				TOTAL_SWITCH_COUNTER_NUM);
+			mib->rate[0].last = mib->rate[1].last = 0;
+			mib->rate[0].last_cnt = mib->rate[1].last_cnt = 0;
+			mib->rate[0].peak = mib->rate[1].peak = 0;
 		}
 }  /* sw_cfg_mib_counter_ctrl */
 
@@ -975,7 +1034,6 @@ static inline void port_init_cnt(struct ksz_sw *sw, int port)
 {
 	struct ksz_port_mib *mib = &sw->port_mib[port];
 
-	mutex_lock(&sw->lock);
 	mib->cnt_ptr = 0;
 	if (mib->mib_start < SWITCH_COUNTER_NUM)
 		do {
@@ -998,7 +1056,9 @@ static inline void port_init_cnt(struct ksz_sw *sw, int port)
 	memset((void *) mib->counter, 0, sizeof(u64) *
 		TOTAL_SWITCH_COUNTER_NUM);
 	mib->cnt_ptr = 0;
-	mutex_unlock(&sw->lock);
+	mib->rate[0].last = mib->rate[1].last = 0;
+	mib->rate[0].last_cnt = mib->rate[1].last_cnt = 0;
+	mib->rate[0].peak = mib->rate[1].peak = 0;
 }  /* port_init_cnt */
 
 /* -------------------------------------------------------------------------- */
@@ -1367,13 +1427,12 @@ static void hw_cfg_broad_storm(struct ksz_sw *sw, u8 percent)
 static void sw_setup_broad_storm(struct ksz_sw *sw)
 {
 	int port;
-	int p = 0;
+	int p = get_first_port(sw);
 
 	/* Enable switch broadcast storm protection at 10% percent rate. */
 	hw_cfg_broad_storm(sw, BROADCAST_STORM_PROTECTION_RATE);
-	if (sw->port_cnt < sw->mib_port_cnt)
-		p = 1;
 	for (port = p; port < sw->mib_port_cnt; port++) {
+		port = chk_last_port(sw, port);
 		sw_ena_broad_storm(sw, port);
 	}
 	sw_cfg(sw, REG_SW_CTRL_2, MULTICAST_STORM_DISABLE, 1);
@@ -1637,10 +1696,10 @@ static void port_get_rate(struct ksz_sw *sw, int port, int prio, int offset,
  * the actual rate number.
  */
 static void hw_cfg_prio_rate(struct ksz_sw *sw, int port, int prio, uint rate,
-	int offset, uint *result_rate)
+	int offset, uint *result)
 {
 	port_cfg_rate(sw, port, prio, offset, rate);
-	port_get_rate(sw, port, prio, offset, result_rate);
+	port_get_rate(sw, port, prio, offset, result);
 }  /* hw_cfg_prio_rate */
 
 /**
@@ -1680,104 +1739,107 @@ static void hw_cfg_tx_prio_rate(struct ksz_sw *sw, int port, int prio,
 }  /* hw_cfg_tx_prio_rate */
 
 /**
- * sw_chk_rx_prio_rate - check switch receive priority rate
+ * sw_chk_rx_prio_rate - check switch rx priority rate
  * @sw:		The switch instance.
  * @port:	The port index.
  *
- * This function checks whether the priority rate function of the switch is
+ * This function checks whether the rx priority rate function of the switch is
  * enabled.
  *
  * Return 0 if not enabled.
  */
 static int sw_chk_rx_prio_rate(struct ksz_sw *sw, int port)
 {
-	u8 data;
+	u32 rate_addr;
+	u32 in_rate;
 
-	port_r8(sw, port, REG_PORT_IN_RATE_3, &data);
-	return data;
+	PORT_CTRL_ADDR(port, rate_addr);
+	rate_addr += REG_PORT_IN_RATE_0;
+	in_rate = sw->reg->r32(sw, rate_addr);
+	return in_rate != 0;
 }  /* sw_chk_rx_prio_rate */
 
 /**
- * sw_dis_rx_prio_rate - disable switch priority rate
+ * sw_dis_rx_prio_rate - disable switch rx priority rate
  * @sw:		The switch instance.
  * @port:	The port index.
  *
- * This routine disables the priority rate function of the switch.
+ * This routine disables the rx priority rate function of the switch.
  */
 static void sw_dis_rx_prio_rate(struct ksz_sw *sw, int port)
 {
-	u8 data;
+	u32 rate_addr;
 
-	port_r8(sw, port, REG_PORT_IN_RATE_3, &data);
-	data = 0;
-	port_w8(sw, port, REG_PORT_IN_RATE_3, data);
+	PORT_CTRL_ADDR(port, rate_addr);
+	rate_addr += REG_PORT_IN_RATE_0;
+	sw->reg->w32(sw, rate_addr, 0);
 }  /* sw_dis_rx_prio_rate */
 
 /**
- * sw_ena_prio_rate - enable switch priority rate
+ * sw_ena_rx_prio_rate - enable switch rx priority rate
  * @sw:		The switch instance.
  * @port:	The port index.
  *
- * This routine enables the priority rate function of the switch.
+ * This routine enables the rx priority rate function of the switch.
  */
 static void sw_ena_rx_prio_rate(struct ksz_sw *sw, int port)
 {
 	int prio;
-	u8 data;
 
 	for (prio = 0; prio < PRIO_QUEUES; prio++) {
 		hw_cfg_rx_prio_rate(sw, port, prio,
 			sw->info->port_cfg[port].rx_rate[prio]);
 	}
-	port_r8(sw, port, REG_PORT_IN_RATE_3, &data);
-	port_w8(sw, port, REG_PORT_IN_RATE_3, data);
 }  /* sw_ena_rx_prio_rate */
 
 /**
- * sw_chk_tx_prio_rate - check switch priority rate
+ * sw_chk_tx_prio_rate - check switch tx priority rate
  * @sw:		The switch instance.
  * @port:	The port index.
  *
- * This function checks whether the priority rate function of the switch is
+ * This function checks whether the tx priority rate function of the switch is
  * enabled.
  *
  * Return 0 if not enabled.
  */
 static int sw_chk_tx_prio_rate(struct ksz_sw *sw, int port)
 {
-	u32 addr;
 	u32 rate_addr;
 	u32 out_rate;
 
-	PORT_CTRL_ADDR(port, addr);
-	rate_addr = addr + REG_PORT_OUT_RATE_0;
-	out_rate = sw->reg->r32(sw, rate_addr);
+	PORT_CTRL_ADDR(port, rate_addr);
+	rate_addr += REG_PORT_OUT_RATE_0;
+	if (sw_chk(sw, REG_SW_CTRL_19, SW_OUT_RATE_LIMIT_QUEUE_BASED))
+		out_rate = sw->reg->r32(sw, rate_addr);
+
+	/* Only need to check first priority as the others do not matter. */
+	else
+		out_rate = sw->reg->r8(sw, rate_addr);
 	return out_rate != 0;
 }  /* sw_chk_tx_prio_rate */
 
 /**
- * sw_dis_tx_prio_rate - disable switch priority rate
+ * sw_dis_tx_prio_rate - disable switch tx priority rate
  * @sw:		The switch instance.
  * @port:	The port index.
  *
- * This routine disables the priority rate function of the switch.
+ * This routine disables the tx priority rate function of the switch.
  */
 static void sw_dis_tx_prio_rate(struct ksz_sw *sw, int port)
 {
-	u32 addr;
 	u32 rate_addr;
 
-	PORT_CTRL_ADDR(port, addr);
-	rate_addr = addr + REG_PORT_OUT_RATE_0;
+	PORT_CTRL_ADDR(port, rate_addr);
+	rate_addr += REG_PORT_OUT_RATE_0;
 	sw->reg->w32(sw, rate_addr, 0);
 }  /* sw_dis_tx_prio_rate */
 
 /**
- * sw_ena_tx_prio_rate - enable switch priority rate
+ * sw_ena_tx_prio_rate - enable switch tx priority rate
  * @sw:		The switch instance.
  * @port:	The port index.
  *
- * This routine enables the priority rate function of the switch.
+ * This routine enables the tx priority rate function of the switch.
  */
 static void sw_ena_tx_prio_rate(struct ksz_sw *sw, int port)
 {
@@ -1800,11 +1862,10 @@ static void sw_init_prio_rate(struct ksz_sw *sw)
 	int offset;
 	int port;
 	int prio;
-	int p = 0;
+	int p = get_first_port(sw);
 
-	if (sw->port_cnt < sw->mib_port_cnt)
-		p = 1;
-	for (port = p; port < TOTAL_PORT_NUM; port++) {
+	for (port = p; port < sw->mib_port_cnt; port++) {
+		port = chk_last_port(sw, port);
 		hw_get_rate_limit(sw, port);
 		for (prio = 0; prio < PRIO_QUEUES; prio++) {
 			hw_get_rate_ctrl(sw, port, prio);
@@ -1910,22 +1971,22 @@ static void sw_flush_dyn_mac_table(struct ksz_sw *sw, int port)
 		first = port;
 		cnt = port + 1;
 	} else {
-		first = 0;
-		if (sw->port_cnt < sw->mib_port_cnt)
-			first = 1;
-		cnt = TOTAL_PORT_NUM;
+		first = get_first_port(sw);
+		cnt = sw->mib_port_cnt;
 	}
 	for (index = first; index < cnt; index++) {
+		index = chk_last_port(sw, index);
 		learn_disable[index] = port_chk_dis_learn(sw, index);
 		if (!learn_disable[index])
 			port_cfg_dis_learn(sw, index, 1);
 	}
 	sw_cfg(sw, S_FLUSH_TABLE_CTRL, SW_FLUSH_DYN_MAC_TABLE, 1);
 	for (index = first; index < cnt; index++) {
+		index = chk_last_port(sw, index);
 		if (!learn_disable[index])
 			port_cfg_dis_learn(sw, index, 0);
 	}
-}
+}  /* sw_flush_dyn_mac_table */
 
 /* -------------------------------------------------------------------------- */
 
@@ -2044,7 +2105,7 @@ static inline int sw_chk_mirror_rx_tx(struct ksz_sw *sw)
 static void sw_setup_mirror(struct ksz_sw *sw)
 {
 	int port;
-	int p;
+	int p = get_first_port(sw);
 
 	/*
 	 * The mirror sniffer port requires it to be in the port membership
@@ -2058,9 +2119,8 @@ static void sw_setup_mirror(struct ksz_sw *sw)
 	 * The mirror receive and transmit mode requires at least two ports to
 	 * turn on receive and transmit mirroring.
 	 */
-	if (sw->port_cnt < sw->mib_port_cnt)
-		p = 1;
-	for (port = p; port < TOTAL_PORT_NUM; port++) {
+	for (port = p; port < sw->mib_port_cnt; port++) {
+		port = chk_last_port(sw, port);
 		port_cfg_mirror_sniffer(sw, port, 0);
 		port_cfg_mirror_rx(sw, port, 0);
 		port_cfg_mirror_tx(sw, port, 0);
@@ -2132,6 +2192,11 @@ static inline void sw_cfg_self_filter(struct ksz_sw *sw, int set)
 static void sw_cfg_src_filter(struct ksz_sw *sw, int set)
 {
 }  /* sw_cfg_src_filter */
+
+static void sw_fwd_unk_vid(struct ksz_sw *sw)
+{
+	sw_w8(sw, REG_SW_UNK_VID_CTRL, sw->HOST_MASK | SW_UNK_FWD_ENABLE);
+}  /* sw_fwd_unk_vid */
 
 /* -------------------------------------------------------------------------- */
 
@@ -2402,7 +2467,7 @@ static int sw_get_hi_prio_queues(struct ksz_sw *sw)
 		queue = 0;
 	}
 	return queue;
-}
+}  /* sw_get_hi_prio_queues */
 
 static void sw_set_hi_prio_queues(struct ksz_sw *sw, int queue)
 {
@@ -2423,7 +2488,7 @@ static void sw_set_hi_prio_queues(struct ksz_sw *sw, int queue)
 	queue <<= SW_PRIO_MAPPING_S;
 	data |= (u8) queue;
 	sw->reg->w8(sw, REG_SWITCH_CTRL_14, data);
-}
+}  /* sw_set_hi_prio_queues */
 
 /**
  * port_get_prio_queue - check transmit multiple queues
@@ -2453,7 +2518,7 @@ static int port_get_prio_queue(struct ksz_sw *sw, int port)
  * @queue:	Number of queues.
  *
  * This routine enables the transmit multiple queues selection of the switch
- * port.  The port transmit queue is split into four priority queues.
+ * port.  The port transmit queue is split into two or four priority queues.
  */
 static void port_set_prio_queue(struct ksz_sw *sw, int port, int queue)
 {
@@ -2462,6 +2527,7 @@ static void port_set_prio_queue(struct ksz_sw *sw, int port, int queue)
 
 	switch (queue) {
 	case 4:
+	case 3:
 		queue = PORT_QUEUE_SPLIT_4;
 		break;
 	case 2:
@@ -2480,6 +2546,10 @@ static void port_set_prio_queue(struct ksz_sw *sw, int port, int queue)
 		hi |= PORT_QUEUE_SPLIT_H;
 	port_w(sw, port, REG_PORT_CTRL_0, lo);
 	port_w(sw, port, P_DROP_TAG_CTRL, hi);
+
+	/* Default is port based for egress rate limit. */
+	if (queue)
+		sw_cfg(sw, REG_SW_CTRL_19, SW_OUT_RATE_LIMIT_QUEUE_BASED, 1);
 }  /* port_set_prio_queue */
 
 /**
@@ -2492,7 +2562,7 @@ static void sw_init_prio(struct ksz_sw *sw)
 {
 	int port;
 	SW_D data;
-	int p = 0;
+	int p = get_first_port(sw);
 
 	sw->reg->r(sw, S_802_1P_PRIO_CTRL, sw->info->p_802_1p,
 		PRIO_802_1P_ENTRIES / KS_PRIO_IN_REG);
@@ -2500,9 +2570,8 @@ static void sw_init_prio(struct ksz_sw *sw)
 	sw->reg->r(sw, S_TOS_PRIO_CTRL, sw->info->diffserv,
 		DIFFSERV_ENTRIES / KS_PRIO_IN_REG);
 
-	if (sw->port_cnt < sw->mib_port_cnt)
-		p = 1;
-	for (port = p; port < TOTAL_PORT_NUM; port++) {
+	for (port = p; port < sw->mib_port_cnt; port++) {
+		port = chk_last_port(sw, port);
 		port_r(sw, port, P_PRIO_CTRL, &data);
 		data &= PORT_BASED_PRIO_M;
 		data >>= PORT_BASED_PRIO_S;
@@ -2519,12 +2588,11 @@ static void sw_init_prio(struct ksz_sw *sw)
 static void sw_setup_prio(struct ksz_sw *sw)
 {
 	int port;
-	int p = 0;
+	int p = get_first_port(sw);
 
 	/* All QoS functions disabled. */
-	if (sw->port_cnt < sw->mib_port_cnt)
-		p = 1;
-	for (port = 0; port < TOTAL_PORT_NUM; port++) {
+	for (port = p; port < sw->mib_port_cnt; port++) {
+		port = chk_last_port(sw, port);
 		port_set_prio_queue(sw, port, 4);
 		sw_dis_diffserv(sw, port);
 		sw_cfg_replace_prio(sw, port, 0);
@@ -2751,15 +2819,15 @@ static void sw_init_vlan(struct ksz_sw *sw)
 	int port;
 	SW_D data;
 	struct ksz_sw_info *info = sw->info;
-	int p = 0;
+	int p = get_first_port(sw);
 
-	if (sw->port_cnt < sw->mib_port_cnt)
-		p = 1;
-	for (port = p; port < TOTAL_PORT_NUM; port++) {
+	for (port = p; port < sw->mib_port_cnt; port++) {
+		port = chk_last_port(sw, port);
 		port_get_def_vid(sw, port, &info->port_cfg[port].vid);
 		port_r(sw, port, P_MIRROR_CTRL, &data);
 		data &= PORT_VLAN_MEMBERSHIP;
 		info->port_cfg[port].member = data;
+		info->port_cfg[port].vid_member = data;
 
 		port_cfg(sw, port, P_INS_SRC_PVID_CTRL,
 			(PORT_INS_TAG_FOR_PORT_5 | PORT_INS_TAG_FOR_PORT_4 |
@@ -2767,6 +2835,16 @@ static void sw_init_vlan(struct ksz_sw *sw)
 			true);
 	}
 }  /* sw_init_vlan */
+
+static void inc_mac_addr(u8 *dst, u8 *src, u8 inc)
+{
+	memcpy(dst, src, ETH_ALEN);
+	dst[5] += inc;
+	if (dst[5] < src[5])
+		dst[4]++;
+	if (dst[4] < src[4])
+		dst[3]++;
+}  /* inc_mac_addr */
 
 /**
  * sw_get_addr - get the switch MAC address.
@@ -2790,6 +2868,17 @@ static inline void sw_get_addr(struct ksz_sw *sw, u8 *mac_addr)
  */
 static void sw_set_addr(struct ksz_sw *sw, u8 *mac_addr)
 {
+	int p;
+	struct ksz_port_info *info;
+
+	for (p = 0; p < sw->mib_port_cnt; p++) {
+		info = &sw->port_info[p];
+#if 0
+		inc_mac_addr(info->mac_addr, mac_addr, p + 1);
+#else
+		inc_mac_addr(info->mac_addr, mac_addr, 0);
+#endif
+	}
 /**
  * THa  2015/07/17
  * Switch does not learn unicast address from port if the source address
@@ -2801,6 +2890,11 @@ static void sw_set_addr(struct ksz_sw *sw, u8 *mac_addr)
 #endif
 	memcpy(sw->info->mac_addr, mac_addr, 6);
 }  /* sw_set_addr */
+
+#define STP_ENTRY			0
+#define BROADCAST_ENTRY			1
+#define BRIDGE_ADDR_ENTRY		2
+#define IPV6_ADDR_ENTRY			3
 
 /**
  * sw_set_global_ctrl - set switch global control
@@ -2846,6 +2940,25 @@ static void sw_set_global_ctrl(struct ksz_sw *sw)
 	/* Enable no excessive collision drop. */
 	data |= NO_EXC_COLLISION_DROP;
 	SW_W(sw, REG_SW_CTRL_2, data);
+
+#ifdef CONFIG_KSZ_HSR
+	if (sw->features & HSR_HW) {
+		int n;
+
+		for (n = 0; n < sw->eth_cnt; n++) {
+			if (sw->eth_maps[n].proto & HSR_HW) {
+				if (sw->netdev[n]) {
+					sw->ops->release(sw);
+					sw->ops->cfg_mac(sw, BRIDGE_ADDR_ENTRY,
+						sw->netdev[n]->dev_addr,
+						sw->HOST_MASK, false, false, 0);
+					sw->ops->acquire(sw);
+				}
+				break;
+			}
+		}
+	}
+#endif
 }  /* sw_set_global_ctrl */
 
 /* -------------------------------------------------------------------------- */
@@ -2883,7 +2996,7 @@ static void port_set_stp_state(struct ksz_sw *sw, int port, int state)
 		data |= PORT_LEARN_DISABLE;
 		if (port < SWITCH_PORT_NUM &&
 		    STP_STATE_DISABLED == port_cfg->stp_state)
-			member = sw->HOST_MASK | (1 << port);
+			member = sw->HOST_MASK | port_cfg->vid_member;
 		break;
 	case STP_STATE_LEARNING:
 		data &= ~PORT_TX_ENABLE;
@@ -2893,6 +3006,12 @@ static void port_set_stp_state(struct ksz_sw *sw, int port, int state)
 	case STP_STATE_FORWARDING:
 		data |= (PORT_TX_ENABLE | PORT_RX_ENABLE);
 		data &= ~PORT_LEARN_DISABLE;
+		if (sw->features & STP_SUPPORT)
+			break;
+		if ((sw->features & (SW_VLAN_DEV | SKIP_FIRST_PORT)) &&
+		    port != sw->HOST_PORT)
+			/* Set port-base vlan membership with host port. */
+			member = sw->HOST_MASK | port_cfg->vid_member;
 		break;
 	case STP_STATE_BLOCKED:
 /*
@@ -2903,14 +3022,14 @@ static void port_set_stp_state(struct ksz_sw *sw, int port, int state)
 		data |= PORT_LEARN_DISABLE;
 		if (port < SWITCH_PORT_NUM &&
 		    STP_STATE_DISABLED == port_cfg->stp_state)
-			member = sw->HOST_MASK | (1 << port);
+			member = sw->HOST_MASK | port_cfg->vid_member;
 		break;
 	case STP_STATE_SIMPLE:
 		data |= (PORT_TX_ENABLE | PORT_RX_ENABLE);
 		data |= PORT_LEARN_DISABLE;
 		if (port < SWITCH_PORT_NUM)
 			/* Set port-base vlan membership with host port. */
-			member = sw->HOST_MASK | (1 << port);
+			member = sw->HOST_MASK | port_cfg->vid_member;
 		break;
 	}
 	port_w(sw, port, P_STP_CTRL, data);
@@ -2929,11 +3048,6 @@ static void port_set_stp_state(struct ksz_sw *sw, int port, int state)
 		sw_cfg_port_base_vlan(sw, port, (u8) member);
 }  /* port_set_stp_state */
 
-#define STP_ENTRY			0
-#define BROADCAST_ENTRY			1
-#define BRIDGE_ADDR_ENTRY		2
-#define IPV6_ADDR_ENTRY			3
-
 /**
  * sw_clr_sta_mac_table - clear static MAC table
  * @sw:		The switch instance.
@@ -2946,8 +3060,10 @@ static void sw_clr_sta_mac_table(struct ksz_sw *sw)
 	int i;
 
 	memset(&entry, 0, sizeof(struct ksz_mac_table));
+	sw->ops->release(sw);
 	for (i = 0; i < STATIC_MAC_TABLE_ENTRIES; i++)
 		sw_w_sta_mac_table(sw, i, &entry);
+	sw->ops->acquire(sw);
 }  /* sw_clr_sta_mac_table */
 
 /**
@@ -2970,142 +3086,21 @@ static void sw_setup_stp(struct ksz_sw *sw)
 	entry.use_fid = 0;
 	entry.override = 1;
 	entry.valid = 1;
+	sw->ops->release(sw);
 	sw_w_sta_mac_table(sw, STP_ENTRY, &entry);
+	sw->ops->acquire(sw);
 }  /* sw_setup_stp */
 
 #ifdef CONFIG_KSZ_STP
-/**
- * sw_block_addr - block certain packets from the host port
- * @sw:		The switch instance.
- *
- * This routine blocks certain packets from reaching to the host port.
- */
-static void sw_block_addr(struct ksz_sw *sw)
-{
-	struct ksz_mac_table entry;
-	int i;
-
-	for (i = BROADCAST_ENTRY; i <= IPV6_ADDR_ENTRY; i++) {
-		entry.override = 0;
-		entry.valid = 0;
-		sw_w_sta_mac_table(sw, i, &entry);
-	}
-}  /* sw_block_addr */
-
-static void sw_block_multi(struct ksz_sw *sw)
-{
-	struct ksz_mac_table *entry;
-	int i;
-
-	for (i = STATIC_MAC_TABLE_ENTRIES; i < MULTI_MAC_TABLE_ENTRIES; i++) {
-		entry = &sw->info->mac_table[i];
-		if (entry->ports)
-			entry->valid = 0;
-	}
-}  /* sw_block_multi */
-
-static void sw_setup_multi(struct ksz_sw *sw)
-{
-	struct ksz_mac_table *entry;
-	struct ksz_alu_table *alu;
-	int i;
-	u8 forward;
-	struct ksz_sw_info *info = sw->info;
-
-	i = MULTI_MAC_TABLE_ENTRIES;
-	forward = FWD_STP_DEV;
-	forward |= FWD_MAIN_DEV;
-
-	/* Used for V2 IGMP messages. */
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x01;
-	entry->mac_addr[1] = 0x00;
-	entry->mac_addr[2] = 0x5E;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x01;
-	entry->ports = sw->HOST_MASK;
-	alu = &info->alu_table[i];
-	alu->forward = forward;
-	alu->owner = sw->PORT_MASK;
-	alu->valid = 1;
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x33;
-	entry->mac_addr[1] = 0x33;
-	entry->mac_addr[2] = 0x00;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x01;
-	entry->ports = sw->HOST_MASK;
-	alu = &info->alu_table[i];
-	alu->forward = forward;
-	alu->owner = sw->PORT_MASK;
-	alu->valid = 1;
-
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x01;
-	entry->mac_addr[1] = 0x00;
-	entry->mac_addr[2] = 0x5E;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x02;
-	entry->ports = sw->HOST_MASK;
-	alu = &info->alu_table[i];
-	alu->forward = forward;
-	alu->owner = sw->PORT_MASK;
-	alu->valid = 1;
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x33;
-	entry->mac_addr[1] = 0x33;
-	entry->mac_addr[2] = 0x00;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x02;
-	entry->ports = sw->HOST_MASK;
-	alu = &info->alu_table[i];
-	alu->forward = forward;
-	alu->owner = sw->PORT_MASK;
-	alu->valid = 1;
-
-	/* Used for V3 IGMP messages. */
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x01;
-	entry->mac_addr[1] = 0x00;
-	entry->mac_addr[2] = 0x5E;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x16;
-	entry->ports = sw->HOST_MASK;
-	alu = &info->alu_table[i];
-	alu->forward = forward;
-	alu->owner = sw->PORT_MASK;
-	alu->valid = 1;
-	entry = &info->mac_table[--i];
-	entry->mac_addr[0] = 0x33;
-	entry->mac_addr[1] = 0x33;
-	entry->mac_addr[2] = 0x00;
-	entry->mac_addr[3] = 0x00;
-	entry->mac_addr[4] = 0x00;
-	entry->mac_addr[5] = 0x16;
-	entry->ports = sw->HOST_MASK;
-	alu = &info->alu_table[i];
-	alu->forward = forward;
-	alu->owner = sw->PORT_MASK;
-	alu->valid = 1;
-
-	info->multi_sys = i;
-}  /* sw_setup_multi */
-
 static void bridge_change(struct ksz_sw *sw)
 {
+	int c;
 	int port;
 	u8 member;
 	struct ksz_sw_info *info = sw->info;
-	int p;
+	int p = get_first_port(sw);
 
-	if (sw->port_cnt < sw->mib_port_cnt)
-		p = 1;
-	for (port = p; port < SWITCH_PORT_NUM; port++) {
+	for (c = 0, port = p; c < sw->port_cnt; c++, port++) {
 		if (STP_STATE_FORWARDING == info->port_cfg[port].stp_state)
 			member = sw->HOST_MASK | info->member;
 		else if (STP_STATE_DISABLED == info->port_cfg[port].stp_state)
@@ -3116,178 +3111,42 @@ static void bridge_change(struct ksz_sw *sw)
 			sw_cfg_port_base_vlan(sw, port, member);
 	}
 }  /* bridge_change */
+#endif
 
-/**
- * sw_pass_addr - allow certain packets to the host port
- * @sw:		The switch instance.
- *
- * This routine allows certain packets to reach the host port.
- */
-static void sw_pass_addr(struct ksz_sw *sw)
+#define MAX_SW_LEN			1500
+
+static void sw_setup_msg(struct sw_dev_info *info, void *data, int len,
+	void (*func)(void *data, void *param), void *param)
 {
-	struct ksz_mac_table entry;
-	int i;
-	struct ksz_sw_info *info = sw->info;
+	struct ksz_sw *sw = info->sw;
+	int in_intr = in_interrupt();
 
-	for (i = BROADCAST_ENTRY; i <= IPV6_ADDR_ENTRY; i++) {
-		switch (i) {
-		case BROADCAST_ENTRY:
-			memset(entry.addr, 0xFF, ETH_ALEN);
-			break;
-		case BRIDGE_ADDR_ENTRY:
-			memcpy(entry.addr, info->br_addr, ETH_ALEN);
-			break;
-		case IPV6_ADDR_ENTRY:
-			memcpy(entry.addr, info->br_addr, ETH_ALEN);
-			entry.addr[0] = 0x33;
-			entry.addr[1] = 0x33;
-			entry.addr[2] = 0xFF;
-			break;
-		}
-		entry.ports = sw->HOST_MASK;
-		entry.use_fid = 0;
-		entry.override = 0;
-		entry.valid = 1;
-		sw_w_sta_mac_table(sw, i, &entry);
+	if (len > MAX_SW_LEN)
+		len = MAX_SW_LEN;
+	if (!in_intr)
+		mutex_lock(&info->lock);
+	memcpy(sw->msg_buf, data, len);
+	if (func)
+		func(sw->msg_buf, param);
+	len += 2;
+	if (info->read_len + len <= info->read_max) {
+		u16 *msg_len = (u16 *) &info->read_buf[info->read_len];
+
+		*msg_len = len;
+		msg_len++;
+		memcpy(msg_len, sw->msg_buf, len - 2);
+		info->read_len += len;
 	}
-}  /* sw_pass_addr */
+	if (!in_intr)
+		mutex_unlock(&info->lock);
+	wake_up_interruptible(&info->wait_msg);
+}  /* sw_setup_msg */
 
-static void sw_pass_multi(struct ksz_sw *sw)
-{
-	struct ksz_mac_table *entry;
-	int i;
-
-	for (i = STATIC_MAC_TABLE_ENTRIES; i < MULTI_MAC_TABLE_ENTRIES; i++) {
-		entry = &sw->info->mac_table[i];
-		if (entry->ports)
-			entry->valid = 1;
-	}
-}  /* sw_pass_multi */
-
-static void monitor_ports(struct ksz_sw *sw)
-{
-	int port;
-	struct net_device *bridge_dev = NULL;
-	struct ksz_sw_info *info = sw->info;
-	u8 member = info->member;
-	u8 stp = info->stp;
-	u8 prev_stp = info->stp;
-	u8 stp_down = 0;
-	u8 state;
-	u8 forwarding[SWITCH_PORT_NUM];
-	int p = 0;
-
-	memset(forwarding, 0, SWITCH_PORT_NUM);
-	if (sw->port_cnt < sw->mib_port_cnt)
-		p = 1;
-	sw->ops->acquire(sw);
-	for (port = p; port < SWITCH_PORT_NUM; port++) {
-		struct net_device *dev = sw->netdev[port + sw->dev_offset];
-
-		state = sw->net_ops->get_port_state(dev, &bridge_dev);
-		if (state != STP_STATE_SIMPLE) {
-			stp |= (1 << port);
-			if (STP_STATE_DISABLED == state)
-				stp_down |= (1 << port);
-		} else {
-			stp &= ~(1 << port);
-			state = sw->net_ops->get_state(dev);
-		}
-		if (stp != info->stp) {
-			info->stp = stp;
-
-			/* Device just removed from bridge. */
-			if (!(stp & (1 << port))) {
-				if (netif_running(dev))
-					state = STP_STATE_SIMPLE;
-			}
-		}
-		sw->net_ops->set_state(dev, state);
-
-		if (info->port_cfg[port].stp_state != state) {
-			if (STP_STATE_FORWARDING ==
-					info->port_cfg[port].stp_state)
-				member &= ~(1 << port);
-			if (STP_STATE_FORWARDING == state)
-				member |= (1 << port);
-
-			/* Try to set forwarding after the other states. */
-			if (STP_STATE_FORWARDING == state)
-				forwarding[port] = true;
-			else
-				port_set_stp_state(sw, port, state);
-			if (STP_STATE_LEARNING == state ||
-			    STP_STATE_BLOCKED == state)
-				sw_flush_dyn_mac_table(sw, port);
-		}
-	}
-	for (port = 0; port < SWITCH_PORT_NUM; port++) {
-		if (forwarding[port])
-			port_set_stp_state(sw, port, STP_STATE_FORWARDING);
-	}
-	sw->ops->release(sw);
-	if (prev_stp != info->stp && !info->stp)
-		memset(info->br_addr, 0, ETH_ALEN);
-	if (stp_down != info->stp_down || prev_stp != info->stp) {
-		struct ksz_mac_table entry;
-
-		sw_r_sta_mac_table(sw, 0, &entry);
-		if (stp_down == info->stp) {
-
-			/* Turn off STP only when it is already setup. */
-			if (prev_stp == info->stp) {
-				entry.override = 0;
-				entry.valid = 0;
-				sw_w_sta_mac_table(sw, 0, &entry);
-
-				/* No ports in forwarding state. */
-				sw->ops->acquire(sw);
-				port_set_stp_state(sw, SWITCH_PORT_NUM,
-					STP_STATE_SIMPLE);
-				sw->ops->release(sw);
-				sw_block_addr(sw);
-				sw_block_multi(sw);
-			}
-		} else if (info->stp_down == info->stp ||
-				(!prev_stp && info->stp)) {
-			entry.override = 1;
-			entry.valid = 1;
-			sw_w_sta_mac_table(sw, 0, &entry);
-		}
-
-		/* Update disabled ports when STP is settled down. */
-		if (prev_stp == info->stp)
-			info->stp_down = stp_down;
-	}
-
-	if (member != info->member) {
-		int cnt = 0;
-
-		for (port = 0; port < SWITCH_PORT_NUM; port++)
-			if (member & (1 << port))
-				cnt++;
-		info->fwd_ports = cnt;
-
-		/* Have first member. */
-		if (!info->member) {
-
-			/* Force to program bridge address. */
-			info->br_addr[0] = 0xFF;
-		}
-		info->member = member;
-		sw->ops->acquire(sw);
-		bridge_change(sw);
-		sw->ops->release(sw);
-	}
-
-	/* At least one port in forwarding state. */
-	if (info->member && bridge_dev && memcmp(bridge_dev->dev_addr,
-			info->br_addr, ETH_ALEN)) {
-		memcpy(info->br_addr, bridge_dev->dev_addr, ETH_ALEN);
-		sw_pass_addr(sw);
-		sw_pass_multi(sw);
-	}
-}  /* monitor_ports */
+#ifdef CONFIG_KSZ_STP
+#include "ksz_stp.c"
+#endif
+#ifdef CONFIG_KSZ_HSR
+#include "ksz_hsr.c"
 #endif
 
 /*
@@ -3355,15 +3214,15 @@ static u8 sw_determine_flow_ctrl(struct ksz_sw *sw, struct ksz_port *port,
 		flow |= 0x01;
 	if (tx)
 		flow |= 0x02;
-#ifdef DEBUG
+#ifdef DBG_LINK
 	printk(KERN_INFO "pause: %d, %d; %02x %02x\n",
 		rx, tx, local, remote);
 #endif
 	return flow;
 }  /* sw_determine_flow_ctrl */
 
-static int port_chk_force_link(struct ksz_sw *sw, int p, SW_D remote,
-	SW_D status)
+static int port_chk_force_link(struct ksz_sw *sw, int p, SW_D local,
+	SW_D remote, SW_D status)
 {
 #define PORT_REMOTE_STATUS				\
 	(PORT_REMOTE_100BTX_FD | PORT_REMOTE_100BTX |	\
@@ -3376,6 +3235,11 @@ static int port_chk_force_link(struct ksz_sw *sw, int p, SW_D remote,
 
 	port_r(sw, p, P_FORCE_CTRL, &data);
 	if (data & PORT_AUTO_NEG_DISABLE)
+		return 0;
+	if ((local & (PORT_REMOTE_100BTX_FD | PORT_REMOTE_100BTX)) !=
+	    (PORT_REMOTE_100BTX_FD | PORT_REMOTE_100BTX) &&
+	    (local & (PORT_REMOTE_10BT_FD | PORT_REMOTE_10BT)) !=
+	    (PORT_REMOTE_10BT_FD | PORT_REMOTE_10BT))
 		return 0;
 	if (!(remote & PORT_REMOTE_SYM_PAUSE) &&
 	    (remote & PORT_REMOTE_STATUS) != PORT_REMOTE_STATUS) {
@@ -3447,10 +3311,15 @@ static int port_get_link_speed(struct ksz_port *port)
 	if (!sw->phy_intr)
 		sw->phy_intr = sw->PORT_MASK;
 	for (i = 0, p = port->first_port; i < port->port_cnt; i++, p++) {
-		if (!(sw->phy_intr & (1 << p)))
-			continue;
-
 		info = &sw->port_info[p];
+		if (!(sw->phy_intr & (1 << p))) {
+			if (!linked && p != sw->HOST_PORT &&
+			    info->state == media_connected)
+				linked = info;
+			continue;
+		}
+		sw->phy_intr &= ~(1 << p);
+
 		state = &sw->port_state[p];
 		port_r(sw, p, P_LOCAL_CTRL, &local);
 		port_r(sw, p, P_REMOTE_STATUS, &remote);
@@ -3462,6 +3331,8 @@ static int port_get_link_speed(struct ksz_port *port)
 		 * auto-negotiation is not completed yet.
 		 */
 		link = data & (PORT_AUTO_NEG_COMPLETE | PORT_STAT_LINK_GOOD);
+		link |= status &
+			(PORT_STAT_SPEED_100MBIT | PORT_STAT_FULL_DUPLEX);
 
 		if (data & PORT_STAT_LINK_GOOD) {
 
@@ -3470,16 +3341,25 @@ static int port_get_link_speed(struct ksz_port *port)
 				linked = info;
 		}
 
+#if 1
+		/* Bit 7 fluctuates in port 0. */
+		if (0 == p)
+			local &= ~PORT_AUTO_NEG_DISABLE;
+#endif
+
 		/* No change to status. */
 		if (local == info->advertised && link == info->link)
 			continue;
 
-#ifdef DEBUG
-		printk(KERN_INFO "advertised: %02X-%02X; partner: %02X-%02X\n",
-			local, info->advertised, remote, info->partner);
+#ifdef DBG_LINK
+		printk(KERN_INFO
+			"%d=advertised: %02X-%02X; partner: %02X-%02X"
+			"; link: %02X-%02X\n", p,
+			local, info->advertised, remote, info->partner,
+			link, info->link);
 #endif
 		if (data & PORT_STAT_LINK_GOOD) {
-			if (port_chk_force_link(sw, p, remote, status)) {
+			if (port_chk_force_link(sw, p, local, remote, status)) {
 				if (linked == info)
 					linked = NULL;
 				continue;
@@ -3492,7 +3372,7 @@ static int port_get_link_speed(struct ksz_port *port)
 			if (status & PORT_STAT_FULL_DUPLEX)
 				info->duplex = 2;
 
-#ifdef DEBUG
+#ifdef DBG_LINK
 			printk(KERN_INFO "flow_ctrl: "SW_SIZE_STR"\n", status &
 				(PORT_RX_FLOW_CTRL | PORT_TX_FLOW_CTRL));
 #endif
@@ -3507,7 +3387,8 @@ static int port_get_link_speed(struct ksz_port *port)
 					port_cfg_back_pressure(sw, p,
 						(1 == info->duplex));
 				change |= 1 << i;
-			}
+			} else if (link != info->link)
+				change |= 1 << i;
 			info->state = media_connected;
 		} else {
 			if (media_disconnected != info->state) {
@@ -3518,18 +3399,17 @@ static int port_get_link_speed(struct ksz_port *port)
 			}
 			info->state = media_disconnected;
 		}
-		state->state = info->state;
 		info->report = true;
 		info->advertised = local;
 		info->partner = remote;
 		info->link = link;
+		state->state = info->state;
 	}
-	sw->phy_intr = 0;
 
 	if (linked && media_disconnected == port->linked->state)
 		port->linked = linked;
 
-#ifdef DEBUG
+#ifdef DBG_LINK
 	if (change)
 		dbp_link(port, sw, change);
 #endif
@@ -3547,6 +3427,7 @@ static int port_get_link_speed(struct ksz_port *port)
 static void port_set_link_speed(struct ksz_port *port)
 {
 	struct ksz_sw *sw = port->sw;
+	struct ksz_port_info *info;
 	SW_D adv;
 	SW_D data;
 	SW_D local;
@@ -3555,6 +3436,11 @@ static void port_set_link_speed(struct ksz_port *port)
 	int p;
 
 	for (i = 0, p = port->first_port; i < port->port_cnt; i++, p++) {
+		info = &sw->port_info[p];
+		info->own_flow_ctrl = port->flow_ctrl;
+		info->own_duplex = port->duplex;
+		info->own_speed = port->speed;
+
 		port_r(sw, p, P_LOCAL_CTRL, &local);
 		port_r(sw, p, P_LINK_STATUS, &status);
 
@@ -3605,11 +3491,17 @@ static void port_set_link_speed(struct ksz_port *port)
 static void port_force_link_speed(struct ksz_port *port)
 {
 	struct ksz_sw *sw = port->sw;
+	struct ksz_port_info *info;
 	SW_D data;
 	int i;
 	int p;
 
 	for (i = 0, p = port->first_port; i < port->port_cnt; i++, p++) {
+		info = &sw->port_info[p];
+		info->own_flow_ctrl = port->flow_ctrl;
+		info->own_duplex = port->duplex;
+		info->own_speed = port->speed;
+
 		port_r(sw, p, P_FORCE_CTRL, &data);
 		data |= PORT_AUTO_NEG_DISABLE;
 		if (10 == port->speed)
@@ -3631,21 +3523,52 @@ static void port_force_link_speed(struct ksz_port *port)
  */
 static void sw_enable(struct ksz_sw *sw)
 {
+	int c;
 	int port;
-	int p = 0;
+	int state = STP_STATE_FORWARDING;
+	int p = get_first_port(sw);
 
-	if (sw->port_cnt < sw->mib_port_cnt)
-		p = 1;
-	for (port = p; port < SWITCH_PORT_NUM; port++) {
+	if (sw->features & DSA_SUPPORT)
+		state = STP_STATE_SIMPLE;
+
+	/* Manually change default membership when not all ports are used. */
+	if (sw->features & SKIP_FIRST_PORT) {
+		for (port = p; port < sw->mib_port_cnt; port++) {
+			port = chk_last_port(sw, port);
+			sw->info->port_cfg[port].vid_member = sw->PORT_MASK;
+		}
+		port_set_stp_state(sw, 0, STP_STATE_DISABLED);
+		sw_cfg_port_base_vlan(sw, sw->HOST_PORT, sw->PORT_MASK);
+	}
+	if (sw->dev_count > 1 || (sw->features & DSA_SUPPORT)) {
+		u8 member;
+
+		for (c = 0, port = p; c < sw->port_cnt; c++, port++) {
+			member = (1 << port);
+			if (sw->features & SW_VLAN_DEV) {
+				int q;
+
+				for (q = 0; q < sw->eth_cnt; q++)
+					if (sw->eth_maps[q].port <= port &&
+					    port < sw->eth_maps[q].port +
+					    sw->eth_maps[q].cnt) {
+						member = sw->eth_maps[q].mask;
+						break;
+					}
+			}
+			sw->info->port_cfg[port].vid_member = member;
+		}
+	}
+	for (c = 0, port = p; c < sw->port_cnt; c++, port++) {
 		if (sw->dev_count > 1)
 			port_set_stp_state(sw, port, STP_STATE_DISABLED);
 		else
-			port_set_stp_state(sw, port, STP_STATE_FORWARDING);
+			port_set_stp_state(sw, port, state);
 	}
 	if (sw->dev_count > 1)
-		port_set_stp_state(sw, SWITCH_PORT_NUM, STP_STATE_SIMPLE);
+		port_set_stp_state(sw, sw->HOST_PORT, STP_STATE_SIMPLE);
 	else
-		port_set_stp_state(sw, SWITCH_PORT_NUM, STP_STATE_FORWARDING);
+		port_set_stp_state(sw, sw->HOST_PORT, state);
 
 	/*
 	 * There may be some entries in the dynamic MAC table before the
@@ -3688,13 +3611,12 @@ static void sw_init(struct ksz_sw *sw)
  */
 static void sw_setup(struct ksz_sw *sw)
 {
+	int c;
 	int port;
-	int p = 0;
+	int p = get_first_port(sw);
 
 	sw_set_global_ctrl(sw);
-	if (sw->port_cnt < sw->mib_port_cnt)
-		p = 1;
-	for (port = p; port < SWITCH_PORT_NUM; port++) {
+	for (c = 0, port = p; c < sw->port_cnt; c++, port++) {
 		SW_D data;
 
 		port_cfg_back_pressure(sw, port, 1);
@@ -3715,23 +3637,18 @@ static void sw_setup(struct ksz_sw *sw)
 
 	sw_setup_mirror(sw);
 
+	sw->info->multi_sys = MULTI_MAC_TABLE_ENTRIES;
 	sw->info->multi_net = SWITCH_MAC_TABLE_ENTRIES;
 	if (sw->features & STP_SUPPORT) {
 		sw_setup_stp(sw);
-#ifdef CONFIG_KSZ_STP
-		sw_setup_multi(sw);
-#endif
 	}
-	sw_enable(sw);
 }  /* sw_setup */
 
 static inline void sw_reset(struct ksz_sw *sw)
 {
-#if 1
 	sw->reg->w8(sw, REG_POWER_MANAGEMENT_1,
 		SW_SOFTWARE_POWER_DOWN << SW_POWER_MANAGEMENT_MODE_S);
 	sw->reg->w8(sw, REG_POWER_MANAGEMENT_1, 0);
-#endif
 }  /* sw_reset */
 
 static int sw_reg_get(struct ksz_sw *sw, u32 reg, size_t count, char *buf)
@@ -3779,7 +3696,7 @@ static struct ksz_sw_reg_ops sw_reg_ops = {
 /* -------------------------------------------------------------------------- */
 
 /*
- * Micrel LinkMD routines
+ * Microchip LinkMD routines
  */
 
 enum {
@@ -3812,7 +3729,7 @@ enum {
 #define LINK_AUTO_POLARITY		0x00040000
 
 #define CABLE_LEN_MAXIMUM		15000
-#define CABLE_LEN_MULTIPLIER		41
+#define CABLE_LEN_MULTIPLIER		40
 
 #define PHY_RESET_TIMEOUT		10
 
@@ -3912,8 +3829,9 @@ static void hw_get_link_md(struct ksz_sw *sw, int port)
 			len = data & PORT_CABLE_FAULT_COUNTER_H;
 			len <<= 16;
 			len |= link;
-			port_info->length[i] = len *
-				CABLE_LEN_MULTIPLIER;
+			len *= CABLE_LEN_MULTIPLIER;
+			len /= 100;
+			port_info->length[i] = len;
 			if (data & PORT_CABLE_10M_SHORT)
 				port_info->length[i] = 1;
 			data >>= PORT_CABLE_DIAG_RESULT_S;
@@ -4074,6 +3992,7 @@ static int display_sw_mib_counters(struct ksz_sw *sw, int first, int cnt,
 	char *buf)
 {
 	int mib;
+	int n;
 	int len = 0;
 	u64 counter[TOTAL_SWITCH_COUNTER_NUM];
 
@@ -4094,6 +4013,28 @@ static int display_sw_mib_counters(struct ksz_sw *sw, int first, int cnt,
 				counter[rx],
 				mib_names[tx].string,
 				counter[tx]);
+	}
+	for (n = 0, mib = first; n < cnt; n++, mib++) {
+		int j;
+
+		for (j = 0; j < 2; j++) {
+			if (sw->port_mib[mib].rate[j].peak) {
+				u32 num;
+				u32 frac;
+
+				num = sw->port_mib[mib].rate[j].peak / 10;
+				frac = sw->port_mib[mib].rate[j].peak % 10;
+				if (buf)
+					len += sprintf(buf + len,
+						"%d:%d=%u.%u\n", mib, j,
+						num, frac);
+				else
+					printk(KERN_INFO 
+						"%d:%d=%u.%u\n", mib, j,
+						num, frac);
+				sw->port_mib[mib].rate[j].peak = 0;
+			}
+		}
 	}
 	return len;
 }  /* display_sw_mib_counters */
@@ -4478,6 +4419,10 @@ static ssize_t sysfs_sw_read(struct ksz_sw *sw, int proc_num,
 	case PROC_SW_INFO:
 		len = display_sw_info(sw->mib_port_cnt, buf, len);
 		break;
+	case PROC_SW_VERSION:
+		len += sprintf(buf + len, "%s  %s\n",
+			DRV_VERSION, DRV_RELDATE);
+		break;
 	case PROC_SET_SW_DUPLEX:
 		if (!port)
 			break;
@@ -4565,11 +4510,16 @@ static ssize_t sysfs_sw_read(struct ksz_sw *sw, int proc_num,
 		len += sprintf(buf + len, "0x%04x\n", sw->vid);
 		break;
 	case PROC_GET_PORTS:
-		if (sw->port_cnt == sw->mib_port_cnt)
-			len += sprintf(buf + len, "%u\n", sw->mib_port_cnt - 1);
-		else
-			len += sprintf(buf + len, "%u\n", sw->port_cnt);
+	{
+		int ports = sw->port_cnt;
+
+		if (sw->eth_cnt > 1)
+			ports = sw->eth_maps[0].cnt + 0;
+		else if (sw->port_cnt == sw->mib_port_cnt)
+			ports = sw->mib_port_cnt - 1;
+		len += sprintf(buf + len, "%u\n", ports);
 		break;
+	}
 	case PROC_GET_DEV_START:
 	{
 		int start = 0;
@@ -4589,8 +4539,12 @@ static ssize_t sysfs_sw_read(struct ksz_sw *sw, int proc_num,
 		break;
 	}
 	case PROC_GET_STP:
+#if 0
 		len += sprintf(buf + len, "%u\n",
 			!!(sw->features & STP_SUPPORT));
+#else
+		len += sprintf(buf + len, "0\n");
+#endif
 		break;
 	case PROC_SET_SW_FEATURES:
 		len += sprintf(buf + len, "%08x:\n", sw->features);
@@ -4602,6 +4556,12 @@ static ssize_t sysfs_sw_read(struct ksz_sw *sw, int proc_num,
 			VLAN_PORT_REMOVE_TAG);
 		len += sprintf(buf + len, "\t%08x = VLAN port tag tailing\n",
 			VLAN_PORT_TAGGING);
+#ifdef CONFIG_KSZ_HSR
+		len += sprintf(buf + len, "\t%08x = HSR support\n",
+			HSR_HW);
+#endif
+		len += sprintf(buf + len, "\t%08x = DSA support\n",
+			DSA_SUPPORT);
 		len += sprintf(buf + len, "\t%08x = different MAC addresses\n",
 			DIFF_MAC_ADDR);
 		break;
@@ -4616,6 +4576,16 @@ static ssize_t sysfs_sw_read(struct ksz_sw *sw, int proc_num,
 		len += sprintf(buf + len, "\t%08x = tail tagging\n",
 			TAIL_TAGGING);
 		break;
+	case PROC_DYNAMIC:
+		len = sw_d_dyn_mac_table(sw, buf, len);
+		break;
+	case PROC_STATIC:
+		len = sw_d_sta_mac_table(sw, buf, len);
+		len = sw_d_mac_table(sw, buf, len);
+		break;
+	case PROC_VLAN:
+		len = sw_d_vlan_table(sw, buf, len);
+		break;
 	}
 	return len;
 }  /* sysfs_sw_read */
@@ -4624,194 +4594,162 @@ static ssize_t sysfs_sw_read_hw(struct ksz_sw *sw, int proc_num, ssize_t len,
 	char *buf)
 {
 	u8 data[8];
+	int chk = 0;
+	int type = SHOW_HELP_ON_OFF;
+	char note[40];
 
+	note[0] = '\0';
 	switch (proc_num) {
 	case PROC_SET_AGING:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, REG_SW_CTRL_1,
-				SW_AGING_ENABLE));
+		chk = sw_chk(sw, REG_SW_CTRL_1, SW_AGING_ENABLE);
 		break;
 	case PROC_SET_FAST_AGING:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, REG_SW_CTRL_1,
-				SW_FAST_AGING));
+		chk = sw_chk(sw, REG_SW_CTRL_1, SW_FAST_AGING);
 		break;
 	case PROC_SET_LINK_AGING:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, S_LINK_AGING_CTRL,
-				SW_LINK_AUTO_AGING));
+		chk = sw_chk(sw, S_LINK_AGING_CTRL, SW_LINK_AUTO_AGING);
 		break;
 	case PROC_SET_MULTICAST_STORM:
-		len += sprintf(buf + len, "%u\n",
-			!sw_chk(sw, REG_SW_CTRL_2,
-				MULTICAST_STORM_DISABLE));
+		chk = !sw_chk(sw, REG_SW_CTRL_2, MULTICAST_STORM_DISABLE);
+		break;
+	case PROC_SET_TX_RATE_QUEUE_BASED:
+		chk = sw_chk(sw, REG_SW_CTRL_19,
+			SW_OUT_RATE_LIMIT_QUEUE_BASED);
 		break;
 	case PROC_ENABLE_VLAN:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, S_MIRROR_CTRL,
-				SW_VLAN_ENABLE));
+		chk = sw_chk(sw, S_MIRROR_CTRL, SW_VLAN_ENABLE);
 		break;
 	case PROC_SET_REPLACE_NULL_VID:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, S_REPLACE_VID_CTRL,
-				SW_REPLACE_VID));
+		chk = sw_chk(sw, S_REPLACE_VID_CTRL, SW_REPLACE_VID);
 		break;
 	case PROC_SET_MAC_ADDR:
 		sw_get_addr(sw, data);
 		len += sprintf(buf + len, "%02X:%02X:%02X:%02X:%02X:%02X\n",
 			data[0], data[1], data[2], data[3], data[4], data[5]);
+		type = SHOW_HELP_NONE;
 		break;
 	case PROC_SET_MIRROR_MODE:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk_mirror_rx_tx(sw));
+		chk = sw_chk_mirror_rx_tx(sw);
+		if (sw->verbose) {
+			if (chk)
+				strcpy(note, " (rx and tx)");
+			else
+				strcpy(note, " (rx or tx)");
+		}
+		type = SHOW_HELP_SPECIAL;
 		break;
 	case PROC_SET_IGMP_SNOOP:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, S_MIRROR_CTRL,
-				SW_IGMP_SNOOP));
+		chk = sw_chk(sw, S_MIRROR_CTRL, SW_IGMP_SNOOP);
 		break;
 	case PROC_SET_TAIL_TAG:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, S_TAIL_TAG_CTRL,
-				SW_TAIL_TAG_ENABLE));
+		chk = sw_chk(sw, S_TAIL_TAG_CTRL, SW_TAIL_TAG_ENABLE);
 		break;
 	case PROC_SET_AGGR_BACKOFF:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, REG_SW_CTRL_1,
-				SW_AGGR_BACKOFF));
+		chk = sw_chk(sw, REG_SW_CTRL_1, SW_AGGR_BACKOFF);
 		break;
 	case PROC_SET_NO_EXC_DROP:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, REG_SW_CTRL_2,
-				NO_EXC_COLLISION_DROP));
+		chk = sw_chk(sw, REG_SW_CTRL_2, NO_EXC_COLLISION_DROP);
 		break;
 	case PROC_SET_VLAN_BOUNDARY:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, REG_SW_CTRL_2,
-				UNICAST_VLAN_BOUNDARY));
+		chk = sw_chk(sw, REG_SW_CTRL_2, UNICAST_VLAN_BOUNDARY);
 		break;
 	case PROC_SET_HUGE_PACKET:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, S_HUGE_PACKET_CTRL,
-				SW_HUGE_PACKET));
+		chk = sw_chk(sw, S_HUGE_PACKET_CTRL, SW_HUGE_PACKET);
 		break;
 	case PROC_SET_LEGAL_PACKET:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, REG_SW_CTRL_2,
-				SW_LEGAL_PACKET));
+		chk = sw_chk(sw, REG_SW_CTRL_2, SW_LEGAL_PACKET);
 		break;
 	case PROC_SET_LENGTH_CHECK:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, REG_SW_CTRL_1,
-				SW_CHECK_LENGTH));
+		chk = sw_chk(sw, REG_SW_CTRL_1, SW_CHECK_LENGTH);
 		break;
 	case PROC_SET_BACK_PRESSURE_MODE:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, REG_SW_CTRL_2,
-				SW_BACK_PRESSURE));
+		chk = sw_chk(sw, REG_SW_CTRL_2, SW_BACK_PRESSURE);
 		break;
 	case PROC_SET_SWITCH_FLOW_CTRL:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, S_REPLACE_VID_CTRL,
-				SW_FLOW_CTRL));
+		chk = sw_chk(sw, S_REPLACE_VID_CTRL, SW_FLOW_CTRL);
 		break;
 	case PROC_SET_SWITCH_HALF_DUPLEX:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, S_REPLACE_VID_CTRL,
-				SW_HALF_DUPLEX));
+		chk = sw_chk(sw, S_REPLACE_VID_CTRL, SW_HALF_DUPLEX);
 		break;
 #ifdef SW_10_MBIT
 	case PROC_SET_SWITCH_10_MBIT:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, S_REPLACE_VID_CTRL,
-				SW_10_MBIT));
+		chk = sw_chk(sw, S_REPLACE_VID_CTRL, SW_10_MBIT);
 		break;
 #endif
 	case PROC_SET_RX_FLOW_CTRL:
-		len += sprintf(buf + len, "%u\n",
-			!sw_chk(sw, REG_SW_CTRL_1,
-				SW_RX_FLOW_CTRL_DISABLE));
+		chk = !sw_chk(sw, REG_SW_CTRL_1, SW_RX_FLOW_CTRL_DISABLE);
 		break;
 	case PROC_SET_TX_FLOW_CTRL:
-		len += sprintf(buf + len, "%u\n",
-			!sw_chk(sw, REG_SW_CTRL_1,
-				SW_TX_FLOW_CTRL_DISABLE));
+		chk = !sw_chk(sw, REG_SW_CTRL_1, SW_TX_FLOW_CTRL_DISABLE);
 		break;
 	case PROC_SET_FAIR_FLOW_CTRL:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, REG_SW_CTRL_2,
-				FAIR_FLOW_CTRL));
+		chk = sw_chk(sw, REG_SW_CTRL_2, FAIR_FLOW_CTRL);
 		break;
 	case PROC_SET_FORWARD_UNKNOWN_UNICAST:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk_unk_dest(sw, REG_SW_UNK_UCAST_CTRL));
+		chk = sw_chk_unk_dest(sw, REG_SW_UNK_UCAST_CTRL);
 		break;
 	case PROC_SET_FORWARD_UNKNOWN_UNICAST_PORTS:
-		len += sprintf(buf + len, "0x%x\n",
-			sw_chk_unk_def_port(sw, REG_SW_UNK_UCAST_CTRL,
-				sw->mib_port_cnt));
+		chk = sw_chk_unk_def_port(sw, REG_SW_UNK_UCAST_CTRL,
+			sw->mib_port_cnt);
+		type = SHOW_HELP_HEX;
 		break;
 	case PROC_SET_FORWARD_UNKNOWN_MULTICAST:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk_unk_dest(sw, REG_SW_UNK_MCAST_CTRL));
+		chk = sw_chk_unk_dest(sw, REG_SW_UNK_MCAST_CTRL);
 		break;
 	case PROC_SET_FORWARD_UNKNOWN_MULTICAST_PORTS:
-		len += sprintf(buf + len, "0x%x\n",
-			sw_chk_unk_def_port(sw, REG_SW_UNK_MCAST_CTRL,
-				sw->mib_port_cnt));
+		chk = sw_chk_unk_def_port(sw, REG_SW_UNK_MCAST_CTRL,
+			sw->mib_port_cnt);
+		type = SHOW_HELP_HEX;
 		break;
 	case PROC_SET_FORWARD_UNKNOWN_VID:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk_unk_dest(sw, REG_SW_UNK_VID_CTRL));
+		chk = sw_chk_unk_dest(sw, REG_SW_UNK_VID_CTRL);
 		break;
 	case PROC_SET_FORWARD_UNKNOWN_VID_PORTS:
-		len += sprintf(buf + len, "0x%x\n",
-			sw_chk_unk_def_port(sw, REG_SW_UNK_VID_CTRL,
-				sw->mib_port_cnt));
+		chk = sw_chk_unk_def_port(sw, REG_SW_UNK_VID_CTRL,
+			sw->mib_port_cnt);
+		type = SHOW_HELP_HEX;
 		break;
 	case PROC_SET_FORWARD_UNKNOWN_IP_MULTICAST:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk_unk_dest(sw, REG_SW_UNK_IP_MCAST_CTRL));
+		chk = sw_chk_unk_dest(sw, REG_SW_UNK_IP_MCAST_CTRL);
 		break;
 	case PROC_SET_FORWARD_UNKNOWN_IP_MULTICAST_PORTS:
-		len += sprintf(buf + len, "0x%x\n",
-			sw_chk_unk_def_port(sw, REG_SW_UNK_IP_MCAST_CTRL,
-				sw->mib_port_cnt));
+		chk = sw_chk_unk_def_port(sw, REG_SW_UNK_IP_MCAST_CTRL,
+			sw->mib_port_cnt);
+		type = SHOW_HELP_HEX;
 		break;
 	case PROC_SET_SELF_ADDR_FILTER:
-		len += sprintf(buf + len, "%d\n",
-			sw_chk_self_filter(sw));
+		chk = sw_chk_self_filter(sw);
 		break;
 	case PROC_SET_INS_TAG:
-		len += sprintf(buf + len, "%d\n",
-			sw_chk_ins_tag(sw));
+		chk = sw_chk_ins_tag(sw);
 		break;
 	case PROC_SET_PASS_ALL:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, REG_SW_CTRL_1,
-				SW_PASS_ALL));
+		chk = sw_chk(sw, REG_SW_CTRL_1, SW_PASS_ALL);
 		break;
 	case PROC_SET_PASS_PAUSE:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk(sw, S_PASS_PAUSE_CTRL,
-				SW_PASS_PAUSE));
+		chk = sw_chk(sw, S_PASS_PAUSE_CTRL, SW_PASS_PAUSE);
 		break;
 	case PROC_SET_HI_PRIO_QUEUES:
-		len += sprintf(buf + len, "%u\n",
-			sw_get_hi_prio_queues(sw));
+		chk = sw_get_hi_prio_queues(sw);
+		if (sw->verbose) {
+			switch (chk) {
+			case 3:
+				strcpy(note, " (3 = H; 2, 1, 0 = L)");
+				break;
+			case 1:
+				strcpy(note, " (3, 2, 1 = H; 0 = L)");
+				break;
+			default:
+				strcpy(note, " (3, 2 = H; 1, 0 = L)");
+			}
+		}
+		type = SHOW_HELP_SPECIAL;
 		break;
-	case PROC_DYNAMIC:
-		sw_d_dyn_mac_table(sw);
-		break;
-	case PROC_STATIC:
-		sw_d_sta_mac_table(sw);
-		sw_d_mac_table(sw);
-		break;
-	case PROC_VLAN:
-		sw_d_vlan_table(sw);
+	default:
+		type = SHOW_HELP_NONE;
 		break;
 	}
-	return len;
+	return sysfs_show(len, buf, type, chk, note, sw->verbose);
 }  /* sysfs_sw_read_hw */
 
 static int sysfs_sw_write(struct ksz_sw *sw, int proc_num,
@@ -4826,6 +4764,7 @@ static int sysfs_sw_write(struct ksz_sw *sw, int proc_num,
 	switch (proc_num) {
 	case PROC_SW_INFO:
 		sw_init(sw);
+		sw->verbose = !!num;
 		break;
 	case PROC_SET_SW_DUPLEX:
 		if (!port)
@@ -4843,9 +4782,12 @@ static int sysfs_sw_write(struct ksz_sw *sw, int proc_num,
 		if (!port)
 			break;
 		port->force_link = (u8) num;
-		if (port->force_link)
+		if (port->force_link) {
 			port_force_link_speed(port);
-		else
+			sw->phy_intr = sw->PORT_MASK;
+			port_get_link_speed(port);
+			sw->phy_intr = 0;
+		} else
 			port_set_link_speed(port);
 		break;
 	case PROC_SET_SW_FLOW_CTRL:
@@ -4874,9 +4816,10 @@ static int sysfs_sw_write(struct ksz_sw *sw, int proc_num,
 		changes = sw->features ^ num;
 		sw->features = num;
 		if (changes & VLAN_PORT_REMOVE_TAG) {
+			int c;
 			int i;
 			int enabled;
-			int p = 0;
+			int p = get_first_port(sw);
 
 			if (num & VLAN_PORT_REMOVE_TAG) {
 				enabled = true;
@@ -4885,9 +4828,7 @@ static int sysfs_sw_write(struct ksz_sw *sw, int proc_num,
 				enabled = false;
 				sw->overrides &= ~TAG_REMOVE;
 			}
-			if (sw->port_cnt < sw->mib_port_cnt)
-				p = 1;
-			for (i = p; i < SWITCH_PORT_NUM; i++) {
+			for (c = 0, i = p; c < sw->port_cnt; c++, i++) {
 				port_cfg_rmv_tag(sw, i, enabled);
 			}
 		}
@@ -4917,6 +4858,10 @@ static int sysfs_sw_write(struct ksz_sw *sw, int proc_num,
 		break;
 	case PROC_SET_MULTICAST_STORM:
 		sw_cfg(sw, REG_SW_CTRL_2, MULTICAST_STORM_DISABLE, !num);
+		break;
+	case PROC_SET_TX_RATE_QUEUE_BASED:
+		sw_cfg(sw, REG_SW_CTRL_19, SW_OUT_RATE_LIMIT_QUEUE_BASED,
+			num);
 		break;
 	case PROC_SET_DIFFSERV:
 		count = sscanf(buf, "%d=%x", (unsigned int *) &num, &val);
@@ -5056,11 +5001,16 @@ static ssize_t sysfs_port_read(struct ksz_sw *sw, int proc_num, int port,
 {
 	struct ksz_port_cfg *port_cfg;
 	struct ksz_port_info *port_info;
+	int chk = 0;
+	int type = SHOW_HELP_NONE;
+	char note[40];
 
+	note[0] = '\0';
+	port += sw->ops->get_first_port(sw);
 	port_cfg = &sw->info->port_cfg[port];
 	port_info = &sw->port_info[port];
 	switch (proc_num) {
-	case PROC_GET_PORT_DUPLEX:
+	case PROC_SET_PORT_DUPLEX:
 		if (media_connected == port_info->state) {
 			if (1 == port_info->duplex)
 				len += sprintf(buf + len, "half-duplex\n");
@@ -5069,7 +5019,7 @@ static ssize_t sysfs_port_read(struct ksz_sw *sw, int proc_num, int port,
 		} else
 			len += sprintf(buf + len, "unlinked\n");
 		break;
-	case PROC_GET_PORT_SPEED:
+	case PROC_SET_PORT_SPEED:
 		if (media_connected == port_info->state)
 			len += sprintf(buf + len, "%u\n",
 				port_info->tx_rate / TX_RATE_UNIT);
@@ -5084,230 +5034,240 @@ static ssize_t sysfs_port_read(struct ksz_sw *sw, int proc_num, int port,
 			port_info->length[0], port_info->status[0],
 			port_info->length[1], port_info->status[1],
 			port_info->length[2], port_info->status[2]);
+		if (sw->verbose)
+			len += sprintf(buf + len,
+				"(%d=unknown; %d=normal; %d=open; %d=short)\n",
+				CABLE_UNKNOWN, CABLE_GOOD, CABLE_OPEN,
+				CABLE_SHORT);
 		break;
 	case PROC_SET_PORT_BASED:
-		len += sprintf(buf + len, "%u\n",
-			port_cfg->port_prio);
+		chk = port_cfg->port_prio;
+		type = SHOW_HELP_NUM;
 		break;
 	case PROC_SET_DEF_VID:
-		len += sprintf(buf + len, "0x%04x\n",
-			port_cfg->vid);
+		chk = port_cfg->vid;
+		type = SHOW_HELP_HEX_4;
 		break;
 	case PROC_SET_MEMBER:
-		len += sprintf(buf + len, "0x%02x\n",
-			port_cfg->member);
+		chk = port_cfg->member;
+		type = SHOW_HELP_HEX_2;
 		break;
 	case PROC_SET_TX_Q0_CTRL:
-		len += sprintf(buf + len, "%u\n", (int)
-			(port_cfg->rate_ctrl[0] & RATE_CTRL_ENABLE) != 0);
+		chk = (port_cfg->rate_ctrl[0] & RATE_CTRL_ENABLE) != 0;
+		type = SHOW_HELP_ON_OFF;
 		break;
 	case PROC_SET_TX_Q1_CTRL:
-		len += sprintf(buf + len, "%u\n", (int)
-			(port_cfg->rate_ctrl[1] & RATE_CTRL_ENABLE) != 0);
+		chk = (port_cfg->rate_ctrl[1] & RATE_CTRL_ENABLE) != 0;
+		type = SHOW_HELP_ON_OFF;
 		break;
 	case PROC_SET_TX_Q2_CTRL:
-		len += sprintf(buf + len, "%u\n", (int)
-			(port_cfg->rate_ctrl[2] & RATE_CTRL_ENABLE) != 0);
+		chk = (port_cfg->rate_ctrl[2] & RATE_CTRL_ENABLE) != 0;
+		type = SHOW_HELP_ON_OFF;
 		break;
 	case PROC_SET_TX_Q3_CTRL:
-		len += sprintf(buf + len, "%u\n", (int)
-			(port_cfg->rate_ctrl[3] & RATE_CTRL_ENABLE) != 0);
+		chk = (port_cfg->rate_ctrl[3] & RATE_CTRL_ENABLE) != 0;
+		type = SHOW_HELP_ON_OFF;
 		break;
 	case PROC_SET_TX_Q0_RATIO:
-		len += sprintf(buf + len, "%u\n", (int)
-			port_cfg->rate_ctrl[0] & RATE_RATIO_M);
+		chk = port_cfg->rate_ctrl[0] & RATE_RATIO_M;
+		type = SHOW_HELP_NUM;
 		break;
 	case PROC_SET_TX_Q1_RATIO:
-		len += sprintf(buf + len, "%u\n", (int)
-			port_cfg->rate_ctrl[1] & RATE_RATIO_M);
+		chk = port_cfg->rate_ctrl[1] & RATE_RATIO_M;
+		type = SHOW_HELP_NUM;
 		break;
 	case PROC_SET_TX_Q2_RATIO:
-		len += sprintf(buf + len, "%u\n", (int)
-			port_cfg->rate_ctrl[2] & RATE_RATIO_M);
+		chk = port_cfg->rate_ctrl[2] & RATE_RATIO_M;
+		type = SHOW_HELP_NUM;
 		break;
 	case PROC_SET_TX_Q3_RATIO:
-		len += sprintf(buf + len, "%u\n", (int)
-			port_cfg->rate_ctrl[3] & RATE_RATIO_M);
+		chk = port_cfg->rate_ctrl[3] & RATE_RATIO_M;
+		type = SHOW_HELP_NUM;
 		break;
 	case PROC_SET_RX_LIMIT:
-		len += sprintf(buf + len, "%u\n",
-			((port_cfg->rate_limit >> PORT_IN_LIMIT_MODE_S) &
-			PORT_IN_LIMIT_MODE_M));
+		chk = ((port_cfg->rate_limit >> PORT_IN_LIMIT_MODE_S) &
+			PORT_IN_LIMIT_MODE_M);
+		if (sw->verbose) {
+			switch (chk) {
+			case 1:
+				strcpy(note, " (flooded unicast)");
+				break;
+			case 2:
+				strcpy(note, " (multicast)");
+				break;
+			case 3:
+				strcpy(note, " (broadcast)");
+				break;
+			default:
+				strcpy(note, " (all)");
+			}
+		}
+		type = SHOW_HELP_SPECIAL;
 		break;
 	case PROC_SET_RX_LIMIT_FLOW_CTRL:
-		len += sprintf(buf + len, "%u\n",
-			((port_cfg->rate_limit >> PORT_IN_FLOW_CTRL_S)
-			& 1));
+		chk = ((port_cfg->rate_limit >> PORT_IN_FLOW_CTRL_S) & 1);
+		type = SHOW_HELP_ON_OFF;
 		break;
 	case PROC_SET_CNT_IFG:
-		len += sprintf(buf + len, "%u\n",
-			((port_cfg->rate_limit >> PORT_COUNT_IFG_S)
-			& 1));
+		chk = ((port_cfg->rate_limit >> PORT_COUNT_IFG_S) & 1);
+		type = SHOW_HELP_ON_OFF;
 		break;
 	case PROC_SET_CNT_PRE:
-		len += sprintf(buf + len, "%u\n",
-			((port_cfg->rate_limit >> PORT_COUNT_PREAMBLE_S)
-			& 1));
+		chk = ((port_cfg->rate_limit >> PORT_COUNT_PREAMBLE_S) & 1);
+		type = SHOW_HELP_ON_OFF;
 		break;
 	case PROC_SET_RX_P0_RATE:
-		len += sprintf(buf + len, "%u %s\n", (int)
-			port_cfg->rx_rate[0], "bbs");
+		chk = port_cfg->rx_rate[0];
+		if (sw->verbose)
+			strcpy(note, " (bps)");
+		type = SHOW_HELP_SPECIAL;
 		break;
 	case PROC_SET_RX_P1_RATE:
-		len += sprintf(buf + len, "%u %s\n", (int)
-			port_cfg->rx_rate[1], "bbs");
+		chk = port_cfg->rx_rate[1];
+		if (sw->verbose)
+			strcpy(note, " (bps)");
+		type = SHOW_HELP_SPECIAL;
 		break;
 	case PROC_SET_RX_P2_RATE:
-		len += sprintf(buf + len, "%u %s\n", (int)
-			port_cfg->rx_rate[2], "bbs");
+		chk = port_cfg->rx_rate[2];
+		if (sw->verbose)
+			strcpy(note, " (bps)");
+		type = SHOW_HELP_SPECIAL;
 		break;
 	case PROC_SET_RX_P3_RATE:
-		len += sprintf(buf + len, "%u %s\n", (int)
-			port_cfg->rx_rate[3], "bbs");
+		chk = port_cfg->rx_rate[3];
+		if (sw->verbose)
+			strcpy(note, " (bps)");
+		type = SHOW_HELP_SPECIAL;
 		break;
 	case PROC_SET_TX_Q0_RATE:
-		len += sprintf(buf + len, "%u %s\n", (int)
-			port_cfg->tx_rate[0], "bbs");
+		chk = port_cfg->tx_rate[0];
+		if (sw->verbose)
+			strcpy(note, " (bps)");
+		type = SHOW_HELP_SPECIAL;
 		break;
 	case PROC_SET_TX_Q1_RATE:
-		len += sprintf(buf + len, "%u %s\n", (int)
-			port_cfg->tx_rate[1], "bbs");
+		chk = port_cfg->tx_rate[1];
+		if (sw->verbose)
+			strcpy(note, " (bps)");
+		type = SHOW_HELP_SPECIAL;
 		break;
 	case PROC_SET_TX_Q2_RATE:
-		len += sprintf(buf + len, "%u %s\n", (int)
-			port_cfg->tx_rate[2], "bbs");
+		chk = port_cfg->tx_rate[2];
+		if (sw->verbose)
+			strcpy(note, " (bps)");
+		type = SHOW_HELP_SPECIAL;
 		break;
 	case PROC_SET_TX_Q3_RATE:
-		len += sprintf(buf + len, "%u %s\n", (int)
-			port_cfg->tx_rate[3], "bbs");
+		chk = port_cfg->tx_rate[3];
+		if (sw->verbose)
+			strcpy(note, " (bps)");
+		type = SHOW_HELP_SPECIAL;
 		break;
 	}
-	return len;
+	return sysfs_show(len, buf, type, chk, note, sw->verbose);
 }  /* sysfs_port_read */
 
 static ssize_t sysfs_port_read_hw(struct ksz_sw *sw, int proc_num, int port,
 	ssize_t len, char *buf)
 {
+	int chk = 0;
+	int type = SHOW_HELP_ON_OFF;
+	char note[40];
+
+	note[0] = '\0';
+	port += sw->ops->get_first_port(sw);
 	switch (proc_num) {
 	case PROC_ENABLE_BROADCAST_STORM:
-		len += sprintf(buf + len, "%d\n",
-			port_chk_broad_storm(sw, port));
+		chk = port_chk_broad_storm(sw, port);
 		break;
 	case PROC_ENABLE_DIFFSERV:
-		len += sprintf(buf + len, "%d\n",
-			port_chk_diffserv(sw, port));
+		chk = port_chk_diffserv(sw, port);
 		break;
 	case PROC_ENABLE_802_1P:
-		len += sprintf(buf + len, "%d\n",
-			port_chk_802_1p(sw, port));
+		chk = port_chk_802_1p(sw, port);
 		break;
 	case PROC_ENABLE_PRIO_QUEUE:
-		len += sprintf(buf + len, "%d\n",
-			port_get_prio_queue(sw, port));
+		chk = port_get_prio_queue(sw, port);
+		type = SHOW_HELP_NUM;
 		break;
 	case PROC_SET_MIRROR_PORT:
-		len += sprintf(buf + len, "%u\n",
-			port_chk_mirror_sniffer(sw, port));
+		chk = port_chk_mirror_sniffer(sw, port);
 		break;
 	case PROC_SET_MIRROR_RX:
-		len += sprintf(buf + len, "%u\n",
-			port_chk_mirror_rx(sw, port));
+		chk = port_chk_mirror_rx(sw, port);
 		break;
 	case PROC_SET_MIRROR_TX:
-		len += sprintf(buf + len, "%u\n",
-			port_chk_mirror_tx(sw, port));
+		chk = port_chk_mirror_tx(sw, port);
 		break;
 	case PROC_SET_RX:
-		len += sprintf(buf + len, "%u\n",
-			port_chk_rx(sw, port));
+		chk = port_chk_rx(sw, port);
 		break;
 	case PROC_SET_TX:
-		len += sprintf(buf + len, "%u\n",
-			port_chk_tx(sw, port));
+		chk = port_chk_tx(sw, port);
 		break;
 	case PROC_SET_LEARN:
-		len += sprintf(buf + len, "%u\n",
-			!port_chk_dis_learn(sw, port));
+		chk = !port_chk_dis_learn(sw, port);
 		break;
 	case PROC_SET_INSERT_TAG:
-		len += sprintf(buf + len, "%u\n",
-			port_chk_ins_tag(sw, port));
+		chk = port_chk_ins_tag(sw, port);
 		break;
 	case PROC_SET_REMOVE_TAG:
-		len += sprintf(buf + len, "%u\n",
-			port_chk_rmv_tag(sw, port));
+		chk = port_chk_rmv_tag(sw, port);
 		break;
 	case PROC_SET_DROP_TAG:
-		len += sprintf(buf + len, "%u\n",
-			port_chk_drop_tag(sw, port));
+		chk = port_chk_drop_tag(sw, port);
 		break;
 	case PROC_SET_REPLACE_PRIO:
-		len += sprintf(buf + len, "%u\n",
-			port_chk_replace_prio(sw, port));
+		chk = port_chk_replace_prio(sw, port);
 		break;
 	case PROC_ENABLE_RX_PRIO_RATE:
-		len += sprintf(buf + len, "%d\n",
-			sw_chk_rx_prio_rate(sw, port));
+		chk = sw_chk_rx_prio_rate(sw, port);
 		break;
 	case PROC_ENABLE_TX_PRIO_RATE:
-		len += sprintf(buf + len, "%d\n",
-			sw_chk_tx_prio_rate(sw, port));
+		chk = sw_chk_tx_prio_rate(sw, port);
 		break;
 	case PROC_SET_DIS_NON_VID:
-		len += sprintf(buf + len, "%u\n",
-			port_chk_dis_non_vid(sw, port));
+		chk = port_chk_dis_non_vid(sw, port);
 		break;
 	case PROC_SET_INGRESS:
-		len += sprintf(buf + len, "%u\n",
-			port_chk_in_filter(sw, port));
+		chk = port_chk_in_filter(sw, port);
 		break;
 	case PROC_SET_BACK_PRESSURE:
-		len += sprintf(buf + len, "%u\n",
-			port_chk_back_pressure(sw, port));
+		chk = port_chk_back_pressure(sw, port);
 		break;
 	case PROC_SET_FORCE_FLOW_CTRL:
-		len += sprintf(buf + len, "%u\n",
-			port_chk_force_flow_ctrl(sw, port));
+		chk = port_chk_force_flow_ctrl(sw, port);
 		break;
 	case PROC_SET_INS_TAG_0:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk_ins(sw, port, 0));
+		chk = sw_chk_ins(sw, port, 0);
 		break;
 	case PROC_SET_INS_TAG_1:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk_ins(sw, port, 1));
+		chk = sw_chk_ins(sw, port, 1);
 		break;
 	case PROC_SET_INS_TAG_2:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk_ins(sw, port, 2));
+		chk = sw_chk_ins(sw, port, 2);
 		break;
 	case PROC_SET_INS_TAG_3:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk_ins(sw, port, 3));
+		chk = sw_chk_ins(sw, port, 3);
 		break;
 	case PROC_SET_INS_TAG_4:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk_ins(sw, port, 4));
+		chk = sw_chk_ins(sw, port, 4);
 		break;
 	case PROC_SET_UNKNOWN_UNICAST_PORT:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk_unk_def_port(sw, REG_SW_UNK_UCAST_CTRL, port));
+		chk = sw_chk_unk_def_port(sw, REG_SW_UNK_UCAST_CTRL, port);
 		break;
 	case PROC_SET_UNKNOWN_MULTICAST_PORT:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk_unk_def_port(sw, REG_SW_UNK_MCAST_CTRL, port));
+		chk = sw_chk_unk_def_port(sw, REG_SW_UNK_MCAST_CTRL, port);
 		break;
 	case PROC_SET_UNKNOWN_VID_PORT:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk_unk_def_port(sw, REG_SW_UNK_VID_CTRL, port));
+		chk = sw_chk_unk_def_port(sw, REG_SW_UNK_VID_CTRL, port);
 		break;
 	case PROC_SET_UNKNOWN_IP_MULTICAST_PORT:
-		len += sprintf(buf + len, "%u\n",
-			sw_chk_unk_def_port(sw, REG_SW_UNK_IP_MCAST_CTRL,
-				port));
+		chk = sw_chk_unk_def_port(sw, REG_SW_UNK_IP_MCAST_CTRL, port);
 		break;
 	}
-	return len;
+	return sysfs_show(len, buf, type, chk, note, sw->verbose);
 }  /* sysfs_port_read_hw */
 
 static int sysfs_port_write(struct ksz_sw *sw, int proc_num, int port,
@@ -5315,7 +5275,32 @@ static int sysfs_port_write(struct ksz_sw *sw, int proc_num, int port,
 {
 	int processed = true;
 
+	port += sw->ops->get_first_port(sw);
 	switch (proc_num) {
+	case PROC_SET_PORT_DUPLEX:
+	case PROC_SET_PORT_SPEED:
+	{
+		struct ksz_port phy_port;
+		struct ksz_port_info *port_info = &sw->port_info[port];
+
+		if ((PROC_SET_PORT_DUPLEX == proc_num && num > 2) ||
+		    (PROC_SET_PORT_SPEED == proc_num &&
+		    num != 0 && num != 10 && num != 100))
+			break;
+
+		phy_port.sw = sw;
+		phy_port.port_cnt = 1;
+		phy_port.first_port = port;
+		phy_port.flow_ctrl = port_info->own_flow_ctrl;
+		phy_port.duplex = port_info->own_duplex;
+		phy_port.speed = port_info->own_speed;
+		if (PROC_SET_PORT_DUPLEX == proc_num)
+			phy_port.duplex = (u8) num;
+		else
+			phy_port.speed = (u16) num;
+		port_set_link_speed(&phy_port);
+		break;
+	}
 	case PROC_SET_PORT_MIB:
 		sw_cfg_mib_counter_ctrl(sw, num, port);
 		break;
@@ -5347,7 +5332,8 @@ static int sysfs_port_write(struct ksz_sw *sw, int proc_num, int port,
 		sw_cfg_port_base_vlan(sw, port, (u8) num);
 		break;
 	case PROC_ENABLE_PRIO_QUEUE:
-		port_set_prio_queue(sw, port, num);
+		if (0 <= num && num <= 4)
+			port_set_prio_queue(sw, port, num);
 		break;
 	case PROC_SET_INS_TAG_0:
 		sw_cfg_ins(sw, port, 0, num);
@@ -5795,8 +5781,8 @@ static void sw_cfg_vlan(struct ksz_sw *sw, u8 index, u16 vid, u16 fid,
 	memset(&vlan, 0, sizeof(struct ksz_vlan_table));
 	vlan.vid = vid;
 	vlan.fid = (u8) fid;
-	vlan.member = (u8) ports;
-	vlan.valid = vlan.member != 0;
+	vlan.member = (u8)(ports & sw->PORT_MASK);
+	vlan.valid = ports != 0;
 	sw_w_vlan_table(sw, vlan.vid, &vlan);
 }  /* sw_cfg_vlan */
 
@@ -5810,6 +5796,8 @@ static u8 sw_alloc_mac(struct ksz_sw *sw)
 			return i;
 		}
 	}
+
+	/* Reject request. */
 	return 0;
 }  /* sw_alloc_mac */
 
@@ -5827,7 +5815,51 @@ static void sw_free_vlan(struct ksz_sw *sw, u8 index)
 {
 }  /* sw_free_vlan */
 
-static int sw_get_id(struct ksz_sw *sw, u8 *id1, u8 *id2)
+static u16 sw_alloc_fid(struct ksz_sw *sw, u16 vid)
+{
+	int x;
+	int y;
+	u16 fid;
+
+	if (sw->info->fid_cnt + 2 == FID_ENTRIES)
+		return 0;
+	fid = vid & (FID_ENTRIES - 1);
+	if (vid < 2)
+		fid = 100;
+	x = fid / FID_IN_DATA;
+	y = fid % FID_IN_DATA;
+	while (sw->info->fid[x] & (1 << y)) {
+		++fid;
+		++y;
+		if (y >= FID_IN_DATA) {
+			y = 0;
+			++x;
+		}
+	}
+	sw->info->fid[x] |= (1 << y);
+	++sw->info->fid_cnt;
+	return fid;
+}  /* sw_alloc_fid */
+
+static void sw_free_fid(struct ksz_sw *sw, u16 fid)
+{
+	int x;
+	int y;
+
+	x = fid / FID_IN_DATA;
+	y = fid % FID_IN_DATA;
+	if (sw->info->fid[x] & (1 << y)) {
+		sw->info->fid[x] &= ~(1 << y);
+		--sw->info->fid_cnt;
+	}
+}  /* sw_free_fid */
+
+#define FAMILY_ID_88			0x95
+#define CHIP_ID_8895			0x40
+#define CHIP_ID_8895R			0x60
+#define CHIP_ID_8864			0x90
+
+static int sw_get_id(struct ksz_sw *sw, u8 *id1, u8 *id2, char *name)
 {
 	int id;
 	int i;
@@ -5839,8 +5871,24 @@ static int sw_get_id(struct ksz_sw *sw, u8 *id1, u8 *id2)
 	i >>= 8;
 	*id1 = (u8) i;
 	*id2 = (u8) j;
+	switch (i) {
+	case FAMILY_ID_88:
+		strcat(name, "88");
+		switch (j) {
+		case CHIP_ID_8895:
+		case CHIP_ID_8895R:
+			strcat(name, "95");
+			break;
+		case CHIP_ID_8864:
+			strcat(name, "64");
+			break;
+		}
+		break;
+	}
+	if (name[0] && !name[2])
+		strcat(name, "xx");
 	return id;
-}
+}  /* sw_get_id */
 
 static void sw_cfg_tail_tag(struct ksz_sw *sw, int enable)
 {
@@ -5849,6 +5897,7 @@ static void sw_cfg_tail_tag(struct ksz_sw *sw, int enable)
 
 static int sw_port_to_phy_addr(struct ksz_sw *sw, int p)
 {
+	p += sw->ops->get_first_port(sw);
 	if (0 <= p && p <= sw->mib_port_cnt)
 		return p;
 	return -1;
@@ -5856,17 +5905,21 @@ static int sw_port_to_phy_addr(struct ksz_sw *sw, int p)
 
 static void sw_cfg_each_port(struct ksz_sw *sw, int p, int cpu)
 {
-	if (!cpu)
-		sw_cfg_port_base_vlan(sw, p, sw->HOST_MASK | (1 << p));
-	else
-		sw_cfg_port_base_vlan(sw, p, sw->PORT_MASK);
+	if (cpu)
+		p = sw->HOST_PORT;
+	else {
+		p += sw->ops->get_first_port(sw);
+		if (p > sw->mib_port_cnt)
+			return;
+		sw->info->port_cfg[p].vid_member = sw->HOST_MASK | (1 << p);
+	}
+	port_set_stp_state(sw, p, STP_STATE_SIMPLE);
 }
 
 static void sw_set_port_addr(struct ksz_sw *sw, int p, u8 *addr)
 {
 }
 
-#ifdef CONFIG_KSZ_STP
 static void sw_set_multi(struct ksz_sw *sw, struct net_device *dev,
 	struct ksz_port *priv)
 {
@@ -5912,7 +5965,7 @@ static void sw_set_multi(struct ksz_sw *sw, struct net_device *dev,
 			entry = &info->mac_table[i];
 			alu = &info->alu_table[i];
 			if (alu->valid &&
-			    !memcmp(entry->mac_addr, ha->addr, ETH_ALEN)) {
+			    !memcmp(entry->addr, ha->addr, ETH_ALEN)) {
 				found = i + 1;
 				break;
 			}
@@ -5936,266 +5989,27 @@ static void sw_set_multi(struct ksz_sw *sw, struct net_device *dev,
 				alu->forward |= FWD_MAIN_DEV;
 			alu->owner |= owner;
 			alu->valid = 1;
-			memcpy(entry->mac_addr, ha->addr, ETH_ALEN);
+			memcpy(entry->addr, ha->addr, ETH_ALEN);
 			entry->ports = sw->PORT_MASK;
 			entry->valid = 1;
 		}
 	}
 }  /* sw_set_multi */
 
-static void sw_add_frame(struct ksz_sw *sw, u32 crc, unsigned long now,
-	unsigned long expired, int num, int port, int max,
-	struct ksz_frame_table *table, int *cnt)
-{
-	struct ksz_frame_table *entry;
-	int i;
-
-	/* Table full. */
-	if (max == *cnt) {
-		for (i = 0; i < max; i++) {
-			entry = &table[i];
-			if (entry->expired &&
-					time_after(now, entry->expired)) {
-				entry->expired = 0;
-				--(*cnt);
-			}
-		}
-	}
-	for (i = 0; i < max; i++) {
-		entry = &table[i];
-		if (!entry->expired) {
-			entry->crc = crc;
-			entry->cnt = num;
-			entry->port = port;
-			if (0 == expired)
-				expired = 1;
-			entry->expired = expired;
-			++(*cnt);
-			break;
-		}
-	}
-}  /* sw_add_frame */
-
-static int sw_del_frame(struct ksz_sw *sw, u32 crc, unsigned long now,
-	int port, int max, struct ksz_frame_table *table, int *cnt)
-{
-	struct ksz_frame_table *entry;
-	int i;
-	int num = 0;
-
-	for (i = 0; i < max; i++) {
-		entry = &table[i];
-		if (!entry->expired)
-			continue;
-		if (crc == entry->crc && port != entry->port) {
-			if (time_after(now, entry->expired)) {
-				entry->expired = 0;
-				--(*cnt);
-				break;
-			}
-			--entry->cnt;
-
-			/* No need to retain the entry. */
-			if (!entry->cnt) {
-				entry->expired = 0;
-				--(*cnt);
-			}
-			return i + 1;
-		}
-		++num;
-		if (num == *cnt)
-			break;
-	}
-	return 0;
-}  /* sw_del_frame */
-
-static void sw_add_rx(struct ksz_sw *sw, u32 crc, unsigned long now,
-	unsigned long expired, int num, int port)
-{
-	struct ksz_rx_table *info = &sw->info->rx_table;
-
-	sw_add_frame(sw, crc, now, expired, num, port,
-		RX_TABLE_ENTRIES, info->table, &info->cnt);
-}  /* sw_add_rx */
-
-static int sw_del_rx(struct ksz_sw *sw, u32 crc, unsigned long now, int port)
-{
-	struct ksz_rx_table *info = &sw->info->rx_table;
-
-	return sw_del_frame(sw, crc, now, port, RX_TABLE_ENTRIES, info->table,
-		&info->cnt);
-}  /* sw_del_rx */
-
-static void sw_add_tx(struct ksz_sw *sw, u32 crc, unsigned long now,
-	unsigned long expired, int num, int port)
-{
-	struct ksz_tx_table *info = &sw->info->tx_table;
-
-	sw_add_frame(sw, crc, now, expired, num, port,
-		TX_TABLE_ENTRIES, info->table, &info->cnt);
-}  /* sw_add_tx */
-
-static int sw_del_tx(struct ksz_sw *sw, u32 crc, unsigned long now, int port)
-{
-	struct ksz_tx_table *info = &sw->info->tx_table;
-
-	return sw_del_frame(sw, crc, now, port, TX_TABLE_ENTRIES, info->table,
-		&info->cnt);
-}  /* sw_del_tx */
-
-static int sw_blocked_rx(struct ksz_sw *sw, u8 *data)
-{
-	int i;
-
-	for (i = 0; i < sw->info->blocked_rx_cnt; i++)
-		if (!memcmp(data, sw->info->blocked_rx[i], ETH_ALEN))
-			return true;
-	if (BLOCKED_RX_ENTRIES == i)
-		sw->info->blocked_rx_cnt = 0;
-	memcpy(sw->info->blocked_rx[sw->info->blocked_rx_cnt++], data,
-		ETH_ALEN);
-	return false;
-}  /* sw_blocked_rx */
-
-static int sw_block_rx(struct ksz_sw *sw, u8 *data, int len, int port)
-{
-	struct ksz_mac_table *entry;
-	struct ksz_alu_table *alu;
-	u32 crc;
-	int i;
-	int forward = 0;
-
-	for (i = 0; i < MULTI_MAC_TABLE_ENTRIES; i++) {
-
-		/*
-		 * Special case of checking the frame is forwarded to the host.
-		 * All entries before STATIC_MAC_TABLE_ENTRIES should have
-		 * FWD_HOST.
-		 */
-		if (!len && STATIC_MAC_TABLE_ENTRIES == i)
-			break;
-
-		entry = &sw->info->mac_table[i];
-		if (!entry->valid ||
-		    memcmp(data, entry->addr, ETH_ALEN))
-			continue;
-
-		/* Block if received port is closed. */
-		if (len && !entry->override && !(sw->rx_ports & (1 << port)))
-			break;
-
-		alu = &sw->info->alu_table[i];
-		forward = alu->forward;
-
-		/* Allow to reach host as the frame is not forwarded. */
-		if (alu->forward & FWD_HOST)
-			break;
-
-		/* Remember the frame when forwarding to STP device. */
-		if ((alu->forward & FWD_STP_DEV) && sw->info->fwd_ports > 1) {
-			unsigned long now;
-
-			/* Port is zero-based. */
-			port++;
-			crc = ether_crc(len, data);
-			now = jiffies;
-			sw_add_rx(sw, crc, now, now + 1000 / HZ,
-				sw->info->fwd_ports - 1, port);
-		}
-		break;
-	}
-
-	/*
-	 * Check port state in case it is changed after processing arrived
-	 * BPDU.
-	 */
-	if (forward && len && !i)
-		schedule_delayed_work(sw->stp_monitor, 1);
-	return forward;
-}  /* sw_block_rx */
-
-static int sw_block_tx(struct ksz_sw *sw, u8 *data, int len, int port)
-{
-	struct ksz_mac_table *entry;
-	struct ksz_alu_table *alu;
-	int i;
-	u32 crc = 0;
-	unsigned long now = 0;
-	int block = false;
-	int forward = 0;
-
-	for (i = 0; i < MULTI_MAC_TABLE_ENTRIES; i++) {
-		entry = &sw->info->mac_table[i];
-		if (!entry->valid ||
-		    memcmp(data, entry->addr, ETH_ALEN))
-			continue;
-
-		alu = &sw->info->alu_table[i];
-		forward = alu->forward;
-
-		/* No need to block. */
-		if (alu->forward & FWD_HOST)
-			break;
-
-		/* Check frame is not forwarded by software. */
-		if (port && (alu->forward & FWD_STP_DEV) &&
-		    sw->info->fwd_ports > 1) {
-			crc = ether_crc(len, data);
-			now = jiffies;
-			if (sw_del_rx(sw, crc, now, port)) {
-				if ((1 << (port - 1)) & sw->info->member) {
-					block = true;
-					forward = 0;
-				}
-			}
-		}
-		break;
-	}
-
-	/* Check duplicate frames sent by main and STP devices. */
-	if ((forward & (FWD_MAIN_DEV | FWD_STP_DEV)) ==
-	    (FWD_MAIN_DEV | FWD_STP_DEV)) {
-
-		/* Re-use CRC if already calculated. */
-		if (!now) {
-			crc = ether_crc(len, data);
-			now = jiffies;
-		}
-		if (sw_del_tx(sw, crc, now, !!port))
-			block = true;
-		else
-			sw_add_tx(sw, crc, now, now + 100 / HZ, 1, !!port);
-	}
-	return block;
-}  /* sw_block_tx */
-
-static int sw_stp_rx(struct ksz_sw *sw, struct net_device *dev,
-	struct sk_buff *skb, int port, int *forward)
-{
-	if ((sw->features & STP_SUPPORT) && br_port_exists(dev)) {
-		*forward = sw_block_rx(sw, skb->data, skb->len, port);
-		if (!*forward && sw->dev_offset && dev != sw->netdev[0]) {
-			dev = sw->netdev[0];
-			if ((dev->flags & IFF_PROMISC) ||
-			    ((dev->flags & IFF_ALLMULTI) &&
-			    (skb->data[0] & 1)))
-				*forward = FWD_MAIN_DEV;
-		}
-		return true;
-	}
-	return false;
-}  /* sw_stp_rx */
-#endif
-
 static struct net_device *sw_rx_dev(struct ksz_sw *sw, u8 *data, u32 *len,
 	int *tag, int *port)
 {
 	struct net_device *dev;
+	int index = -1;
+	int vid = 0;
+#ifdef CONFIG_NET_DSA_TAG_TAIL
+	u32 org_len = *len;
+#endif
 
 	/* Get received port number. */
 	if (sw->overrides & TAIL_TAGGING) {
 		(*len)--;
-		*tag = data[*len - 4];
+		*tag = data[*len];
 
 		/* In case tagging is not working right. */
 		if (*tag >= SWITCH_PORT_NUM)
@@ -6203,17 +6017,44 @@ static struct net_device *sw_rx_dev(struct ksz_sw *sw, u8 *data, u32 *len,
 
 		/* Save receiving port. */
 		*port = *tag;
+		index = sw->info->port_cfg[*tag].index;
 	}
-	dev = sw->netdev[*tag + sw->dev_offset];
-	if (sw->dev_count > 1) {
-		u8 stp;
 
-		stp = sw->info->stp & sw->info->stp_down;
-		if (stp & (1 << *tag))
-			return NULL;
-		if (!netif_running(dev))
-			return NULL;
+#ifdef CONFIG_NET_DSA_TAG_TAIL
+	/* DSA has its function to read the tail tag. */
+	if (sw->features & DSA_SUPPORT) {
+		*len = org_len;
+		return sw->netdev[0];
 	}
+#endif
+
+	/* Determine network device from VLAN id. */
+	if (index < 0) {
+		struct vlan_ethhdr *vlan = (struct vlan_ethhdr *) data;
+
+		index = 0;
+		if (vlan->h_vlan_proto == htons(ETH_P_8021Q)) {
+			u16 vlan_tci = ntohs(vlan->h_vlan_TCI);
+
+			vid = vlan_tci & VLAN_VID_MASK;
+		}
+		if (vid && (sw->features & SW_VLAN_DEV)) {
+			int p;
+
+			for (p = 0; p < sw->eth_cnt; p++) {
+				if (vid == sw->eth_maps[p].vlan) {
+					*port = sw->eth_maps[p].port;
+					index = sw->info->port_cfg[*port].index;
+					break;
+				}
+			}
+		}
+	}
+	if (index >= sw->dev_count + sw->dev_offset) {
+		printk(KERN_INFO "  [%s] netdev not correct\n", __func__);
+		BUG();
+	}
+	dev = sw->netdev[index];
 	if (sw->features & VLAN_PORT_TAGGING) {
 		(*tag)++;
 		if (!(sw->vlan_id & (1 << *tag)))
@@ -6277,7 +6118,7 @@ static struct net_device *sw_parent_rx(struct ksz_sw *sw,
 			forward = FWD_MAIN_DEV | FWD_STP_DEV;
 		if ((forward & (FWD_MAIN_DEV | FWD_STP_DEV)) ==
 		    (FWD_MAIN_DEV | FWD_STP_DEV))
-			*parent_skb = skb_copy(skb, GFP_ATOMIC);
+			*parent_skb = skb_clone(skb, GFP_ATOMIC);
 		else if (!(forward & FWD_STP_DEV))
 			dev = *parent_dev;
 	}
@@ -6298,7 +6139,7 @@ static int sw_port_vlan_rx(struct ksz_sw *sw, struct net_device *dev,
 	if (!tag || !(sw->features & VLAN_PORT))
 		return false;
 	tag += VLAN_PORT_START;
-	vlan_skb = skb_copy(skb, GFP_ATOMIC);
+	vlan_skb = skb_clone(skb, GFP_ATOMIC);
 	if (!vlan_skb)
 		return false;
 	skb_reset_mac_header(vlan_skb);
@@ -6328,13 +6169,95 @@ static int sw_drv_rx(struct ksz_sw *sw, struct sk_buff *skb, int port)
 {
 	int ret = 1;
 
+#ifdef CONFIG_KSZ_STP
+	if (sw->features & STP_SUPPORT) {
+		ret = stp_rcv(&sw->info->rstp, skb, port);
+		if (!ret)
+			return ret;
+	}
+#endif
+#ifdef CONFIG_KSZ_HSR
+	if (sw->features & HSR_HW) {
+		ret = hsr_rcv(&sw->info->hsr, skb, port);
+
+		/* It is an HSR frame or consumed. */
+		if (ret < 2)
+			return ret;
+	}
+#endif
+
+	/* Need to remove VLAN tag if not using tail tag. */
+	if (sw->dev_count > 1 && (sw->features & SW_VLAN_DEV) &&
+	    !(sw->overrides & TAIL_TAGGING)) {
+		struct vlan_ethhdr *vlan = (struct vlan_ethhdr *) skb->data;
+
+		if (vlan->h_vlan_proto == htons(ETH_P_8021Q)) {
+			int p;
+			int vid;
+			struct ethhdr *eth;
+			u16 vlan_tci = ntohs(vlan->h_vlan_TCI);
+
+			vid = vlan_tci & VLAN_VID_MASK;
+			for (p = 0; p < sw->eth_cnt; p++) {
+				if (vid == sw->eth_maps[p].vlan) {
+					eth = (struct ethhdr *)
+						skb_pull(skb, VLAN_HLEN);
+					memmove(eth, vlan, 12);
+					break;
+				}
+			}
+		}
+	}
 	return ret;
 }  /* sw_drv_rx */
 
-static int sw_get_tx_len(struct ksz_sw *sw, struct sk_buff *skb)
+static int sw_get_mtu(struct ksz_sw *sw)
+{
+	int need_tail_tag = false;
+	int header = 0;
+	int mtu = 0;
+
+#ifdef CONFIG_KSZ_HSR
+	if (sw->features & HSR_HW)
+		need_tail_tag = true;
+#endif
+	if (sw->dev_count > 1 && !(sw->features & SW_VLAN_DEV))
+		need_tail_tag = true;
+	if (sw->features & VLAN_PORT_TAGGING)
+		need_tail_tag = true;
+	if (sw->features & (STP_SUPPORT | DSA_SUPPORT))
+		need_tail_tag = true;
+	if (need_tail_tag)
+		mtu += 1;
+#ifdef CONFIG_KSZ_HSR
+	if (sw->features & HSR_HW)
+		header = HSR_HLEN;
+#endif
+	if (sw->features & SW_VLAN_DEV)
+		if (header < VLAN_HLEN)
+			header = VLAN_HLEN;
+	mtu += header;
+	return mtu;
+}  /* sw_get_mtu */
+
+static int sw_get_tx_len(struct ksz_sw *sw, struct sk_buff *skb, int port,
+	int *header)
 {
 	int len = skb->len;
+	int hlen = 0;
 
+	if (sw->features & SW_VLAN_DEV)
+		hlen = VLAN_HLEN;
+#ifdef CONFIG_KSZ_HSR
+	do {
+		int i;
+
+		i = sw->info->port_cfg[port].index;
+		if (sw->eth_cnt && (sw->eth_maps[i].proto & HSR_HW))
+			hlen = HSR_HLEN;
+	} while (0);
+#endif
+	*header += hlen;
 	if (!(sw->overrides & TAIL_TAGGING))
 		return len;
 	if (len < 60)
@@ -6351,6 +6274,10 @@ static void sw_add_tail_tag(struct ksz_sw *sw, struct sk_buff *skb, int ports)
 	trailer = skb_put(skb, len);
 	if (!ports)
 		ports = TAIL_TAG_LOOKUP;
+	else if (ports & 0x80000000) {
+		ports &= ~0x80000000;
+		ports |= TAIL_TAG_OVERRIDE;
+	}
 	trailer[0] = (u8) ports;
 }  /* sw_add_tail_tag */
 
@@ -6362,6 +6289,40 @@ static int sw_get_tail_tag(u8 *trailer, int *port)
 	return len;
 }  /* sw_get_tail_tag */
 
+static int sw_get_phys_port(struct ksz_sw *sw, int port)
+{
+	int p = sw->ops->get_first_port(sw);
+
+	port += p;
+	return port;
+}  /* sw_get_phy_port */
+
+static int sw_get_virt_port(struct ksz_sw *sw, int port)
+{
+	int p = sw->ops->get_first_port(sw);
+
+	port -= p;
+	return port;
+}  /* sw_get_virt_port */
+
+static void sw_add_vid(struct ksz_sw *sw, u16 vid)
+{
+	if ((sw->features & VLAN_PORT) && vid >= VLAN_PORT_START) {
+		vid -= VLAN_PORT_START;
+		if (vid <= SWITCH_PORT_NUM)
+			sw->vlan_id |= (1 << vid);
+	}
+}  /* sw_add_vid */
+
+static void sw_kill_vid(struct ksz_sw *sw, u16 vid)
+{
+	if ((sw->features & VLAN_PORT) && vid >= VLAN_PORT_START) {
+		vid -= VLAN_PORT_START;
+		if (vid <= SWITCH_PORT_NUM)
+			sw->vlan_id &= ~(1 << vid);
+	}
+}  /* sw_kill_vid */
+
 static int add_frag(void *from, char *to, int offset, int len, int odd,
 	struct sk_buff *skb)
 {
@@ -6369,20 +6330,71 @@ static int add_frag(void *from, char *to, int offset, int len, int odd,
 	return 0;
 }
 
+static struct sk_buff *sw_ins_vlan(struct ksz_sw *sw, int port,
+	struct sk_buff *skb)
+{
+#ifdef CONFIG_KSZ_HSR
+	do {
+		int i = sw->info->port_cfg[port].index;
+
+		if (sw->eth_cnt && (sw->eth_maps[i].proto & HSR_HW))
+			return skb;
+	} while (0);
+#endif
+
+	/* Need to insert VLAN tag. */
+	if (sw->dev_count > 1 && (sw->features & SW_VLAN_DEV)) {
+		u16 vid;
+		struct vlan_ethhdr *vlan;
+		struct ethhdr *eth = (struct ethhdr *) skb->data;
+
+		vid = sw->info->port_cfg[port].vid;
+		vlan = (struct vlan_ethhdr *) skb_push(skb, VLAN_HLEN);
+		memmove(vlan, eth, 12);
+		vlan->h_vlan_TCI = htons(vid);
+		vlan->h_vlan_proto = htons(ETH_P_8021Q);
+	}
+	return skb;
+}  /* sw_ins_vlan */
+
+#ifdef CONFIG_KSZ_HSR
+static struct sk_buff *sw_ins_hsr(struct ksz_sw *sw, int port,
+	struct sk_buff *skb, u8 *ports)
+{
+	int i = sw->info->port_cfg[port].index;
+
+	if (sw->eth_cnt && (sw->eth_maps[i].proto & HSR_HW)) {
+		struct ksz_hsr_info *info = &sw->info->hsr;
+		struct hsr_port *from =
+			hsr_port_get_hsr(&info->hsr, HSR_PT_MASTER);
+
+		if (!hsr_forward_skb(skb, from))
+			return NULL;
+		*ports = info->member;
+	}
+	return skb;
+}  /* sw_ins_hsr */
+#endif
+
 static struct sk_buff *sw_check_skb(struct ksz_sw *sw, struct sk_buff *skb,
 	struct ksz_port *priv, void *ptr,
 	int (*update_msg)(u8 *data, u32 port, u32 overrides))
 {
 	int len;
 	int port;
+	u8 dest;
 	struct sk_buff *org_skb;
 	int update_dst = (sw->overrides & TAIL_TAGGING);
 
 	if (!update_dst)
-		return skb;
+		return sw_ins_vlan(sw, priv->first_port, skb);
 
 #ifdef CONFIG_NET_DSA_TAG_TAIL
 	if (skb->protocol == htons(ETH_P_TRAILER))
+		return skb;
+#endif
+#ifdef CONFIG_KSZ_STP
+	if (skb->protocol == htons(STP_TAG_TYPE))
 		return skb;
 #endif
 
@@ -6396,9 +6408,12 @@ static struct sk_buff *sw_check_skb(struct ksz_sw *sw, struct sk_buff *skb,
 	do {
 		u16 prio;
 		u16 vid;
+		int i = sw->info->port_cfg[priv->first_port].index;
+		u32 features = sw->features;
 
-		if (!(sw->features & VLAN_PORT) || port ||
-				vlan_get_tag(skb, &vid))
+		if (sw->features & SW_VLAN_DEV)
+			features = sw->eth_maps[i].proto;
+		if (!(features & VLAN_PORT) || port || vlan_get_tag(skb, &vid))
 			break;
 		prio = vid & VLAN_PRIO_MASK;
 		vid &= VLAN_VID_MASK;
@@ -6428,8 +6443,15 @@ static struct sk_buff *sw_check_skb(struct ksz_sw *sw, struct sk_buff *skb,
 			skb->len -= VLAN_HLEN;
 		}
 	} while (0);
-	if (!(sw->overrides & TAIL_TAGGING))
-		return skb;
+
+	dest = 0;
+	if (port)
+		dest = 1 << (port - 1);
+#ifdef CONFIG_KSZ_HSR
+	skb = sw_ins_hsr(sw, priv->first_port, skb, &dest);
+	if (!skb)
+		return NULL;
+#endif
 
 	/* Socket buffer has no fragments. */
 	if (!skb_shinfo(skb)->nr_frags) {
@@ -6454,26 +6476,7 @@ static struct sk_buff *sw_check_skb(struct ksz_sw *sw, struct sk_buff *skb,
 			skb->len = 60;
 		}
 		len = skb->len;
-		skb->data[len] = 0;
-		if (port)
-			skb->data[len] = 1 << (port - 1);
-#ifdef CONFIG_KSZ_STP
-		if (sw->features & STP_SUPPORT) {
-			int forward = sw_block_rx(sw, skb->data, 0, 0);
-
-			/*
-			 * Need destination port if lookup is set to forward
-			 * to host.
-			 */
-			if (forward & FWD_HOST) {
-				if (!port)
-					port = sw->tx_ports & ~sw->HOST_MASK;
-				if (port && (forward & FWD_HOST_OVERRIDE))
-					port |= TAIL_TAG_OVERRIDE;
-				skb->data[len] = (u8) port;
-			}
-		}
-#endif
+		skb->data[len] = dest;
 		if (!skb->data[len])
 			skb->data[len] = TAIL_TAG_LOOKUP;
 		skb_put(skb, 1);
@@ -6496,13 +6499,12 @@ static struct sk_buff *sw_check_skb(struct ksz_sw *sw, struct sk_buff *skb,
 			sw->tx_start = 60 - skb->len;
 			len += sw->tx_start;
 		}
-		sw->tx_pad[sw->tx_start] = 0;
-		if (port)
-			sw->tx_pad[sw->tx_start] = 1 << (port - 1);
+		sw->tx_pad[sw->tx_start] = dest;
 		if (!sw->tx_pad[sw->tx_start])
 			sw->tx_pad[sw->tx_start] = TAIL_TAG_LOOKUP;
 		skb_append_datato_frags(sk, skb, add_frag, sw->tx_pad, len);
 	}
+	skb = sw_ins_vlan(sw, priv->first_port, skb);
 	return skb;
 }  /* sw_check_skb */
 
@@ -6512,20 +6514,6 @@ static struct sk_buff *sw_check_tx(struct ksz_sw *sw, struct net_device *dev,
 	void *ptr = NULL;
 	int (*update_msg)(u8 *data, u32 port, u32 overrides) = NULL;
 
-#ifdef CONFIG_KSZ_STP
-	if (sw->features & STP_SUPPORT) {
-		int port = 0;
-
-		/* This device is associated with a switch port. */
-		if (1 == priv->port_cnt)
-			port = priv->first_port + 1;
-		if ((br_port_exists(dev) || !port) &&
-		    sw_block_tx(sw, skb->data, skb->len, port)) {
-			dev_kfree_skb_irq(skb);
-			return NULL;
-		}
-	}
-#endif
 	return sw_check_skb(sw, skb, priv, ptr, update_msg);
 }  /* sw_check_tx */
 
@@ -6595,24 +6583,29 @@ static struct sk_buff *sw_final_skb(struct ksz_sw *sw, struct sk_buff *skb,
 static void sw_start(struct ksz_sw *sw, u8 *addr)
 {
 	int need_tail_tag = false;
+	int need_vlan = false;
 
 	sw->ops->acquire(sw);
 	sw_setup(sw);
+	sw_enable(sw);
 	sw_set_addr(sw, addr);
 #if 0
 	if (1 == sw->dev_count)
 		sw_cfg_self_filter(sw, true);
 #endif
-	if (sw->dev_count > 1)
+#ifdef CONFIG_KSZ_HSR
+	if (sw->features & HSR_HW)
+		need_tail_tag = true;
+#endif
+	if (sw->dev_count > 1 && !(sw->features & SW_VLAN_DEV))
 		need_tail_tag = true;
 	if (sw->features & VLAN_PORT) {
 		if (sw->features & VLAN_PORT_REMOVE_TAG) {
+			int c;
 			int i;
-			int p = 0;
+			int p = get_first_port(sw);
 
-			if (sw->port_cnt < sw->mib_port_cnt)
-				p = 1;
-			for (i = p; i < SWITCH_PORT_NUM; i++) {
+			for (c = 0, i = p; c < sw->port_cnt; c++, i++) {
 				port_cfg_rmv_tag(sw, i, true);
 			}
 			sw->overrides |= TAG_REMOVE;
@@ -6620,28 +6613,88 @@ static void sw_start(struct ksz_sw *sw, u8 *addr)
 		if (sw->features & VLAN_PORT_TAGGING)
 			need_tail_tag = true;
 	}
-	if (sw->features & DSA_SUPPORT) {
+	if (sw->features & SW_VLAN_DEV) {
+		struct ksz_vlan_table entry;
+		int i;
 		int p;
+		int q;
 
-		need_tail_tag = true;
-		for (p = 0; p < sw->mib_port_cnt - 1; p++) {
-			sw_cfg_each_port(sw, p, false);
-			port_set_stp_state(sw, p, STP_STATE_SIMPLE);
+		memset(&entry, 0, sizeof(struct ksz_vlan_table));
+		for (p = 0; p < sw->eth_cnt; p++) {
+
+			/* Not really using VLAN. */
+			if (1 == sw->eth_maps[p].vlan)
+				continue;
+			sw->ops->release(sw);
+
+			/*
+			 * Setting FID allows same MAC address in different
+			 * VLANs.
+			 */
+			entry.fid = sw->eth_maps[p].vlan & (FID_ENTRIES - 1);
+			entry.member = sw->HOST_MASK | sw->eth_maps[p].mask;
+			entry.valid = 1;
+			sw_w_vlan_table(sw, sw->eth_maps[p].vlan, &entry);
+			sw->ops->acquire(sw);
+			for (i = 0, q = sw->eth_maps[p].port;
+			     i < sw->eth_maps[p].cnt; i++, q++) {
+				sw_cfg_def_vid(sw, q, sw->eth_maps[p].vlan);
+				port_cfg_rmv_tag(sw, q, true);
+			}
 		}
-		sw_cfg_each_port(sw, p, true);
-		port_set_stp_state(sw, p, STP_STATE_SIMPLE);
+
+		/* Use VLAN tag to determine the network device. */
+		if (!need_tail_tag)
+			port_cfg_ins_tag(sw, sw->HOST_PORT, true);
+		need_vlan = true;
 	}
+	if (sw->features & (STP_SUPPORT | DSA_SUPPORT))
+		need_tail_tag = true;
 	if (need_tail_tag) {
 		sw_cfg_tail_tag(sw, true);
 		sw->overrides |= TAIL_TAGGING;
 	}
+	if (need_vlan) {
+		struct ksz_vlan_table entry;
+
+		/* Default VID 1 is not in VLAN table. */
+		sw->ops->release(sw);
+		entry.fid = 0;
+		entry.member = sw->PORT_MASK;
+		entry.valid = 1;
+		sw_w_vlan_table(sw, 1, &entry);
+		entry.fid = 0;
+		entry.member = sw->PORT_MASK;
+		entry.valid = 1;
+		sw_w_vlan_table(sw, 0, &entry);
+		sw->ops->acquire(sw);
+		sw_ena_vlan(sw);
+	}
 	sw_ena_intr(sw);
 	sw->ops->release(sw);
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->features & STP_SUPPORT) {
+		struct ksz_stp_info *stp = &sw->info->rstp;
+
+		if (stp->br.bridgeEnabled)
+			stp_start(stp);
+	}
+#endif
 }  /* sw_start */
 
 static int sw_stop(struct ksz_sw *sw, int complete)
 {
 	int reset = false;
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->features & STP_SUPPORT) {
+		struct ksz_stp_info *stp = &sw->info->rstp;
+
+		if (stp->br.bridgeEnabled)
+			stp_stop(stp);
+	}
+#endif
 
 	sw->ops->acquire(sw);
 	if (!reset)
@@ -6650,7 +6703,7 @@ static int sw_stop(struct ksz_sw *sw, int complete)
 	sw_init(sw);
 
 	/* Clean out static MAC table when the switch shutdown. */
-	if ((sw->features & STP_SUPPORT) && complete)
+	if (complete)
 		sw_clr_sta_mac_table(sw);
 	sw->ops->release(sw);
 	return reset;
@@ -6659,11 +6712,10 @@ static int sw_stop(struct ksz_sw *sw, int complete)
 static void sw_init_mib(struct ksz_sw *sw)
 {
 	int i;
-	int p = 0;
+	int p = get_first_port(sw);
 
-	if (sw->port_cnt < sw->mib_port_cnt)
-		p = 1;
 	for (i = p; i < sw->mib_port_cnt; i++) {
+		i = chk_last_port(sw, i);
 		sw->port_mib[i].mib_start = 0;
 		if (next_jiffies < jiffies)
 			next_jiffies = jiffies + HZ * 2;
@@ -6676,11 +6728,19 @@ static void sw_init_mib(struct ksz_sw *sw)
 	sw->port_state[sw->HOST_PORT].state = media_connected;
 }  /* sw_init_mib */
 
-static void sw_open_dev(struct ksz_sw *sw, struct net_device *dev, u8 *addr)
+static int sw_open_dev(struct ksz_sw *sw, struct net_device *dev, u8 *addr)
 {
+	int mode = 0;
+
 	sw_init_mib(sw);
 
+	sw->main_dev = dev;
 	sw->net_ops->start(sw, addr);
+	if (sw->dev_count > 1)
+		mode |= 1;
+	if (sw->features & DIFF_MAC_ADDR)
+		mode |= 2;
+	return mode;
 }  /* sw_open_dev */
 
 static void sw_open_port(struct ksz_sw *sw, struct net_device *dev,
@@ -6688,26 +6748,33 @@ static void sw_open_port(struct ksz_sw *sw, struct net_device *dev,
 {
 	int i;
 	int p;
+	struct ksz_port_info *info;
 
 	for (i = 0, p = port->first_port; i < port->port_cnt; i++, p++) {
+		info = &sw->port_info[p];
 		/*
 		 * Initialize to invalid value so that link detection
 		 * is done.
 		 */
-		sw->port_info[p].link = 0xFF;
-		sw->port_info[p].state = media_unknown;
-		sw->port_info[p].report = true;
+		info->link = 0xFF;
+		info->state = media_unknown;
+		info->report = true;
 	}
 
 	sw->ops->acquire(sw);
 
 	/* Need to open the port in multiple device interfaces mode. */
 	if (sw->dev_count > 1 && (!sw->dev_offset || dev != sw->netdev[0])) {
-#ifdef CONFIG_KSZ_STP
-		if (!br_port_exists(dev))
-#endif
-			*state = STP_STATE_SIMPLE;
-		port_set_stp_state(sw, port->first_port, *state);
+		*state = STP_STATE_SIMPLE;
+		if (sw->features & SW_VLAN_DEV) {
+			i = sw->info->port_cfg[port->first_port].index;
+			if (!(sw->eth_maps[i].proto & HSR_HW))
+				*state = STP_STATE_FORWARDING;
+		}
+		for (i = 0, p = port->first_port; i < port->port_cnt;
+		     i++, p++) {
+			port_set_stp_state(sw, p, *state);
+		}
 	}
 
 	sw->phy_intr = sw->PORT_MASK;
@@ -6716,40 +6783,51 @@ static void sw_open_port(struct ksz_sw *sw, struct net_device *dev,
 	else
 		port_set_link_speed(port);
 	port_get_link_speed(port);
+	sw->phy_intr = 0;
 	sw->ops->release(sw);
+	for (i = 0; i < sw->eth_cnt; i++) {
+		if (dev != sw->netdev[i])
+			continue;
+#ifdef CONFIG_KSZ_HSR
+		if (sw->eth_maps[i].proto & HSR_HW) {
+			struct ksz_hsr_info *info = &sw->info->hsr;
+
+			if (info->ports[0] == port->first_port)
+				prep_hsr(info, dev, dev->dev_addr);
+		}
+#endif
+	}
 }  /* sw_open_port */
 
 static void sw_close_port(struct ksz_sw *sw, struct net_device *dev,
 	struct ksz_port *port)
 {
+	int i;
+
 	/* Need to shut the port manually in multiple device interfaces mode. */
 	if (sw->dev_count > 1 && (!sw->dev_offset || dev != sw->netdev[0])) {
+		int p;
+
 		sw->ops->acquire(sw);
-		port_set_stp_state(sw, port->first_port, STP_STATE_DISABLED);
+		for (i = 0, p = port->first_port; i < port->port_cnt;
+		     i++, p++) {
+			if (p == sw->HOST_PORT)
+				continue;
+			port_set_stp_state(sw, p, STP_STATE_DISABLED);
+		}
+		sw->ops->release(sw);
+	}
+	for (i = 0; i < sw->eth_cnt; i++) {
+		if (dev != sw->netdev[i])
+			continue;
+#ifdef CONFIG_KSZ_HSR
+		if (sw->eth_maps[i].proto & HSR_HW) {
+			struct ksz_hsr_info *info = &sw->info->hsr;
 
-#ifdef CONFIG_KSZ_STP
-		/* Port is closed.  Need to change bridge setting. */
-		if ((sw->features & STP_SUPPORT) && br_port_exists(dev)) {
-			int pi;
-
-			pi = 1 << port->first_port;
-			if (sw->info->member & pi) {
-				sw->info->member &= ~pi;
-
-				/* No ports in forwarding state. */
-				if (!sw->info->member) {
-					port_set_stp_state(sw, SWITCH_PORT_NUM,
-						STP_STATE_SIMPLE);
-					sw->ops->release(sw);
-					sw_block_addr(sw);
-					sw_block_multi(sw);
-					sw->ops->acquire(sw);
-				}
-				bridge_change(sw);
-			}
+			if (info->ports[0] == port->first_port)
+				stop_hsr(info);
 		}
 #endif
-		sw->ops->release(sw);
 	}
 }  /* sw_close_port */
 
@@ -6765,54 +6843,574 @@ static void sw_close(struct ksz_sw *sw)
 {
 	ksz_stop_timer(sw->monitor_timer_info);
 	cancel_delayed_work_sync(sw->link_read);
-	cancel_delayed_work_sync(sw->stp_monitor);
 }  /* sw_close */
 
 static u8 sw_set_mac_addr(struct ksz_sw *sw, struct net_device *dev,
 	u8 promiscuous, int port)
 {
-	sw->ops->acquire(sw);
-	if (sw->dev_count > 1 && (!sw->dev_offset || dev != sw->netdev[0])) {
-		int p = 0;
 
-		if (sw->features & DIFF_MAC_ADDR) {
-			sw->features &= ~DIFF_MAC_ADDR;
-			--promiscuous;
-		}
-		if (sw->port_cnt < sw->mib_port_cnt)
-			p = 1;
-		for (port = p; port < SWITCH_PORT_NUM; port++) {
-			if (memcmp(sw->port_info[port].mac_addr,
-					dev->dev_addr, ETH_ALEN)) {
-				sw->features |= DIFF_MAC_ADDR;
-				++promiscuous;
-				break;
-			}
-		}
-	} else {
+	/* See if different MAC addresses are used. */
+	if (sw->dev_count > 1) {
 		int i;
+		int dev_count = sw->dev_count + sw->dev_offset;
 
-		/* Make MAC address the same in all the ports. */
-		if (sw->dev_count > 1) {
-			int p = 0;
+		for (i = 0; i < dev_count; i++) {
+			if (dev == sw->netdev[i])
+				continue;
+			if (memcmp(sw->netdev[i]->dev_addr,
+			    dev->dev_addr, ETH_ALEN))
+				break;
+		}
+		if (sw->features & DIFF_MAC_ADDR) {
 
-			if (sw->port_cnt < sw->mib_port_cnt)
-				p = 1;
-			for (i = p; i < SWITCH_PORT_NUM; i++) {
-				memcpy(sw->netdev[i + 1]->dev_addr,
-					dev->dev_addr, ETH_ALEN);
-			}
-			if (sw->features & DIFF_MAC_ADDR) {
+			/* All addresses the same. */
+			if (i == dev_count) {
 				sw->features &= ~DIFF_MAC_ADDR;
 				--promiscuous;
 			}
+		} else {
+			if (dev == sw->netdev[0] && i < dev_count) {
+
+				/* Make MAC address the same in all devices. */
+				for (i = 1; i < dev_count; i++) {
+					memcpy(sw->netdev[i]->dev_addr,
+						dev->dev_addr, ETH_ALEN);
+				}
+			} else {
+				if (i < dev_count) {
+					sw->features |= DIFF_MAC_ADDR;
+					++promiscuous;
+				}
+			}
 		}
-		if (dev == sw->netdev[0])
-			sw_set_addr(sw, dev->dev_addr);
 	}
-	sw->ops->release(sw);
+	if (dev == sw->netdev[0]) {
+		sw->ops->acquire(sw);
+		sw_set_addr(sw, dev->dev_addr);
+		sw->ops->release(sw);
+	}
 	return promiscuous;
 }  /* sw_set_mac_addr */
+
+static struct ksz_sw *sw_priv;
+
+static struct sw_dev_info *alloc_sw_dev_info(unsigned int minor)
+{
+	struct sw_dev_info *info;
+
+	info = kzalloc(sizeof(struct sw_dev_info), GFP_KERNEL);
+	if (info) {
+		info->sw = sw_priv;
+		sema_init(&info->sem, 1);
+		mutex_init(&info->lock);
+		init_waitqueue_head(&info->wait_msg);
+		info->write_len = 1000;
+		info->write_buf = kzalloc(info->write_len, GFP_KERNEL);
+		info->read_max = 60000;
+		info->read_buf = kzalloc(info->read_max, GFP_KERNEL);
+
+		info->minor = minor;
+		info->next = sw_priv->dev_list[minor];
+		sw_priv->dev_list[minor] = info;
+	}
+	return info;
+}  /* alloc_sw_dev_info */
+
+static void free_sw_dev_info(struct sw_dev_info *info)
+{
+	if (info) {
+		struct ksz_sw *sw = info->sw;
+		unsigned int minor = info->minor;
+		struct sw_dev_info *prev = sw->dev_list[minor];
+
+		if (prev == info) {
+			sw->dev_list[minor] = info->next;
+		} else {
+			while (prev && prev->next != info)
+				prev = prev->next;
+			if (prev)
+				prev->next = info->next;
+		}
+		kfree(info->read_buf);
+		kfree(info->write_buf);
+		kfree(info);
+	}
+}  /* free_sw_dev_info */
+
+static int sw_dev_open(struct inode *inode, struct file *filp)
+{
+	struct sw_dev_info *info = (struct sw_dev_info *)
+		filp->private_data;
+	unsigned int minor = MINOR(inode->i_rdev);
+
+	if (minor > 1)
+		return -ENODEV;
+	if (!info) {
+		info = alloc_sw_dev_info(minor);
+		if (info)
+			filp->private_data = info;
+		else
+			return -ENOMEM;
+	}
+	return 0;
+}  /* sw_dev_open */
+
+static int sw_dev_release(struct inode *inode, struct file *filp)
+{
+	struct sw_dev_info *info = (struct sw_dev_info *)
+		filp->private_data;
+
+	free_sw_dev_info(info);
+	filp->private_data = NULL;
+	return 0;
+}  /* sw_dev_release */
+
+static int sw_get_attrib(struct ksz_sw *sw, int subcmd, int size,
+	int *req_size, size_t *len, u8 *data, int *output)
+{
+	struct ksz_info_opt *opt = (struct ksz_info_opt *) data;
+	struct ksz_info_cfg *cfg = &opt->data.cfg;
+	int i;
+	int n;
+	int p;
+
+	*len = 0;
+	*output = 0;
+	switch (subcmd) {
+	case DEV_SW_CFG:
+		n = opt->num;
+		p = opt->port;
+		if (!n)
+			n = 1;
+		*len = 2 + n * sizeof(struct ksz_info_cfg);
+		break;
+	}
+	if (!*len)
+		return DEV_IOC_INVALID_CMD;
+	if (size < *len) {
+		*req_size = *len + SIZEOF_ksz_request;
+		return DEV_IOC_INVALID_LEN;
+	}
+	switch (subcmd) {
+	case DEV_SW_CFG:
+		sw->ops->acquire(sw);
+		for (i = 0; i < opt->num; i++, p++) {
+			cfg->on_off = 0;
+			if (cfg->set & SP_LEARN) {
+				if (!port_chk_dis_learn(sw, p))
+					cfg->on_off |= SP_LEARN;
+			}
+			if (cfg->set & SP_RX) {
+				if (port_chk_rx(sw, p))
+					cfg->on_off |= SP_RX;
+			}
+			if (cfg->set & SP_TX) {
+				if (port_chk_tx(sw, p))
+					cfg->on_off |= SP_TX;
+			}
+			if (p == sw->HOST_PORT)
+				continue;
+#if 0
+			if (cfg->set & SP_PHY_POWER) {
+				if (port_chk_power(sw, p))
+					cfg->on_off |= SP_PHY_POWER;
+			}
+#endif
+			cfg++;
+		}
+		sw->ops->release(sw);
+		break;
+	}
+	return DEV_IOC_OK;
+}  /* sw_get_attrib */
+
+static int sw_set_attrib(struct ksz_sw *sw, int subcmd, int size,
+	int *req_size, u8 *data, int *output)
+{
+	struct ksz_info_opt *opt = (struct ksz_info_opt *) data;
+	struct ksz_info_cfg *cfg = &opt->data.cfg;
+	int len;
+	int i;
+	int n;
+	int p;
+
+	*output = 0;
+	switch (subcmd) {
+	case DEV_SW_CFG:
+		n = opt->num;
+		p = opt->port;
+		if (!n)
+			n = 1;
+		len = 2 + n * sizeof(struct ksz_info_cfg);
+		if (size < len)
+			goto not_enough;
+		sw->ops->acquire(sw);
+		for (i = 0; i < opt->num; i++, p++) {
+			if (cfg->set & SP_LEARN)
+				port_cfg_dis_learn(sw, p,
+					!(cfg->on_off & SP_LEARN));
+			if (cfg->set & SP_RX)
+				port_cfg_rx(sw, p,
+					!!(cfg->on_off & SP_RX));
+			if (cfg->set & SP_TX)
+				port_cfg_tx(sw, p,
+					!!(cfg->on_off & SP_TX));
+			if (p == sw->HOST_PORT)
+				continue;
+#if 0
+			if (cfg->set & SP_PHY_POWER)
+				port_cfg_power(sw, p,
+					!!(cfg->on_off & SP_PHY_POWER));
+#endif
+			cfg++;
+		}
+		sw->ops->release(sw);
+		break;
+	default:
+		return DEV_IOC_INVALID_CMD;
+	}
+	return DEV_IOC_OK;
+
+not_enough:
+	*req_size = len + SIZEOF_ksz_request;
+	return DEV_IOC_INVALID_LEN;
+}  /* sw_set_attrib */
+
+static int base_dev_req(struct ksz_sw *sw, char *arg, void *info)
+{
+	struct ksz_request *req = (struct ksz_request *) arg;
+	int len;
+	int maincmd;
+	int req_size;
+	int subcmd;
+	int output;
+	size_t param_size;
+	u8 data[PARAM_DATA_SIZE];
+	struct ksz_resp_msg *msg = (struct ksz_resp_msg *) data;
+	int err = 0;
+	int result = 0;
+
+	get_user_data(&req_size, &req->size, info);
+	get_user_data(&maincmd, &req->cmd, info);
+	get_user_data(&subcmd, &req->subcmd, info);
+	get_user_data(&output, &req->output, info);
+	len = req_size - SIZEOF_ksz_request;
+
+	maincmd &= 0xffff;
+	switch (maincmd) {
+	case DEV_CMD_INFO:
+		switch (subcmd) {
+		case DEV_INFO_INIT:
+			req_size = SIZEOF_ksz_request + 4;
+			if (len >= 4) {
+				data[0] = 'M';
+				data[1] = 'i';
+				data[2] = 'c';
+				data[3] = 'r';
+				data[4] = 0;
+				err = write_user_data(data, req->param.data,
+					6, info);
+				if (err)
+					goto dev_ioctl_done;
+				sw->dev_info = info;
+			} else
+				result = DEV_IOC_INVALID_LEN;
+			break;
+		case DEV_INFO_EXIT:
+
+		/* fall through */
+		case DEV_INFO_QUIT:
+
+			/* Not called through char device. */
+			if (!info)
+				break;
+			msg->module = DEV_MOD_BASE;
+			msg->cmd = DEV_INFO_QUIT;
+			msg->resp.data[0] = 0;
+			sw_setup_msg(info, msg, 8, NULL, NULL);
+			sw->notifications = 0;
+			sw->dev_info = NULL;
+			break;
+		case DEV_INFO_NOTIFY:
+			if (len >= 4) {
+				uint *notify = (uint *) data;
+
+				_chk_ioctl_size(len, 4, 0, &req_size, &result,
+					&req->param, data, info);
+				sw->notifications = *notify;
+			}
+			break;
+		default:
+			result = DEV_IOC_INVALID_CMD;
+			break;
+		}
+		break;
+	case DEV_CMD_PUT:
+		if (_chk_ioctl_size(len, len, 0, &req_size, &result,
+		    &req->param, data, info))
+			goto dev_ioctl_resp;
+		result = sw_set_attrib(sw, subcmd, len, &req_size, data,
+			&output);
+		if (result)
+			goto dev_ioctl_resp;
+		put_user_data(&output, &req->output, info);
+		break;
+	case DEV_CMD_GET:
+		if (_chk_ioctl_size(len, len, 0, &req_size, &result,
+		    &req->param, data, info))
+			goto dev_ioctl_resp;
+		result = sw_get_attrib(sw, subcmd, len, &req_size,
+			&param_size, data, &output);
+		if (result)
+			goto dev_ioctl_resp;
+		err = write_user_data(data, req->param.data, param_size, info);
+		if (err)
+			goto dev_ioctl_done;
+		req_size = param_size + SIZEOF_ksz_request;
+		put_user_data(&output, &req->output, info);
+		break;
+	default:
+		result = DEV_IOC_INVALID_CMD;
+		break;
+	}
+
+dev_ioctl_resp:
+	put_user_data(&req_size, &req->size, info);
+	put_user_data(&result, &req->result, info);
+
+	/* Return ERESTARTSYS so that the system call is called again. */
+	if (result < 0)
+		err = result;
+
+dev_ioctl_done:
+	return err;
+}  /* base_dev_req */
+
+static int sw_dev_req(struct ksz_sw *sw, int start, char *arg,
+	struct sw_dev_info *info)
+{
+	struct ksz_request *req = (struct ksz_request *) arg;
+	int maincmd;
+	int req_size;
+	int err = 0;
+	int result = DEV_IOC_OK;
+
+	/* Check request size. */
+	get_user_data(&req_size, &req->size, info);
+	if (chk_ioctl_size(req_size, SIZEOF_ksz_request, 0, &req_size,
+	    &result, NULL, NULL))
+		goto dev_ioctl_resp;
+
+	result = -EOPNOTSUPP;
+	get_user_data(&maincmd, &req->cmd, info);
+	maincmd >>= 16;
+	switch (maincmd) {
+	case DEV_MOD_BASE:
+		err = base_dev_req(sw, arg, info);
+		result = 0;
+		break;
+	default:
+		break;
+	}
+
+	/* Processed by specific module. */
+	if (!result)
+		return err;
+	if (result < 0)
+		goto dev_ioctl_done;
+
+dev_ioctl_resp:
+	put_user_data(&req_size, &req->size, info);
+	put_user_data(&result, &req->result, info);
+
+dev_ioctl_done:
+
+	/* Return ERESTARTSYS so that the system call is called again. */
+	if (result < 0)
+		err = result;
+
+	return err;
+}  /* sw_dev_req */
+
+static ssize_t sw_dev_read(struct file *filp, char *buf, size_t count,
+	loff_t *offp)
+{
+	struct sw_dev_info *info = (struct sw_dev_info *)
+		filp->private_data;
+	ssize_t result = 0;
+	int rc;
+
+	if (!info->read_len) {
+		*offp = 0;
+		rc = wait_event_interruptible(info->wait_msg,
+			0 != info->read_len);
+
+		/* Cannot continue if ERESTARTSYS. */
+		if (rc < 0)
+			return 0;
+	}
+
+	if (down_interruptible(&info->sem))
+		return -ERESTARTSYS;
+
+	mutex_lock(&info->lock);
+	if (*offp >= info->read_len) {
+		info->read_len = 0;
+		count = 0;
+		*offp = 0;
+		goto dev_read_done;
+	}
+
+	if (*offp + count > info->read_len) {
+		count = info->read_len - *offp;
+		info->read_len = 0;
+	}
+
+	if (copy_to_user(buf, &info->read_buf[*offp], count)) {
+		result = -EFAULT;
+		goto dev_read_done;
+	}
+	if (info->read_len)
+		*offp += count;
+	else
+		*offp = 0;
+	result = count;
+
+dev_read_done:
+	mutex_unlock(&info->lock);
+	up(&info->sem);
+	return result;
+}  /* sw_dev_read */
+
+#ifdef HAVE_UNLOCKED_IOCTL
+static long sw_dev_ioctl(struct file *filp, unsigned int cmd,
+	unsigned long arg)
+#else
+static int sw_dev_ioctl(struct inode *inode, struct file *filp,
+	unsigned int cmd, unsigned long arg)
+#endif
+{
+	struct sw_dev_info *info = (struct sw_dev_info *)
+		filp->private_data;
+	struct ksz_sw *sw = info->sw;
+	int err = 0;
+
+	if (_IOC_TYPE(cmd) != DEV_IOC_MAGIC)
+		return -ENOTTY;
+	if (_IOC_NR(cmd) > DEV_IOC_MAX)
+		return -ENOTTY;
+	if (_IOC_DIR(cmd) & _IOC_READ)
+		err = !access_ok(VERIFY_WRITE, (void *) arg, _IOC_SIZE(cmd));
+	else if (_IOC_DIR(cmd) & _IOC_WRITE)
+		err = !access_ok(VERIFY_READ, (void *) arg, _IOC_SIZE(cmd));
+	if (err) {
+		printk(KERN_ALERT "err fault\n");
+		return -EFAULT;
+	}
+	if (down_interruptible(&info->sem))
+		return -ERESTARTSYS;
+
+	err = sw_dev_req(sw, 0, (char *) arg, info);
+	up(&info->sem);
+	return err;
+}  /* sw_dev_ioctl */
+
+static ssize_t sw_dev_write(struct file *filp, const char *buf, size_t count,
+	loff_t *offp)
+{
+	struct sw_dev_info *info = (struct sw_dev_info *)
+		filp->private_data;
+	ssize_t result = 0;
+	size_t size;
+	int rc;
+
+	if (!count)
+		return result;
+
+	if (down_interruptible(&info->sem))
+		return -ERESTARTSYS;
+
+	if (*offp >= info->write_len) {
+		result = -ENOSPC;
+		goto dev_write_done;
+	}
+	if (*offp + count > info->write_len)
+		count = info->write_len - *offp;
+	if (copy_from_user(info->write_buf, buf, count)) {
+		result = -EFAULT;
+		goto dev_write_done;
+	}
+	size = 0;
+	result = size;
+	rc = 0;
+	if (rc)
+		result = rc;
+
+dev_write_done:
+	up(&info->sem);
+	return result;
+}  /* sw_dev_write */
+
+static const struct file_operations sw_dev_fops = {
+	.read		= sw_dev_read,
+	.write		= sw_dev_write,
+#ifdef HAVE_UNLOCKED_IOCTL
+	.unlocked_ioctl	= sw_dev_ioctl,
+#else
+	.ioctl		= sw_dev_ioctl,
+#endif
+	.open		= sw_dev_open,
+	.release	= sw_dev_release,
+};
+
+static struct class *sw_class;
+
+static int init_sw_dev(int dev_major, char *dev_name)
+{
+	int result;
+
+	result = register_chrdev(dev_major, dev_name, &sw_dev_fops);
+	if (result < 0) {
+		printk(KERN_WARNING "%s: can't get major %d\n", dev_name,
+			dev_major);
+		return result;
+	}
+	if (0 == dev_major)
+		dev_major = result;
+	sw_class = class_create(THIS_MODULE, dev_name);
+	if (IS_ERR(sw_class)) {
+		unregister_chrdev(dev_major, dev_name);
+		return -ENODEV;
+	}
+	device_create(sw_class, NULL, MKDEV(dev_major, 0), NULL, dev_name);
+	return dev_major;
+}  /* init_sw_dev */
+
+static void exit_sw_dev(int dev_major, char *dev_name)
+{
+	device_destroy(sw_class, MKDEV(dev_major, 0));
+	class_destroy(sw_class);
+	unregister_chrdev(dev_major, dev_name);
+}  /* exit_sw_dev */
+
+static void sw_init_dev(struct ksz_sw *sw)
+{
+	sw_priv = sw;
+	sprintf(sw->dev_name, "sw_dev");
+	sw->dev_major = init_sw_dev(0, sw->dev_name);
+	sw->msg_buf = kzalloc(MAX_SW_LEN, GFP_KERNEL);
+}  /* sw_init_dev */
+
+static void sw_exit_dev(struct ksz_sw *sw)
+{
+	kfree(sw->msg_buf);
+	if (sw->dev_major >= 0)
+		exit_sw_dev(sw->dev_major, sw->dev_name);
+}  /* sw_exit_dev */
+
+#if 0
+#define USE_HSR
+#endif
 
 /*
  * This enables multiple network device mode for the switch, which contains at
@@ -6823,7 +7421,11 @@ static u8 sw_set_mac_addr(struct ksz_sw *sw, struct net_device *dev,
  * Some limitations are the network devices cannot have different MTU and
  * multicast hash tables.
  */
+#if defined(USE_HSR)
+static int multi_dev = 1;
+#else
 static int multi_dev;
+#endif
 
 /*
  * As most users select multiple network device mode to use Spanning Tree
@@ -6847,14 +7449,216 @@ static int stp;
  */
 static int fast_aging;
 
+#if defined(USE_HSR)
+static int eth1_ports = 0x3;
+#else
+static int eth1_ports;
+#endif
+static int eth2_ports;
+static int eth3_ports;
+static int eth4_ports;
+
+static int eth1_vlan;
+static int eth2_vlan;
+static int eth3_vlan;
+static int eth4_vlan;
+
+#if defined(USE_HSR)
+static char *eth1_proto = "hsr";
+#endif
+#if !defined(USE_HSR)
+static char *eth1_proto = " ";
+#endif
+static char *eth2_proto = " ";
+static char *eth3_proto = " ";
+static char *eth4_proto = " ";
+
+static int *eth_ports[] = {
+	&eth1_ports,
+	&eth2_ports,
+	&eth3_ports,
+	&eth4_ports,
+	NULL
+};
+
+static int *eth_vlans[] = {
+	&eth1_vlan,
+	&eth2_vlan,
+	&eth3_vlan,
+	&eth4_vlan,
+	NULL
+};
+
+static char **eth_proto[] = {
+	&eth1_proto,
+	&eth2_proto,
+	&eth3_proto,
+	&eth4_proto,
+	NULL
+};
+
+static void sw_setup_zone(struct ksz_sw *sw)
+{
+	int c;
+	int f;
+	int limit;
+	int m;
+	int n;
+	int p;
+	int q;
+	int w;
+	int *v;
+	char **s;
+	uint features;
+	uint used = 0;
+	int last_vlan = 0;
+	int ports = sw->PORT_MASK;
+	int b = get_first_port(sw);
+
+#ifdef DEBUG
+	sw->verbose = 1;
+#endif
+	if (sw->multi_dev > 2)
+		goto setup_next;
+	for (p = 0; p < SWITCH_PORT_NUM - 1; p++) {
+		v = eth_ports[p];
+
+		/* No more port setting. */
+		if (!v || !*v)
+			break;
+		m = *v;
+		m <<= b;
+
+		/* Find out how the ports are to be used. */
+		limit = 0;
+		w = last_vlan;
+		features = 0;
+		s = eth_proto[p];
+		if (!strcmp(*s, "hsr")) {
+#ifdef CONFIG_KSZ_HSR
+			features = HSR_HW;
+			features |= VLAN_PORT;
+			sw->features |= VLAN_PORT | VLAN_PORT_TAGGING;
+#endif
+			limit = 2;
+			w = 1;
+		}
+
+		v = eth_vlans[p];
+		if (!w && (!v || !*v))
+			break;
+		if (*v)
+			w = *v;
+
+		for (q = 0; q < p; q++) {
+			m &= ~sw->eth_maps[q].mask;
+			if (w > 1 && w == sw->eth_maps[q].vlan)
+				w = last_vlan + 1;
+		}
+		c = 0;
+		f = -1;
+		for (n = 0, q = b; n < sw->port_cnt; n++, q++) {
+			if (m & (1 << q)) {
+				if (f < 0)
+					f = q;
+				++c;
+
+				/* Limit to certain ports. */
+				if (limit && c >= limit) {
+					if (!(used & features)) {
+						used |= features;
+						++q;
+						break;
+					}
+					features = 0;
+				}
+			} else if (f >= 0)
+				break;
+		}
+		if (!c)
+			continue;
+		m &= (1 << q) - 1;
+		sw->eth_maps[p].cnt = c;
+		sw->eth_maps[p].mask = m;
+		sw->eth_maps[p].port = f;
+		sw->eth_maps[p].phy_id = f + 1;
+		sw->eth_maps[p].vlan = w & (4096 - 1);
+		sw->eth_maps[p].proto = features;
+#ifdef CONFIG_KSZ_HSR
+		if (features & HSR_HW) {
+			struct ksz_hsr_info *hsr = &sw->info->hsr;
+
+			hsr->ports[0] = f++;
+			if (f == sw->HOST_PORT)
+				f++;
+			hsr->ports[1] = f;
+			hsr->member = (1 << hsr->ports[0]) |
+				(1 << hsr->ports[1]);
+		}
+#endif
+		if (last_vlan < w)
+			last_vlan = w;
+		ports &= ~m;
+	}
+
+	/* No VLAN devices specified. */
+	if (!p)
+		goto setup_next;
+
+	/* Not all ports are used. */
+	ports &= ~sw->HOST_MASK;
+	if (sw->multi_dev != 1)
+		ports = 0;
+	features = 0;
+	while (ports) {
+		m = ports;
+		c = 0;
+		f = -1;
+		for (n = 0, q = b; n < sw->port_cnt; n++, q++) {
+			if (m & (1 << q)) {
+				if (f < 0)
+					f = q;
+				++c;
+			} else if (f >= 0)
+				break;
+		}
+		m &= (1 << q) - 1;
+		sw->eth_maps[p].cnt = c;
+		sw->eth_maps[p].mask = m;
+		sw->eth_maps[p].port = f;
+		sw->eth_maps[p].phy_id = f + 1;
+		sw->eth_maps[p].vlan = ++last_vlan & (4096 - 1);
+		sw->eth_maps[p].proto = features;
+		ports &= ~m;
+		p++;
+	}
+	if (p > 1)
+		sw->features |= SW_VLAN_DEV;
+	sw->eth_cnt = p;
+#ifdef CONFIG_KSZ_HSR
+	if (used & HSR_HW)
+		sw->features |= HSR_HW;
+#endif
+	for (p = 0; p < sw->eth_cnt; p++) {
+		dbg_msg("%d: %d:%d %02x %03x %08x\n",
+			p, sw->eth_maps[p].port, sw->eth_maps[p].cnt,
+			sw->eth_maps[p].mask, sw->eth_maps[p].vlan,
+			sw->eth_maps[p].proto);
+	}
+
+setup_next:
+	return;
+}  /* sw_setup_zone */
+
+static int phy_offset;
+
 static void sw_setup_special(struct ksz_sw *sw, int *port_cnt,
 	int *mib_port_cnt, int *dev_cnt)
 {
+	phy_offset = 0;
 	sw->dev_offset = 0;
 	sw->phy_offset = 0;
 	if (sw->stp) {
-		sw->fast_aging = 1;
-		sw->multi_dev = 1;
 		sw->features |= STP_SUPPORT;
 	}
 	if (sw->fast_aging)
@@ -6881,44 +7685,53 @@ static void sw_setup_special(struct ksz_sw *sw, int *port_cnt,
 	if (1 == sw->dev_count) {
 		*port_cnt = SWITCH_PORT_NUM;
 		*mib_port_cnt = SWITCH_PORT_NUM;
-		if (sw->port_cnt < sw->mib_port_cnt) {
+		if (sw->first_port) {
 			(*port_cnt)--;
 			(*mib_port_cnt)--;
 		}
-	} else if (sw->port_cnt < sw->mib_port_cnt)
+	} else if (sw->first_port)
 		sw->dev_count--;
+	if (1 == sw->multi_dev && (sw->features & SW_VLAN_DEV))
+		sw->dev_count = sw->eth_cnt;
 	*dev_cnt = sw->dev_count;
 	if (3 == sw->multi_dev || 5 == sw->multi_dev)
 		(*dev_cnt)++;
-}
+}  /* sw_setup_special */
 
-static void sw_setup_dev(struct ksz_sw *sw, struct net_device *dev,
+static void sw_leave_dev(struct ksz_sw *sw)
+{
+	int i;
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->features & STP_SUPPORT)
+		leave_stp(&sw->info->rstp);
+#endif
+	for (i = 0; i < sw->dev_count; i++)
+		sw->netdev[i] = NULL;
+	sw->eth_cnt = 0;
+	sw->dev_count = 0;
+	sw->dev_offset = 0;
+	sw->phy_offset = 0;
+}  /* sw_leave_dev */
+
+static int sw_setup_dev(struct ksz_sw *sw, struct net_device *dev,
 	char *dev_name, struct ksz_port *port, int i, int port_cnt,
 	int mib_port_cnt)
 {
 	int cnt;
 	int p;
 	int pi;
+	int phy_id;
+	u32 features;
+
+	if (!phy_offset)
+		phy_offset = sw->phy_offset;
 
 	p = i;
 	if (p)
 		p -= sw->dev_offset;
-	if (sw->port_cnt < sw->mib_port_cnt)
-		p++;
-	port->port_cnt = port_cnt;
-	port->mib_port_cnt = mib_port_cnt;
-	port->first_port = p;
-	port->flow_ctrl = PHY_FLOW_CTRL;
+	p += sw->first_port;
 
-	port->sw = sw;
-	port->linked = &sw->port_info[port->first_port];
-
-	for (cnt = 0, pi = p; cnt < port_cnt; cnt++, pi++) {
-		sw->port_info[pi].state = media_disconnected;
-		sw->netdev[pi + sw->dev_offset] = dev;
-	}
-	if (sw->port_cnt < sw->mib_port_cnt)
-		sw->netdev[0] = dev;
 	if (sw->dev_offset) {
 		/*
 		 * First device associated with switch has been
@@ -6927,19 +7740,88 @@ static void sw_setup_dev(struct ksz_sw *sw, struct net_device *dev,
 		if (i)
 			snprintf(dev->name, IFNAMSIZ, "%s.10%%d", dev_name);
 		else {
-			port->port_cnt = SWITCH_PORT_NUM;
-			port->mib_port_cnt = SWITCH_PORT_NUM;
-			if (sw->port_cnt < sw->mib_port_cnt) {
-				port->port_cnt--;
-				port->mib_port_cnt--;
+			port_cnt = SWITCH_PORT_NUM;
+			mib_port_cnt = SWITCH_PORT_NUM;
+			if (sw->first_port) {
+				port_cnt--;
+				mib_port_cnt--;
 			}
-			sw->netdev[i] = dev;
 		}
 	}
+
+	if (1 == sw->multi_dev && (sw->features & SW_VLAN_DEV)) {
+		port_cnt = sw->eth_maps[i].cnt;
+		p = sw->eth_maps[i].port;
+		mib_port_cnt = port_cnt;
+	}
+#ifdef CONFIG_KSZ_HSR
+	if (sw->eth_cnt && (sw->eth_maps[i].proto & HSR_HW)) {
+		port_cnt = sw->eth_maps[i].cnt;
+		p = sw->eth_maps[i].port;
+		mib_port_cnt = port_cnt;
+		setup_hsr(&sw->info->hsr, dev);
+		dev->hard_header_len += HSR_HLEN;
+	}
+#endif
+
+	port->port_cnt = port_cnt;
+	port->mib_port_cnt = mib_port_cnt;
+	port->first_port = p;
+	port->flow_ctrl = PHY_FLOW_CTRL;
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->features & STP_SUPPORT)
+		prep_stp_mcast(dev);
+#endif
+
+	/* Point to port under netdev. */
+	if (phy_offset)
+		phy_id = port->first_port + phy_offset;
+	else
+		phy_id = 0;
+
+	/* Replace virtual port with one from network device. */
+	do {
+		struct phy_device *phydev;
+		struct phy_priv *priv;
+		struct sw_priv *hw_priv = container_of(sw, struct sw_priv, sw);
+
+		phydev = hw_priv->bus->phy_map[phy_id];
+		priv = phydev->priv;
+		priv->port = port;
+	} while (0);
+	if (!phy_offset)
+		phy_offset = 1;
+
+	port->sw = sw;
+	port->linked = &sw->port_info[port->first_port];
+
+	for (cnt = 0, pi = p; cnt < port_cnt; cnt++, pi++) {
+		sw->port_info[pi].state = media_disconnected;
+		sw->info->port_cfg[pi].index = i;
+	}
+	sw->netdev[i] = dev;
+	if (sw->dev_count > 1 && i && !(sw->features & DIFF_MAC_ADDR)) {
+		if (memcmp(dev->dev_addr, sw->netdev[0]->dev_addr, ETH_ALEN))
+			sw->features |= DIFF_MAC_ADDR;
+	}
+
 	INIT_WORK(&port->link_update, link_update_work);
-	if (sw->features & VLAN_PORT)
+	features = sw->features;
+	if (sw->features & SW_VLAN_DEV)
+		features = sw->eth_maps[i].proto;
+
+#ifndef CONFIG_NET_DSA_TAG_TAIL
+	if (features & VLAN_PORT)
 		dev->features |= NETIF_F_HW_VLAN_CTAG_FILTER;
-}
+#endif
+
+	/* Needed for inserting VLAN tag. */
+	if (sw->features & SW_VLAN_DEV)
+		dev->hard_header_len += VLAN_HLEN;
+
+	return phy_id;
+}  /* sw_setup_dev */
 
 static u8 sw_get_priv_state(struct net_device *dev)
 {
@@ -7039,8 +7921,9 @@ static void sw_netdev_wake_queue(struct ksz_sw *sw, struct net_device *dev)
 }
 
 static struct ksz_sw_net_ops sw_net_ops = {
-	.setup_dev		= sw_setup_dev,
 	.setup_special		= sw_setup_special,
+	.setup_dev		= sw_setup_dev,
+	.leave_dev		= sw_leave_dev,
 	.get_state		= sw_get_priv_state,
 	.set_state		= sw_set_priv_state,
 
@@ -7059,9 +7942,14 @@ static struct ksz_sw_net_ops sw_net_ops = {
 
 	.set_mac_addr		= sw_set_mac_addr,
 
+	.get_mtu		= sw_get_mtu,
 	.get_tx_len		= sw_get_tx_len,
 	.add_tail_tag		= sw_add_tail_tag,
 	.get_tail_tag		= sw_get_tail_tag,
+	.get_phys_port		= sw_get_phys_port,
+	.get_virt_port		= sw_get_virt_port,
+	.add_vid		= sw_add_vid,
+	.kill_vid		= sw_kill_vid,
 	.check_tx		= sw_check_tx,
 	.rx_dev			= sw_rx_dev,
 	.match_pkt		= sw_match_pkt,
@@ -7070,18 +7958,18 @@ static struct ksz_sw_net_ops sw_net_ops = {
 	.drop_icmp		= sw_drop_icmp,
 	.final_skb		= sw_final_skb,
 	.drv_rx			= sw_drv_rx,
-
-#ifdef CONFIG_KSZ_STP
-	.get_port_state		= get_port_state,
-
 	.set_multi		= sw_set_multi,
-	.stp_rx			= sw_stp_rx,
-	.blocked_rx		= sw_blocked_rx,
-	.monitor_ports		= monitor_ports,
-#endif
+
 };
 
 static struct ksz_sw_ops sw_ops = {
+	.init			= sw_init_dev,
+	.exit			= sw_exit_dev,
+	.dev_req		= sw_dev_req,
+
+	.get_first_port		= get_first_port,
+	.chk_last_port		= chk_last_port,
+
 	.acquire		= sw_acquire,
 	.release		= sw_release,
 
@@ -7106,12 +7994,21 @@ static struct ksz_sw_ops sw_ops = {
 	.sysfs_vlan_read	= sysfs_vlan_read,
 	.sysfs_vlan_write	= sysfs_vlan_write,
 
+#ifdef CONFIG_KSZ_STP
+	.sysfs_stp_read		= sysfs_stp_read,
+	.sysfs_stp_write	= sysfs_stp_write,
+	.sysfs_stp_port_read	= sysfs_stp_port_read,
+	.sysfs_stp_port_write	= sysfs_stp_port_write,
+#endif
+
 	.cfg_mac		= sw_cfg_mac,
 	.cfg_vlan		= sw_cfg_vlan,
 	.alloc_mac		= sw_alloc_mac,
 	.free_mac		= sw_free_mac,
 	.alloc_vlan		= sw_alloc_vlan,
 	.free_vlan		= sw_free_vlan,
+	.alloc_fid		= sw_alloc_fid,
+	.free_fid		= sw_free_fid,
 
 	.get_id			= sw_get_id,
 	.cfg_tail_tag		= sw_cfg_tail_tag,
@@ -7121,6 +8018,7 @@ static struct ksz_sw_ops sw_ops = {
 
 	.cfg_src_filter		= sw_cfg_src_filter,
 	.flush_table		= sw_flush_dyn_mac_table,
+	.fwd_unk_vid		= sw_fwd_unk_vid,
 
 };
 

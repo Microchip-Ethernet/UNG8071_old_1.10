@@ -1,7 +1,7 @@
 /**
- * Micrel DLR driver header
+ * Microchip DLR driver header
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -18,6 +18,7 @@
 #ifndef KSZ_DLR_H
 #define KSZ_DLR_H
 
+#include <linux/if_vlan.h>
 #include "ksz_dlr_api.h"
 
 
@@ -89,8 +90,8 @@ struct ksz_dlr_status {
 } __packed;
 
 struct ksz_dlr_node {
-	u8 addr[ETH_ALEN];
 	u32 ip_addr;
+	u8 addr[ETH_ALEN];
 } __packed;
 
 struct ksz_dlr_signon {
@@ -146,33 +147,12 @@ struct ksz_dlr_super_info {
 
 struct ksz_dlr_info;
 
-struct dlr_work {
-	struct sk_buff *skb;
-	int cmd;
-	int subcmd;
-	int option;
-	int used;
-	int index;
-	struct dlr_work *prev;
-};
-
-#define DLR_WORK_NUM			(1 << 4)
-#define DLR_WORK_LAST			(DLR_WORK_NUM - 1)
-
-struct dlr_work_info {
-	struct work_struct work;
-	int head;
-	int tail;
-int ready;
-	struct dlr_work works[DLR_WORK_NUM];
-};
-
 struct dlr_ops {
 	void (*change_addr)(struct ksz_dlr_info *dlr, u8 *addr);
 	void (*link_change)(struct ksz_dlr_info *dlr, int link1, int link2);
 	void (*timeout)(struct ksz_dlr_info *dir, int port);
 
-	int (*dev_req)(struct ksz_dlr_info *dlr, char *arg);
+	int (*dev_req)(struct ksz_dlr_info *dlr, char *arg, void *info);
 
 	ssize_t (*sysfs_read)(struct ksz_dlr_info *dlr, int proc_num,
 		ssize_t len, char *buf);
@@ -199,7 +179,7 @@ struct ksz_dlr_beacon_info {
 	struct ksz_dlr_beacon last;
 };
 
-#define DLR_BEACON_LEAK_HACK		(1 << 0)
+#define DLR_BEACON_STATE_HACK		(1 << 1)
 #define DLR_TEST_SEQ			(1 << 30)
 #define DLR_TEST			(1 << 31)
 
@@ -224,18 +204,18 @@ struct ksz_dlr_info {
 	u32 ann_rcvd:1;
 	u32 ann_timeout:1;
 	u32 ann_delay:1;
+	u32 ann_first:1;
 	u32 signon_delay:1;
 	u32 signon_start:1;
 	u32 new_val:1;
 	u32 neigh_chk:1;
-	u32 state_change:1;
 	u32 wait_done:1;
 	u32 reset:1;
-	u32 reset_fault:1;
 	u32 start:1;
 	u32 chk_hw:1;
 
 	struct ksz_dlr_gateway_capable attrib;
+	struct ksz_dlr_active_node last_sup;
 
 	u32 beacon_interval;
 	u32 beacon_timeout;
@@ -248,10 +228,12 @@ struct ksz_dlr_info {
 	u8 precedence;
 	u8 ring_state;
 	u8 drop_beacon;
-	u8 skip_beacon;
+	u32 skip_beacon:1;
+	u32 disable_learn:1;
 	u8 LastBcnRcvPort;
 	struct ksz_dlr_beacon_info beacon_info[2];
 	u32 interval;
+	unsigned long ann_jiffies;
 
 	void *sw_dev;
 	struct net_device *dev;
@@ -259,11 +241,23 @@ struct ksz_dlr_info {
 	struct ksz_timer_info announce_timeout_timer_info;
 	struct ksz_timer_info neigh_chk_timer_info;
 	struct ksz_timer_info signon_timer_info;
+	struct ksz_timer_info test_timer_info;
 	struct delayed_work announce_tx;
-	struct delayed_work beacon_tx;
 	u32 beacon_timeout_ports;
-	struct work_struct beacon_rx_timeout;
-	struct dlr_work_info work_info;
+	struct work_struct delay_proc;
+	struct work_struct neigh_chk_proc;
+	struct sk_buff_head rxq;
+	void (*state_machine)(struct ksz_dlr_info *info);
+	struct ksz_dlr_tx_frame last_beacon[2];
+	u8 beacon_addr[ETH_ALEN];
+	u32 stop:1;
+	u32 tx_signon:1;
+	u32 tx_announce:1;
+	u32 tx_advertise:1;
+	u32 tx_flush_tables:1;
+	u32 link_change:1;
+	u32 clr_supervisor:1;
+	u32 timeout_beacon:1;
 
 	struct ksz_dlr_tx_frame frame;
 	struct ksz_dlr_update_frame update_frame;
@@ -291,6 +285,7 @@ struct ksz_dlr_info {
 	u32 seqid_accept[2];
 	u8 ports[2];
 	u16 member;
+	u16 ok_ports;
 
 	struct ksz_dlr_super_info supers[DLR_SUPERVISOR_NUM];
 	struct ksz_dlr_super_info *rogue_super;
@@ -300,6 +295,10 @@ struct ksz_dlr_info {
 	u8 ignore_req;
 	u8 req_cnt[2];
 	u8 link_break;
+	unsigned long fault_jiffies;
+
+	struct sw_dev_info *dev_info;
+	uint notifications;
 
 	uint overrides;
 
@@ -313,6 +312,7 @@ struct dlr_attributes {
 	int interval;
 	int timeout;
 	int vid;
+	int cfg;
 	int state;
 	int port;
 

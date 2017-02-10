@@ -2,7 +2,7 @@
 #define _INET_FUNC_H
 
 
-const char * inet_ntop ( int af, const void *src, char *dst, size_t size );
+const char * _inet_ntop ( int af, const void *src, char *dst, size_t size );
 const char * Inet_ntop ( int family, const void *addrptr, char *strptr,
     size_t len );
 int inet_pton ( int af, const char *src, void *dst );

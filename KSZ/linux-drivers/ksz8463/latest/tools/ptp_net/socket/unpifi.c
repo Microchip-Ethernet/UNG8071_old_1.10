@@ -53,6 +53,8 @@ static struct ipv6_info *found_ipv6(char *name, struct ipv6_info *head)
 {
 	struct ipv6_info *ipv6 = head;
 
+	if (!head)
+		return NULL;
 	while (AF_INET6 == ipv6->addr.sin6_family) {
 		if (!strcmp(name, ipv6->devname))
 			return ipv6;
@@ -97,6 +99,8 @@ struct ifi_info *get_ifi_info(int family, int doaliases)
 		goto create_sock;
 	count = 10;
 	ipv6head = calloc(count, sizeof(struct ipv6_info));
+	if (!ipv6head)
+		err_quit("out of memory");
 	ipv6 = ipv6head;
 	while (fscanf(f, "%4s%4s%4s%4s%4s%4s%4s%4s %02x %02x %02x %02x %20s\n",
 			addr6p[0], addr6p[1], addr6p[2], addr6p[3], addr6p[4],
@@ -124,16 +128,19 @@ create_sock:
 	lastlen = 0;
 
 	/* initial buffer size guess */
-	len = 100 * sizeof(struct ifreq);
+	len = 10 * sizeof(struct ifreq);
+	lastlen = len;
 	for (;;) {
 		buf = malloc(len);
+		if (!buf)
+			err_quit("out of memory: %u", len);
 		ifc.ifc_len = len;
 		ifc.ifc_buf = buf;
 		if (ioctl(sockfd, SIOCGIFCONF, &ifc) < 0) {
 			if (!invalid_err() || lastlen != 0)
 				err_sys("ioctl error");
 		} else {
-			if (ifc.ifc_len == lastlen)
+			if (ifc.ifc_len <= lastlen)
 				break;
 			lastlen = ifc.ifc_len;
 		}
@@ -159,7 +166,11 @@ create_sock:
 			break;
 		}
 #endif
+#if 0
 		ptr += sizeof(ifr->ifr_name) + len;
+#else
+		ptr += sizeof(struct ifreq);
+#endif
 
 		if (ifr->ifr_addr.sa_family != family)
 			continue;
@@ -181,6 +192,8 @@ create_sock:
 			continue;
 
 		ifi = calloc(1, sizeof(struct ifi_info));
+		if (!ifi)
+			err_quit("out of memory");
 		*ifipnext = ifi;
 		ifipnext = &ifi->ifi_next;
 
@@ -194,6 +207,8 @@ create_sock:
 			if (ifi->ifi_addr == NULL) {
 				ifi->ifi_addr = calloc(1,
 					sizeof(struct sockaddr_in));
+				if (!ifi->ifi_addr)
+					err_quit("out of memory");
 				memcpy(ifi->ifi_addr, sinptr,
 					sizeof(struct sockaddr_in));
 
@@ -202,6 +217,8 @@ create_sock:
 				if (ipv6) {
 					ifi->ifi_addr6 = calloc(1,
 						sizeof(struct sockaddr_in6));
+					if (!ifi->ifi_addr6)
+						err_quit("out of memory");
 					memcpy(ifi->ifi_addr6, &ipv6->addr,
 						sizeof(struct sockaddr_in6));
 					ifi->ifi_plen = ipv6->plen;
@@ -215,6 +232,8 @@ create_sock:
 						&ifrcopy.ifr_broadaddr;
 					ifi->ifi_brdaddr = calloc(1,
 						sizeof(struct sockaddr_in));
+					if (!ifi->ifi_brdaddr)
+						err_quit("out of memory");
 					memcpy(ifi->ifi_brdaddr, sinptr,
 						sizeof(struct sockaddr_in));
 				}
@@ -226,6 +245,8 @@ create_sock:
 						&ifrcopy.ifr_dstaddr;
 					ifi->ifi_dstaddr = calloc(1,
 						sizeof(struct sockaddr_in));
+					if (!ifi->ifi_dstaddr)
+						err_quit("out of memory");
 					memcpy(ifi->ifi_dstaddr, sinptr,
 						sizeof(struct sockaddr_in));
 				}
@@ -237,6 +258,8 @@ create_sock:
 			if (ifi->ifi_addr == NULL) {
 				ifi->ifi_addr = calloc(1,
 					sizeof(struct sockaddr_in6));
+				if (!ifi->ifi_addr)
+					err_quit("out of memory");
 				memcpy(ifi->ifi_addr, sin6ptr,
 					sizeof(struct sockaddr_in6));
 			}

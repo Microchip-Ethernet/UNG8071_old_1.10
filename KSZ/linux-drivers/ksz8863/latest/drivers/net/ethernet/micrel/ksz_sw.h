@@ -1,7 +1,7 @@
 /**
- * Micrel switch common header
+ * Microchip switch common header
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2010-2015 Micrel, Inc.
@@ -29,8 +29,8 @@
 #define KS_PRIO_IN_REG			4
 #endif
 
-#ifndef SWITCH_PORT_NUM
-#define SWITCH_PORT_NUM			2
+#ifndef TOTAL_PORT_NUM
+#define TOTAL_PORT_NUM			3
 #endif
 
 #ifndef SWITCH_COUNTER_NUM
@@ -44,16 +44,40 @@
 #error "SW_D and other data bus parameters need to be defined."
 #endif
 
-#define TOTAL_PORT_NUM			(SWITCH_PORT_NUM + 1)
+/* Host port can only be last of them. */
+#define SWITCH_PORT_NUM			(TOTAL_PORT_NUM - 1)
 
+
+struct sw_dev_info {
+	void *sw;
+	unsigned int minor;
+	u8 *write_buf;
+	u8 *read_buf;
+	size_t read_max;
+	size_t read_len;
+	size_t write_len;
+	struct semaphore sem;
+	struct mutex lock;
+	wait_queue_head_t wait_msg;
+	struct sw_dev_info *next;
+};
+
+
+#include "ksz_sw_api.h"
+#ifdef CONFIG_KSZ_STP
+#include "ksz_stp.h"
+#endif
 #ifdef CONFIG_1588_PTP
 #include "ksz_ptp.h"
 #endif
-#ifdef CONFIG_MRP
+#ifdef CONFIG_KSZ_MRP
 #include "ksz_mrp.h"
 #endif
-#ifdef KSZ_DLR
+#ifdef CONFIG_KSZ_DLR
 #include "ksz_dlr.h"
+#endif
+#ifdef CONFIG_KSZ_HSR
+#include "ksz_hsr.h"
 #endif
 
 
@@ -65,27 +89,6 @@
 #define SWITCH_MAC_TABLE_ENTRIES	16
 #define MULTI_MAC_TABLE_ENTRIES		40
 
-#define RX_TABLE_ENTRIES		128
-#define TX_TABLE_ENTRIES		8
-
-#define BLOCKED_RX_ENTRIES		8
-
-struct ksz_frame_table {
-	u32 crc;
-	int cnt;
-	int port;
-	unsigned long expired;
-};
-
-struct ksz_rx_table {
-	struct ksz_frame_table table[RX_TABLE_ENTRIES];
-	int cnt;
-};
-
-struct ksz_tx_table {
-	struct ksz_frame_table table[TX_TABLE_ENTRIES];
-	int cnt;
-};
 
 /**
  * struct ksz_mac_table - Static MAC table data structure
@@ -120,6 +123,7 @@ struct ksz_alu_table {
 };
 
 #define VLAN_TABLE_ENTRIES		16
+#define FID_ENTRIES			16
 
 /**
  * struct ksz_vlan_table - VLAN table data structure
@@ -161,6 +165,11 @@ struct ksz_port_mib {
 	u32 dropped[2];
 	u8 read_cnt[SWITCH_COUNTER_NUM];
 	u8 read_max[SWITCH_COUNTER_NUM];
+	struct {
+		unsigned long last;
+		u64 last_cnt;
+		u32 peak;
+	} rate[2];
 };
 
 enum {
@@ -181,6 +190,8 @@ enum {
  * @rx_rate:	Receive priority rate.
  * @tx_rate:	Transmit priority rate.
  * @rate_limit: Priority rate limit value.
+ * @vid_member:	VLAN membership.
+ * @index:	Net device pointer.
  * @stp_state:	Current Spanning Tree Protocol state.
  */
 struct ksz_port_cfg {
@@ -191,6 +202,8 @@ struct ksz_port_cfg {
 	u32 rx_rate[PRIO_QUEUES];
 	u32 tx_rate[PRIO_QUEUES];
 	u8 rate_limit;
+	u8 vid_member;
+	int index;
 	int stp_state;
 };
 
@@ -213,8 +226,6 @@ struct ksz_port_cfg {
  * @mac_addr:	Switch MAC address.
  * @broad_per:	Broadcast storm percentage.
  * @member:	Current port membership.  Used for STP.
- * @stp:	STP port membership.  Used for STP.
- * @stp_down:	STP port down membership.  Used for STP.
  * @phy_addr:	PHY address used by first port.
  */
 struct ksz_sw_info {
@@ -223,15 +234,18 @@ struct ksz_sw_info {
 	u32 mac_table_used;
 	int multi_net;
 	int multi_sys;
-	u8 blocked_rx[BLOCKED_RX_ENTRIES][ETH_ALEN];
-	int blocked_rx_cnt;
 	struct ksz_vlan_table vlan_table[VLAN_TABLE_ENTRIES];
-	u32 vlan_table_used;
+	u16 vlan_table_used;
+	u16 fid_used;
 	struct ksz_port_cfg port_cfg[TOTAL_PORT_NUM];
-	struct ksz_rx_table rx_table;
-	struct ksz_tx_table tx_table;
-#ifdef KSZ_DLR
+#ifdef CONFIG_KSZ_STP
+	struct ksz_stp_info rstp;
+#endif
+#ifdef CONFIG_KSZ_DLR
 	struct ksz_dlr_info dlr;
+#endif
+#ifdef CONFIG_KSZ_HSR
+	struct ksz_hsr_info hsr;
 #endif
 
 	SW_D diffserv[DIFFSERV_ENTRIES / KS_PRIO_IN_REG];
@@ -242,9 +256,6 @@ struct ksz_sw_info {
 
 	u8 broad_per;
 	u8 member;
-	u8 stp;
-	u8 stp_down;
-	u8 fwd_ports;
 	u8 phy_addr;
 };
 
@@ -279,6 +290,7 @@ struct ksz_port_state {
  * @status:	LinkMD status values.
  * @length:	LinkMD length values.
  * @mac_addr:	MAC address of the port.
+ * @phy_id:	PHY id used by the port.
  */
 struct ksz_port_info {
 	uint state;
@@ -292,6 +304,10 @@ struct ksz_port_info {
 	u32 status[3];
 	u32 length[3];
 	u8 mac_addr[ETH_ALEN];
+	u8 own_flow_ctrl;
+	u8 own_duplex;
+	u16 own_speed;
+	u8 phy_id;
 };
 
 struct ksz_sw;
@@ -312,16 +328,17 @@ struct ksz_sw_reg_ops {
 struct ksz_sw_net_ops {
 	void (*setup_special)(struct ksz_sw *sw, int *port_cnt,
 		int *mib_port_cnt, int *dev_cnt);
-	void (*setup_dev)(struct ksz_sw *sw, struct net_device *dev,
+	int (*setup_dev)(struct ksz_sw *sw, struct net_device *dev,
 		char *dev_name, struct ksz_port *port, int i, int port_cnt,
 		int mib_port_cnt);
+	void (*leave_dev)(struct ksz_sw *sw);
 	u8 (*get_state)(struct net_device *dev);
 	void (*set_state)(struct net_device *dev, u8 state);
 	struct ksz_port *(*get_priv_port)(struct net_device *dev);
 
 	void (*start)(struct ksz_sw *sw, u8 *addr);
 	int (*stop)(struct ksz_sw *sw, int complete);
-	void (*open_dev)(struct ksz_sw *sw, struct net_device *dev, u8 *addr);
+	int (*open_dev)(struct ksz_sw *sw, struct net_device *dev, u8 *addr);
 	void (*open_port)(struct ksz_sw *sw, struct net_device *dev,
 		struct ksz_port *port, u8 *state);
 	void (*close_port)(struct ksz_sw *sw, struct net_device *dev,
@@ -337,9 +354,15 @@ struct ksz_sw_net_ops {
 	u8 (*set_mac_addr)(struct ksz_sw *sw, struct net_device *dev,
 		u8 promiscuous, int port);
 
-	int (*get_tx_len)(struct ksz_sw *sw, struct sk_buff *skb);
+	int (*get_mtu)(struct ksz_sw *sw);
+	int (*get_tx_len)(struct ksz_sw *sw, struct sk_buff *skb, int port,
+		int *header);
 	void (*add_tail_tag)(struct ksz_sw *sw, struct sk_buff *skb, int ports);
 	int (*get_tail_tag)(u8 *trailer, int *port);
+	int (*get_phys_port)(struct ksz_sw *sw, int port);
+	int (*get_virt_port)(struct ksz_sw *sw, int port);
+	void (*add_vid)(struct ksz_sw *sw, u16 vid);
+	void (*kill_vid)(struct ksz_sw *sw, u16 vid);
 	struct sk_buff *(*check_tx)(struct ksz_sw *sw, struct net_device *dev,
 		struct sk_buff *skb, struct ksz_port *priv);
 	struct net_device *(*rx_dev)(struct ksz_sw *sw, u8 *data, u32 *len,
@@ -359,21 +382,19 @@ struct ksz_sw_net_ops {
 	struct sk_buff *(*final_skb)(struct ksz_sw *sw, struct sk_buff *skb,
 		struct net_device *dev, struct ksz_port *port);
 	int (*drv_rx)(struct ksz_sw *sw, struct sk_buff *skb, int port);
-
-#ifdef CONFIG_KSZ_STP
-	u8 (*get_port_state)(struct net_device *dev,
-		struct net_device **br_dev);
-
 	void (*set_multi)(struct ksz_sw *sw, struct net_device *dev,
 		struct ksz_port *priv);
-	int (*stp_rx)(struct ksz_sw *sw, struct net_device *dev,
-		struct sk_buff *skb, int port, int *forward);
-	int (*blocked_rx)(struct ksz_sw *sw, u8 *data);
-	void (*monitor_ports)(struct ksz_sw *sw);
-#endif
+
 };
 
 struct ksz_sw_ops {
+	void (*init)(struct ksz_sw *sw);
+	void (*exit)(struct ksz_sw *sw);
+	int (*dev_req)(struct ksz_sw *sw, int start, char *arg,
+		struct sw_dev_info *info);
+
+	int (*get_first_port)(struct ksz_sw *sw);
+
 	void (*acquire)(struct ksz_sw *sw);
 	void (*release)(struct ksz_sw *sw);
 
@@ -409,6 +430,17 @@ struct ksz_sw_ops {
 	int (*sysfs_vlan_write)(struct ksz_sw *sw, int proc_num, int index,
 		int num);
 
+#ifdef CONFIG_KSZ_STP
+	ssize_t (*sysfs_stp_read)(struct ksz_sw *sw, int proc_num, ssize_t len,
+		char *buf);
+	int (*sysfs_stp_write)(struct ksz_sw *sw, int proc_num, int num,
+		const char *buf);
+	ssize_t (*sysfs_stp_port_read)(struct ksz_sw *sw, int proc_num,
+		int port, ssize_t len, char *buf);
+	int (*sysfs_stp_port_write)(struct ksz_sw *sw, int proc_num, int port,
+		int num, const char *buf);
+#endif
+
 	void (*cfg_mac)(struct ksz_sw *sw, u8 index, u8 *dest, u32 ports,
 		int override, int use_fid, u16 fid);
 	void (*cfg_vlan)(struct ksz_sw *sw, u8 index, u16 vid, u16 fid,
@@ -417,8 +449,10 @@ struct ksz_sw_ops {
 	void (*free_mac)(struct ksz_sw *sw, u8 index);
 	u8 (*alloc_vlan)(struct ksz_sw *sw);
 	void (*free_vlan)(struct ksz_sw *sw, u8 index);
+	u16 (*alloc_fid)(struct ksz_sw *sw, u16 vid);
+	void (*free_fid)(struct ksz_sw *sw, u16 fid);
 
-	int (*get_id)(struct ksz_sw *sw, u8 *id1, u8 *id2);
+	int (*get_id)(struct ksz_sw *sw, u8 *id1, u8 *id2, char *name);
 	void (*cfg_tail_tag)(struct ksz_sw *sw, int enable);
 	void (*cfg_each_port)(struct ksz_sw *sw, int p, int cpu);
 	int (*port_to_phy_addr)(struct ksz_sw *sw, int p);
@@ -438,7 +472,11 @@ struct ksz_sw_cached_regs {
 #define VLAN_PORT_REMOVE_TAG		(1 << 2)
 #define VLAN_PORT_TAGGING		(1 << 3)
 #define VLAN_PORT_START			200
-#define MRP_SUPPORT			(1 << 4)
+#define SW_VLAN_DEV			(1 << 4)
+#define MRP_SUPPORT			(1 << 5)
+
+#define DLR_HW				(1 << 24)
+#define HSR_HW				(1 << 25)
 
 #define DSA_SUPPORT			(1 << 28)
 #define DIFF_MAC_ADDR			(1 << 30)
@@ -480,7 +518,6 @@ struct ksz_sw_cached_regs {
  * @monitor_timer_info:	Timer information for monitoring ports.
  * @counter:		Pointer to OS dependent MIB counter information.
  * @link_read:		Workqueue for link monitoring.
- * @stp_monitor:	Workqueue for STP monitoring.
  * @ops:		Switch function access.
  * @reg:		Switch register access.
  * @net_ops:		Network related switch function access.
@@ -521,11 +558,11 @@ struct ksz_sw {
 	struct ksz_port_mib port_mib[TOTAL_PORT_NUM];
 	int mib_cnt;
 	int mib_port_cnt;
+	int dsa_port_cnt;
 	int port_cnt;
 	struct ksz_timer_info *monitor_timer_info;
 	struct ksz_counter_info *counter;
 	struct delayed_work *link_read;
-	struct delayed_work *stp_monitor;
 
 	const struct ksz_sw_ops *ops;
 	const struct ksz_sw_reg_ops *reg;
@@ -540,10 +577,18 @@ struct ksz_sw {
 	int tx_start;
 	struct ksz_sw_cached_regs cached;
 
+	int dev_major;
+	u8 *msg_buf;
+	struct sw_dev_info *dev_list[2];
+	struct sw_dev_info *dev_info;
+	uint notifications;
+	char dev_name[20];
+
 	int dev_count;
 	int id;
 	u32 vlan_id;
 	u16 vid;
+	u8 verbose;
 
 	uint features;
 	uint overrides;
@@ -551,6 +596,15 @@ struct ksz_sw {
 	int multi_dev;
 	int stp;
 	int fast_aging;
+	struct {
+		u8 cnt;
+		u8 mask;
+		u8 port;
+		u8 phy_id;
+		u16 vlan;
+		uint proto;
+	} eth_maps[SWITCH_PORT_NUM];
+	int eth_cnt;
 
 #ifdef CONFIG_MRP
 	struct mrp_info mrp;
@@ -608,6 +662,7 @@ struct ksz_port {
 
 struct lan_attributes {
 	int info;
+	int version;
 	int duplex;
 	int speed;
 	int force;
@@ -663,6 +718,17 @@ struct lan_attributes {
 	int dev_start;
 	int vlan_start;
 	int stp;
+
+#ifdef CONFIG_KSZ_STP
+	int stp_br_info;
+	int stp_br_on;
+	int stp_br_prio;
+	int stp_br_fwd_delay;
+	int stp_br_max_age;
+	int stp_br_hello_time;
+	int stp_br_tx_hold;
+	int stp_version;
+#endif
 };
 
 struct sw_attributes {
@@ -692,7 +758,8 @@ struct sw_attributes {
 	int tx_p1_ratio;
 	int tx_p2_ratio;
 	int tx_p3_ratio;
-	int prio_rate;
+	int rx_prio_rate;
+	int tx_prio_rate;
 	int rx_limit;
 	int cnt_ifg;
 	int cnt_pre;
@@ -718,6 +785,18 @@ struct sw_attributes {
 	int macaddr;
 	int src_filter_0;
 	int src_filter_1;
+
+#ifdef CONFIG_KSZ_STP
+	int stp_info;
+	int stp_on;
+	int stp_prio;
+	int stp_admin_path_cost;
+	int stp_path_cost;
+	int stp_admin_edge;
+	int stp_auto_edge;
+	int stp_mcheck;
+	int stp_admin_p2p;
+#endif
 };
 
 struct static_mac_attributes {
@@ -735,44 +814,5 @@ struct vlan_attributes {
 	int fid;
 	int vid;
 };
-
-static int alloc_dev_attr(struct attribute **attrs, size_t attr_size, int item,
-	struct ksz_dev_attr **ksz_attrs, struct attribute ***item_attrs,
-	char *item_name, struct ksz_dev_attr **attrs_ptr)
-{
-	struct attribute **attr_ptr;
-	struct device_attribute *dev_attr;
-	struct ksz_dev_attr *new_attr;
-
-	*item_attrs = kmalloc(attr_size * sizeof(void *), GFP_KERNEL);
-	if (!*item_attrs)
-		return -ENOMEM;
-
-	attr_size--;
-	attr_size *= sizeof(struct ksz_dev_attr);
-	*ksz_attrs = *attrs_ptr;
-	*attrs_ptr += attr_size / sizeof(struct ksz_dev_attr);
-
-	new_attr = *ksz_attrs;
-	attr_ptr = *item_attrs;
-	while (*attrs != NULL) {
-		if (item_name && !strcmp((*attrs)->name, item_name))
-			break;
-		dev_attr = container_of(*attrs, struct device_attribute, attr);
-		memcpy(new_attr, dev_attr, sizeof(struct device_attribute));
-		strncpy(new_attr->dev_name, (*attrs)->name, DEV_NAME_SIZE);
-		if (10 <= item && item <= 15)
-			new_attr->dev_name[0] = item - 10 + 'a';
-		else
-			new_attr->dev_name[0] = item + '0';
-		new_attr->dev_attr.attr.name = new_attr->dev_name;
-		*attr_ptr = &new_attr->dev_attr.attr;
-		new_attr++;
-		attr_ptr++;
-		attrs++;
-	}
-	*attr_ptr = NULL;
-	return 0;
-}
 
 #endif

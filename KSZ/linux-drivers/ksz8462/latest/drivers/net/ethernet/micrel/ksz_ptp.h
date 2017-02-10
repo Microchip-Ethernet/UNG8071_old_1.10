@@ -1,5 +1,5 @@
 /**
- * Micrel PTP common header
+ * Microchip PTP common header
  *
  * Copyright (c) 2015-2016 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
@@ -589,7 +589,8 @@ struct ptp_udp_msg {
 #ifdef __KERNEL__
 #define NANOSEC_IN_SEC			1000000000
 
-#define MAX_PTP_PORT			2
+#define MAX_PTP_PORT			SWITCH_PORT_NUM
+
 #define MAX_TSM_UDP_LEN			100
 #define MAX_TSM_UDP_CNT			(1 << 6)
 
@@ -748,9 +749,11 @@ struct ptp_ops {
 	int (*hwtstamp_ioctl)(struct ptp_info *ptp, struct ifreq *ifr);
 	int (*ixxat_ioctl)(struct ptp_info *ptp, unsigned int cmd,
 		struct ifreq *ifr);
-	int (*dev_req)(struct ptp_info *ptp, char *arg,
+	int (*dev_req)(struct ptp_info *ptp, int start, char *arg,
 		struct ptp_dev_info *info);
 	void (*proc_intr)(struct ptp_info *ptp);
+	int (*get_ts_info)(struct ptp_info *ptp, struct net_device *dev,
+		struct ethtool_ts_info *info);
 
 	ssize_t (*sysfs_read)(struct ptp_info *ptp, int proc_num, ssize_t len,
 		char *buf);
@@ -782,6 +785,7 @@ struct ptp_ops {
 #define PTP_PORT_FORWARD		(1 << 0)
 #define PTP_PORT_TX_FORWARD		(1 << 1)
 
+#define PTP_CHECK_PATH_DELAY		(1 << 7)
 #define PTP_VERIFY_TIMESTAMP		(1 << 8)
 #define PTP_ZERO_RESERVED_FIELD		(1 << 9)
 #define PTP_CHECK_SYS_TIME		(1 << 16)
@@ -911,6 +915,8 @@ struct ptp_info {
 	u64 total_jiffies;
 	union ktime first_ktime;
 	int first_drift;
+	struct ptp_ts last_rx_ts;
+	struct ptp_ts last_tx_ts;
 
 	uint features;
 	uint overrides;

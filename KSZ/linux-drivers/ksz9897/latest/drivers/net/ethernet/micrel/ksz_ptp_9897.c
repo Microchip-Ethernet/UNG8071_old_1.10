@@ -1,7 +1,7 @@
 /**
- * Micrel PTP common code
+ * Microchip PTP common code
  *
- * Copyright (c) 2015 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2009-2015 Micrel, Inc.
@@ -15,6 +15,9 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
+
+
+#define CURRENT_UTC_OFFSET  36 /* 1 Jul 2015 */
 
 
 #if 0
@@ -575,28 +578,10 @@ static void ptp_rx_restart(struct ptp_info *ptp, u8 tsi)
 	ptp_write_index(ptp, PTP_TSI_INDEX_S, tsi);
 	ctrl = sw_r32(sw, REG_PTP_CTRL_STAT__4);
 	ctrl &= ~(TRIG_RESET | TS_RESET);
-#ifdef CHK_SPI_ACCESS
-if ((ctrl & (TS_INT_ENABLE | TS_ENABLE)) != (TS_INT_ENABLE | TS_ENABLE)) {
-printk(" rx: %08x; %x\n", ctrl, sw_r32(sw, REG_PTP_UNIT_INDEX__4));
-#if 1
-ctrl |= TS_INT_ENABLE;
-#endif
-}
-#endif
 	ctrl &= ~TS_ENABLE;
 	sw_w32(sw, REG_PTP_CTRL_STAT__4, ctrl);
 	ctrl |= TS_ENABLE;
 	sw_w32(sw, REG_PTP_CTRL_STAT__4, ctrl);
-#ifdef CHK_SPI_ACCESS
-do {
-u32 status;
-status = sw_r32(sw, REG_PTP_CTRL_STAT__4);
-if ((status & (TS_INT_ENABLE | TS_ENABLE)) != (TS_INT_ENABLE | TS_ENABLE)) {
-printk(" rx: %s %08x %08x; %x\n", __func__, status, ctrl, sw_r32(sw, REG_PTP_UNIT_INDEX__4));
-	sw_w32(sw, REG_PTP_CTRL_STAT__4, ctrl);
-}
-} while (0);
-#endif
 }  /* ptp_rx_restart */
 
 static u32 ts_event_gpi(u8 gpi, u8 event)
@@ -1347,6 +1332,74 @@ static void ptp_tsm_get_time_resp(u8 *data, void *param)
 	get->nsec = htonl(t->nsec);
 }  /* ptp_tsm_get_time_resp */
 
+/**
+ * ptp_get_dest_port - Convert virtual port mask to physical port mask
+ * @ptp:	The PTP instance.
+ * @start:	0-based starting port of the network device.
+ * @port:	1-based virtual port of the network device.
+ *
+ * This function converts virtual ports used inside the network device to
+ * actual ports in the switch.
+ */
+static u32 ptp_get_dest_port(struct ptp_info *ptp, int start, int port)
+{
+	int c;
+	int i;
+	int j;
+	u32 dest = 0;
+	int num = ptp->ports;
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
+
+	--num;
+	for (c = 0, i = start, j = start; c < num; c++, i++, j++) {
+		if (i == sw->HOST_PORT)
+			j++;
+		if (port & (1 << c))
+			dest |= 1 << j;
+	}
+	return dest;
+}  /* ptp_get_dest_port */
+
+/**
+ * ptp_get_dev_port - Convert virtual port to physical port
+ * @ptp:	The PTP instance.
+ * @start:	0-based starting port of the network device.
+ * @port:	0-based virtual port of the network device.
+ *
+ * This function converts virtual port used inside the network device to
+ * actual port in the switch.
+ */
+static u32 ptp_get_dev_port(struct ptp_info *ptp, int start, int port)
+{
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
+
+	port += start;
+	if (port >= sw->HOST_PORT)
+		++port;
+	return port;
+}  /* ptp_get_dev_port */
+
+/**
+ * ptp_get_net_port - Convert physical port to virtual port
+ * @ptp:	The PTP instance.
+ * @start:	0-based starting port of the network device.
+ * @port:	0-based physical port of the switch.
+ *
+ * This function converts physical port used in the switch to virtual port used
+ * by the network device.
+ */
+static u32 ptp_get_net_port(struct ptp_info *ptp, int start, int port)
+{
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
+
+	port += start;
+	if (port == sw->HOST_PORT)
+		return ptp->ports - start;
+	if (port < sw->HOST_PORT || start > sw->HOST_PORT)
+		++port;
+	return port - start;
+}  /* ptp_get_net_port */
+
 static void add_tx_delay(struct ptp_ts *ts, int delay, u32 cur_sec)
 {
 	update_ts(ts, cur_sec);
@@ -1366,6 +1419,15 @@ static void save_tx_ts(struct ptp_info *ptp, struct ptp_tx_ts *tx,
 	unsigned long diff = 0;
 
 	add_tx_delay(&htx->ts, delay, ptp->cur_time.sec);
+	if (ptp->overrides & PTP_CHECK_PATH_DELAY) {
+		if (ptp->last_rx_ts.t.sec) {
+			struct ksz_ptp_time diff;
+
+			calc_udiff(&htx->ts.t, &ptp->last_rx_ts.t, &diff);
+			dbg_msg("pd: %d\n", diff.nsec);
+		} else
+			ptp->last_tx_ts = htx->ts;
+	}
 	if (!htx->sim_2step) {
 		struct tsm_db *db = (struct tsm_db *) tx->data.buf;
 		u8 msg = tx->data.buf[0] & 3;
@@ -1411,7 +1473,8 @@ static void save_tx_ts(struct ptp_info *ptp, struct ptp_tx_ts *tx,
 			shhwtstamps.hwtstamp = ns_to_ktime(ns);
 
 			/* Indicate which port message is sent out. */
-			tx->msg->hdr.reserved2 = port + 1;
+			tx->msg->hdr.reserved2 =
+				ptp_get_net_port(ptp, 0, port);
 			len = (unsigned char *) tx->msg - tx->skb->data;
 			__skb_pull(tx->skb, len);
 			skb_tstamp_tx(tx->skb, &shhwtstamps);
@@ -1556,6 +1619,8 @@ static void ptp_tx_intr_enable(struct ptp_info *ptp)
 	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
 
 	for (i = 0; i < ptp->ports; i++) {
+		if ((sw->features & USE_FEWER_PORTS) && i == sw->last_port)
+			i = sw->HOST_PORT;
 		reg = PORT_CTRL_ADDR(i, REG_PTP_PORT_TX_INT_STATUS__2);
 		sw->reg->w16(sw, reg, 0xffff);
 		reg = PORT_CTRL_ADDR(i, REG_PTP_PORT_TX_INT_ENABLE__2);
@@ -1723,11 +1788,14 @@ static void adj_clock(struct work_struct *work)
 static void set_latency(struct work_struct *work)
 {
 	struct ptp_info *ptp = container_of(work, struct ptp_info, set_latency);
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
 	int index;
 	int p;
 
 	ptp->ops->acquire(ptp);
 	for (p = 0; p < ptp->ports; p++) {
+		if ((sw->features & USE_FEWER_PORTS) && p == sw->last_port)
+			p = sw->HOST_PORT;
 		if (ptp->linked[p] & 0x80000000) {
 			ptp->linked[p] &= ~0x80000000;
 			index = get_speed_index(ptp, p);
@@ -1753,19 +1821,21 @@ static void ptp_hw_disable(struct ptp_info *ptp)
 		sw->cached.ptp_unit_index =
 			(i << PTP_TSI_INDEX_S) |
 			(i << PTP_TOU_INDEX_S);
-		sw_w32(sw, REG_PTP_UNIT_INDEX__4, sw->cached.ptp_unit_index);
+		sw->reg->w32(sw, REG_PTP_UNIT_INDEX__4,
+			sw->cached.ptp_unit_index);
 		ctrl = TS_RESET | TRIG_RESET;
-		sw_w32(sw, REG_PTP_CTRL_STAT__4, ctrl);
-		sw_w32(sw, REG_PTP_CTRL_STAT__4, 0);
-		sw_w32(sw, REG_TRIG_CTRL__4, 0);
-		sw_w32(sw, REG_TS_CTRL_STAT__4, 0);
+		sw->reg->w32(sw, REG_PTP_CTRL_STAT__4, ctrl);
+		sw->reg->w32(sw, REG_PTP_CTRL_STAT__4, 0);
+		sw->reg->w32(sw, REG_TRIG_CTRL__4, 0);
+		sw->reg->w32(sw, REG_TS_CTRL_STAT__4, 0);
 	}
 	sw->cached.ptp_unit_index = (i << PTP_TOU_INDEX_S);
-	sw_w32(sw, REG_PTP_UNIT_INDEX__4, sw->cached.ptp_unit_index);
+	sw->reg->w32(sw, REG_PTP_UNIT_INDEX__4, sw->cached.ptp_unit_index);
 	ctrl = TRIG_RESET;
-	sw_w32(sw, REG_PTP_CTRL_STAT__4, ctrl);
-	sw_w32(sw, REG_PTP_CTRL_STAT__4, 0);
-	sw_w32(sw, REG_TRIG_CTRL__4, 0);
+	sw->reg->w32(sw, REG_PTP_CTRL_STAT__4, ctrl);
+	sw->reg->w32(sw, REG_PTP_CTRL_STAT__4, 0);
+	sw->reg->w32(sw, REG_TRIG_CTRL__4, 0);
+	sw->reg->w32(sw, REG_PTP_SUBNANOSEC_RATE, 0);
 }  /* ptp_hw_disable */
 
 static void ptp_hw_enable(struct ptp_info *ptp)
@@ -1777,18 +1847,18 @@ static void ptp_hw_enable(struct ptp_info *ptp)
 	ptp->ops->acquire(ptp);
 	ptp_hw_disable(ptp);
 #ifndef ACL_TEST
-	data = sw_r16(sw, REG_PTP_MSG_CONF1);
+	data = sw->reg->r16(sw, REG_PTP_MSG_CONF1);
 dbg_msg("msg_conf1: %x\n", data);
 	data = ptp->mode;
-	sw_w16(sw, REG_PTP_MSG_CONF1, data);
-	data = sw_r16(sw, REG_PTP_MSG_CONF1);
+	sw->reg->w16(sw, REG_PTP_MSG_CONF1, data);
+	data = sw->reg->r16(sw, REG_PTP_MSG_CONF1);
 	if ((sw->overrides & TAIL_TAGGING) && (data & PTP_ENABLE))
 		sw->overrides |= PTP_TAG;
 #endif
-	data = sw_r16(sw, REG_PTP_MSG_CONF2);
+	data = sw->reg->r16(sw, REG_PTP_MSG_CONF2);
 dbg_msg("msg_conf2: %x\n", data);
-	sw_w16(sw, REG_PTP_MSG_CONF2, ptp->cfg);
-	data = sw_r16(sw, REG_PTP_CLK_CTRL);
+	sw->reg->w16(sw, REG_PTP_MSG_CONF2, ptp->cfg);
+	data = sw->reg->r16(sw, REG_PTP_CLK_CTRL);
 dbg_msg("clk_ctrl: %x\n", data);
 	data |= PTP_CLK_ENABLE;
 	data &= ~PTP_CLK_ADJ_ENABLE;
@@ -1797,30 +1867,136 @@ dbg_msg("clk_ctrl: %x\n", data);
 	if (!(sw->features & NEW_CAP))
 		data |= PTP_CLK_RESET;
 #endif
-	sw_w16(sw, REG_PTP_CLK_CTRL, data);
-
-	ptp->drift_set = ptp->drift = 0;
-	sw->reg->w32(sw, REG_PTP_SUBNANOSEC_RATE, 0);
+	sw->reg->w16(sw, REG_PTP_CLK_CTRL, data);
 
 	sw->reg->w16(sw, REG_SW_HSR_TPID__2, 0x892F);
 
 	for (i = 0; i < ptp->ports; i++) {
-		ptp->rx_latency[i][0] = 390;
-		ptp->tx_latency[i][0] = 140;
-		ptp->rx_latency[i][1] = 580;
-		ptp->rx_latency[i][1] = 620;
-		ptp->tx_latency[i][1] = 140;
-		ptp->rx_latency[i][2] = 580;
-		ptp->rx_latency[i][2] = 620;
-		ptp->tx_latency[i][2] = 140;
-	}
-	for (i = 0; i < ptp->ports; i++) {
+		if ((sw->features & USE_FEWER_PORTS) && i == sw->last_port)
+			i = sw->HOST_PORT;
 		set_ptp_ingress(ptp, i, ptp->rx_latency[i][0]);
 		set_ptp_egress(ptp, i, ptp->tx_latency[i][0]);
 	}
 
+	/* PTP stack is still running while device is reset. */
+	if (ptp->drift_set) {
+		ptp->drift = ptp->drift_set;
+		ptp->adjust = clk_adjust_val(ptp->drift, NANOSEC_IN_SEC);
+		set_ptp_adjust(ptp, ptp->adjust);
+		syntonize_clk(ptp);
+		ptp->ptp_synt = true;
+	}
+
 	ptp->ops->release(ptp);
 }  /* ptp_hw_enable */
+
+static void init_tx_ts(struct ptp_tx_ts *ts)
+{
+	ts->ts.timestamp = 0;
+	ts->req_time = 0;
+	ts->resp_time = 0;
+	ts->missed = false;
+	ts->hdr.messageType = 7;
+}  /* init_tx_ts */
+
+static void ptp_init_hw(struct ptp_info *ptp)
+{
+	int port;
+	u32 reg;
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
+
+	ptp->ops->acquire(ptp);
+	for (port = 0; port < ptp->ports; port++) {
+		int index;
+
+		if ((sw->features & USE_FEWER_PORTS) && port == sw->last_port)
+			port = sw->HOST_PORT;
+		ptp->hw_sync[port].ts.timestamp = 0;
+		ptp->hw_sync[port].sending = false;
+		ptp->hw_dreq[port].ts.timestamp = 0;
+		ptp->hw_dreq[port].sending = false;
+		ptp->hw_resp[port].ts.timestamp = 0;
+		ptp->hw_resp[port].sending = false;
+		init_tx_ts(&ptp->tx_sync[port]);
+		init_tx_ts(&ptp->tx_dreq[port]);
+		init_tx_ts(&ptp->tx_resp[port]);
+		reg = PORT_CTRL_ADDR(port, REG_PTP_PORT_XDELAY_TS);
+		ptp->xdelay_ts[port] = sw->reg->r32(sw, reg);
+		reg = PORT_CTRL_ADDR(port, REG_PTP_PORT_PDRESP_TS);
+		ptp->pdresp_ts[port] = sw->reg->r32(sw, reg);
+		index = get_speed_index(ptp, port);
+		ptp->rx_latency[port][index] = get_ptp_ingress(ptp, port);
+		ptp->tx_latency[port][index] = get_ptp_egress(ptp, port);
+		ptp->asym_delay[port][index] = get_ptp_asym(ptp, port);
+		ptp->peer_delay[port] = get_ptp_link(ptp, port);
+		dbg_msg("%d = %d %d %d; %u\n", port,
+			ptp->rx_latency[port][index],
+			ptp->tx_latency[port][index],
+			ptp->asym_delay[port][index],
+			ptp->peer_delay[port]);
+		set_ptp_link(ptp, port, 0);
+		ptp->peer_delay[port] = 0;
+	}
+	ptp->ops->release(ptp);
+}  /* ptp_init_hw */
+
+static void ptp_check(struct ptp_info *ptp)
+{
+	struct ptp_utime cur;
+	struct ptp_utime now;
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
+
+	ptp->features |= PTP_ADJ_HACK;
+	ptp->ops->acquire(ptp);
+	ptp->reg->get_time(ptp, &cur);
+	ptp->reg->adjust_time(ptp, true, 10, 0, true);
+	ptp->reg->get_time(ptp, &now);
+dbg_msg("%08x:%08x %08x:%08x\n", cur.sec, cur.nsec, now.sec, now.nsec);
+	if (now.sec - cur.sec >= 10) {
+		ptp->features &= ~PTP_ADJ_HACK;
+		ptp->features |= PTP_ADJ_SEC;
+		ptp->reg->adjust_time(ptp, false, 10, 0, true);
+		ptp->version = 1;
+	}
+/*
+ * THa  2013/01/08
+ * The Rev. D chip has a problem of decrementing nanosecond that is bigger than
+ * the current nanosecond when continual clock adjustment is enabled.  The
+ * workaround is to use the PTP_ADJ_HACK code although the actual problem
+ * avoided is now different.
+ */
+	if (!(ptp->features & PTP_ADJ_HACK)) {
+		u16 data;
+
+		data = sw->cached.ptp_clk_ctrl;
+		sw->cached.ptp_clk_ctrl |= PTP_CLK_ADJ_ENABLE;
+		sw->reg->w16(sw, REG_PTP_CLK_CTRL, sw->cached.ptp_clk_ctrl);
+		if (cur.sec < 1)
+			cur.sec = 1;
+		cur.nsec = 0;
+		ptp->reg->set_time(ptp, &cur);
+		ptp->reg->adjust_time(ptp, false, 0, 800000000, false);
+		ptp->reg->get_time(ptp, &now);
+		dbg_msg("%x:%u %x:%u\n", cur.sec, cur.nsec, now.sec, now.nsec);
+		if (abs(now.sec - cur.sec) > 2) {
+			ptp->reg->get_time(ptp, &now);
+			dbg_msg("! %x:%u\n", now.sec, now.nsec);
+			ptp->features |= PTP_ADJ_HACK;
+			sw->reg->w16(sw, REG_PTP_CLK_CTRL, data);
+
+			sw->reg->w16(sw, REG_PTP_CLK_CTRL,
+				data | PTP_CLK_ADJ_ENABLE);
+			ptp->reg->set_time(ptp, &cur);
+			ptp->reg->adjust_time(ptp, false, 0, 800000000, true);
+			ptp->reg->get_time(ptp, &now);
+			dbg_msg("ok %x:%u\n", now.sec, now.nsec);
+		}
+		sw->cached.ptp_clk_ctrl = data;
+		sw->reg->w16(sw, REG_PTP_CLK_CTRL, data);
+	}
+	ptp->version = 2;
+	ptp->ops->release(ptp);
+}  /* ptp_check */
 
 static void ptp_start(struct ptp_info *ptp, int init)
 {
@@ -1829,15 +2005,13 @@ static void ptp_start(struct ptp_info *ptp, int init)
 	struct ptp_utime t;
 	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
 
-#if defined(NO_DIRECT_ACCESS)
-do {
-if (!sw->info->iba.use_iba) {
-printk("%s\n", __func__);
-	ptp->started = true;
-return;
-}
-} while (0);
-#endif
+	if (!ptp->version) {
+		ptp_hw_enable(ptp);
+		ptp_check(ptp);
+		if (ptp->test_access_time)
+			ptp->test_access_time(ptp);
+		ptp_init_hw(ptp);
+	} else
 	if (init && (sw->features & NEW_CAP))
 		ptp_hw_enable(ptp);
 	ptp->ops->acquire(ptp);
@@ -1866,12 +2040,20 @@ return;
 	sw_w32(sw, REG_PTP_INT_STATUS__4, 0xffffffff);
 	if (sw->overrides & TAIL_TAGGING)
 		sw->overrides |= PTP_TAG;
+	ptp->tx_intr = PTP_PORT_XDELAY_REQ_INT;
+#if 0
+	ptp->tx_intr = PTP_PORT_XDELAY_REQ_INT | PTP_PORT_PDELAY_RESP_INT |
+		PTP_PORT_SYNC_INT;
+#endif
 	ptp_tx_intr_enable(ptp);
 	ptp->ops->release(ptp);
 
 	ts = ktime_to_timespec(ktime_get_real());
 	t.sec = ts.tv_sec;
 	t.nsec = ts.tv_nsec;
+
+	/* Adjust for leap seconds. */
+	t.sec += ptp->utc_offset;
 	ptp->ops->acquire(ptp);
 	set_ptp_time(ptp, &t);
 	ptp->cur_time = t;
@@ -2003,6 +2185,8 @@ static int ptp_stop(struct ptp_info *ptp)
 {
 	flush_work(&ptp->adj_clk);
 	flush_work(&ptp->set_latency);
+	cancel_delayed_work_sync(&ptp->check_pps);
+	cancel_delayed_work_sync(&ptp->update_sec);
 	flush_workqueue(ptp->access);
 	ptp->update_sec_jiffies = 0;
 	ptp->ops->acquire(ptp);
@@ -2017,7 +2201,9 @@ static int ptp_stop(struct ptp_info *ptp)
 
 	/* Stop processing PTP interrupts. */
 	ptp->started = false;
-	ptp->first_drift = 0;
+	ptp->first_drift = ptp->drift = 0;
+	ptp->tx_intr = 0;
+	ptp_tx_intr_enable(ptp);
 	ptp->ops->release(ptp);
 
 #ifdef DEBUG_MSG
@@ -2025,15 +2211,6 @@ static int ptp_stop(struct ptp_info *ptp)
 #endif
 	return false;
 }  /* ptp_stop */
-
-static void init_tx_ts(struct ptp_tx_ts *ts)
-{
-	ts->ts.timestamp = 0;
-	ts->req_time = 0;
-	ts->resp_time = 0;
-	ts->missed = false;
-	ts->hdr.messageType = 7;
-}  /* init_tx_ts */
 
 static struct ptp_dev_info *find_minor_dev(struct ptp_dev_info *info)
 {
@@ -2051,54 +2228,6 @@ static struct ptp_dev_info *find_minor_dev(struct ptp_dev_info *info)
 		dev = NULL;
 	return dev;
 }  /* find_minor_dev */
-
-static void ptp_init_hw(struct ptp_info *ptp)
-{
-	int port;
-	u32 reg;
-	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
-
-#if defined(NO_DIRECT_ACCESS)
-do {
-	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
-if (!sw->info->iba.use_iba) {
-printk("%s\n", __func__);
-return;
-}
-} while (0);
-#endif
-	ptp->ops->acquire(ptp);
-	for (port = 0; port < ptp->ports; port++) {
-		int index;
-
-		ptp->hw_sync[port].ts.timestamp = 0;
-		ptp->hw_sync[port].sending = false;
-		ptp->hw_dreq[port].ts.timestamp = 0;
-		ptp->hw_dreq[port].sending = false;
-		ptp->hw_resp[port].ts.timestamp = 0;
-		ptp->hw_resp[port].sending = false;
-		init_tx_ts(&ptp->tx_sync[port]);
-		init_tx_ts(&ptp->tx_dreq[port]);
-		init_tx_ts(&ptp->tx_resp[port]);
-		reg = PORT_CTRL_ADDR(port, REG_PTP_PORT_XDELAY_TS);
-		ptp->xdelay_ts[port] = sw->reg->r32(sw, reg);
-		reg = PORT_CTRL_ADDR(port, REG_PTP_PORT_PDRESP_TS);
-		ptp->pdresp_ts[port] = sw->reg->r32(sw, reg);
-		index = get_speed_index(ptp, port);
-		ptp->rx_latency[port][index] = get_ptp_ingress(ptp, port);
-		ptp->tx_latency[port][index] = get_ptp_egress(ptp, port);
-		ptp->asym_delay[port][index] = get_ptp_asym(ptp, port);
-		ptp->peer_delay[port] = get_ptp_link(ptp, port);
-		dbg_msg("%d = %d %d %d; %u\n", port,
-			ptp->rx_latency[port][index],
-			ptp->tx_latency[port][index],
-			ptp->asym_delay[port][index],
-			ptp->peer_delay[port]);
-		set_ptp_link(ptp, port, 0);
-		ptp->peer_delay[port] = 0;
-	}
-	ptp->ops->release(ptp);
-}  /* ptp_init_hw */
 
 static void ptp_init_state(struct ptp_info *ptp)
 {
@@ -2126,6 +2255,8 @@ static void ptp_init_state(struct ptp_info *ptp)
 	ptp->ops->acquire(ptp);
 	ptp->adjust_offset = 0;
 	ptp->offset_changed = 0;
+	memset(&ptp->last_rx_ts, 0, sizeof(struct ptp_ts));
+	memset(&ptp->last_tx_ts, 0, sizeof(struct ptp_ts));
 
 	if (!ptp->ptp_synt) {
 		syntonize_clk(ptp);
@@ -2159,6 +2290,9 @@ static void ptp_exit_state(struct ptp_info *ptp)
 	ptp->cap = 0;
 	ptp->op_mode = 0;
 	ptp->op_state = 0;
+
+	/* Indicate drift is not being set by PTP stack. */
+	ptp->drift_set = 0;
 }  /* ptp_exit_state */
 
 static struct ptp_msg *check_ptp_msg(u8 *data, u16 **udp_check_ptr)
@@ -2253,6 +2387,21 @@ static struct ptp_msg *check_ptp_event(u8 *data)
 	return msg;
 }
 
+/**
+ * update_ptp_msg - Update PTP message
+ * @data:	The PTP frame data.
+ * @port:	Buffer to hold the tx port, or hoding the rx port.
+ * @timestamp:	Buffer to hold the tx timestamp, or holding the rx timestamp.
+ * @overrides:	Parameter to do something with the reserved fields.
+ *
+ * This function serves two purposes so that driver code is compatible to the
+ * PTP stack using the first generation PTP operation behavior.
+ * The PTP header reserved fieids were used to store the port and timestamp.
+ * When receiving and if necessary those field are filled with the rx port
+ * and timestamp so that old PTP stack can retrieve those information.
+ * When transmiting the tx port and timestamp are retrieved before those fields
+ * are filled with zero.
+ */
 static struct ptp_msg *update_ptp_msg(u8 *data, u8 *port, u32 *timestamp,
 	u32 overrides)
 {
@@ -2266,6 +2415,22 @@ static struct ptp_msg *update_ptp_msg(u8 *data, u8 *port, u32 *timestamp,
 	if (msg->hdr.reserved2 != *port) {
 		u8 data = msg->hdr.reserved2;
 
+		/*
+		 * Hardware automatically updates the port number to the
+		 * actual port sending the Pdelay_Req message.
+		 */
+		if ((overrides & PTP_UPDATE_PDELAY_RESP_PORT) &&
+		    PDELAY_RESP_MSG == msg->hdr.messageType) {
+			u16 reply = ntohs(msg->data.pdelay_resp.
+				requestingPortIdentity.port);
+
+			if (reply - 1 == *port) {
+				udp_check += reply;
+				msg->data.pdelay_resp.requestingPortIdentity.
+					port = htons(*port);
+				udp_check -= *port;
+			}
+		}
 		if (overrides & PTP_ZERO_RESERVED_FIELD) {
 			udp_check += data;
 			msg->hdr.reserved2 = *port;
@@ -2440,8 +2605,10 @@ static int ptp_hwtstamp_ioctl(struct ptp_info *ptp, struct ifreq *ifr)
 		ptp->rx_en &= ~1;
 		break;
 	case HWTSTAMP_FILTER_ALL:
+#if 0
 		ptp->rx_en |= 1;
 		break;
+#endif
 	default:
 		if (!ptp->cap && !(ptp->rx_en & 1) && (ptp->tx_en & 1)) {
 			ptp->tx_en |= (1 << 8);
@@ -2455,12 +2622,10 @@ static int ptp_hwtstamp_ioctl(struct ptp_info *ptp, struct ifreq *ifr)
 		-EFAULT : 0;
 }
 
-#ifdef CONFIG_KSZ_STP
-#if 0
-static int ptp_chk_rx_msg(struct ptp_info *ptp, u8 *data, u8 port)
+static int ptp_chk_rx_msg(struct ptp_info *ptp, u8 *data, int port)
 {
 	struct ptp_msg *msg;
-	struct ptp_msg_options *last;
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
 
 	/* Use previously parsed PTP message if available. */
 	msg = ptp->rx_msg;
@@ -2470,25 +2635,12 @@ static int ptp_chk_rx_msg(struct ptp_info *ptp, u8 *data, u8 port)
 		return false;
 	ptp->rx_msg = msg;
 
-	last = &ptp->rx_msg_chk[msg->hdr.messageType];
-	if (!memcmp(&last->id, &msg->hdr.sourcePortIdentity,
-	    sizeof(struct ptp_port_identity)) &&
-	    last->seqid == ntohs(msg->hdr.sequenceId) &&
-	    last->domain == msg->hdr.domainNumber) {
-dbg_msg(" drop: %x %d %d; %04x %04x\n", last->msg, last->port, port,
-last->seqid, ntohs(msg->hdr.sequenceId));
+	if ((sw->features & USE_802_1X_AUTH) &&
+	    !(sw->on_ports & (1 << port))) {
 		return true;
 	}
-	memcpy(&last->id, &msg->hdr.sourcePortIdentity,
-		sizeof(struct ptp_port_identity));
-	last->seqid = ntohs(msg->hdr.sequenceId);
-	last->domain = msg->hdr.domainNumber;
-	last->msg = msg->hdr.messageType;
-	last->port = port;
 	return false;
 }  /* ptp_chk_rx_msg */
-#endif
-#endif
 
 static int ptp_drop_pkt(struct ptp_info *ptp, struct sk_buff *skb, u32 vlan_id,
 	int *tag, int *ptp_tag)
@@ -2522,10 +2674,8 @@ static int ptp_drop_pkt(struct ptp_info *ptp, struct sk_buff *skb, u32 vlan_id,
 		*ptp_tag = 0;
 		return false;
 	}
-#ifdef CONFIG_KSZ_STP_
 	if (ptp_chk_rx_msg(ptp, skb->data, *ptp_tag))
 		return true;
-#endif
 	if (ptp->rx_en & 1)
 		ptp->ops->get_rx_tstamp(ptp, skb);
 	(*ptp_tag)++;
@@ -2696,14 +2846,15 @@ dbg_msg("o: %d\n", offset.nsec);
 #if 1
 	if (nsec && nsec < 5000000000) {
 		struct ptp_clk_options clk_opt;
+		int drift_set;
 		int output;
 		int err;
 
 		output = 1;
 		clk_opt.sec = clk_opt.nsec = 0;
 
-		ptp->drift = (int) drift_per_sec;
-		if (ptp->drift < 5 && abs(offset.nsec) > 1000) {
+		drift_set = (int) drift_per_sec;
+		if (drift_set < 5 && abs(offset.nsec) > 1000) {
 			clk_opt.sec = offset.sec;
 			clk_opt.nsec = offset.nsec;
 			if (offset.nsec < 0)
@@ -2715,10 +2866,10 @@ dbg_msg("o: %d\n", offset.nsec);
 		}
 
 		if (drift.nsec < 0)
-			ptp->drift = -ptp->drift;
-		ptp->drift += ptp->drift_set;
+			drift_set = -drift_set;
+		drift_set += ptp->drift;
 
-		clk_opt.drift = ptp->drift;
+		clk_opt.drift = drift_set;
 		clk_opt.interval = NANOSEC_IN_SEC;
 		err = proc_ptp_hw_access(ptp,
 			DEV_CMD_PUT, DEV_PTP_CLK, output,
@@ -2742,11 +2893,12 @@ static struct ptp_msg *ptp_set_rx_info(struct ptp_info *ptp, u8 *data, u8 port,
 		return NULL;
 
 	/* Set receive port and timestamp inside the PTP message. */
-	if (0 == ptp->op_mode && 1 == ptp->op_state)
+	if (0 == ptp->op_mode && 1 == ptp->op_state) {
 		overrides |= PTP_ZERO_RESERVED_FIELD;
-	else
+		overrides |= PTP_UPDATE_PDELAY_RESP_PORT;
+		port = ptp_get_net_port(ptp, 0, port);
+	} else
 		overrides &= ~PTP_ZERO_RESERVED_FIELD;
-	port++;
 	msg = update_ptp_msg(data, &port, &timestamp, overrides);
 #if 1
 	if (ptp->overrides & PTP_CHECK_SYNC_TIME)
@@ -2781,6 +2933,7 @@ static struct ptp_msg *ptp_get_tx_info(struct ptp_info *ptp, u8 *data,
 		overrides |= PTP_ZERO_RESERVED_FIELD;
 	msg = update_ptp_msg(data, &port, &timestamp, overrides);
 	if (msg) {
+		port = ptp_get_dest_port(ptp, 0, port);
 
 		/* Get transmit port and timestamp inside the PTP message. */
 		if (0 == ptp->op_mode) {
@@ -2822,6 +2975,16 @@ static void ptp_get_rx_info(struct ptp_info *ptp, u8 *data, u8 port,
 	index = get_speed_index(ptp, port);
 	sub_nsec(&rx_msg->data.ts.t, ptp->rx_latency[port][index]);
 	timestamp = (rx_msg->data.ts.t.sec << 30) | rx_msg->data.ts.t.nsec;
+	if (ptp->overrides & PTP_CHECK_PATH_DELAY) {
+		if (ptp->last_tx_ts.t.sec) {
+			struct ksz_ptp_time diff;
+
+			calc_udiff(&ptp->last_tx_ts.t, &rx_msg->data.ts.t,
+				&diff);
+			dbg_msg("pd: %d\n", diff.nsec);
+		} else
+			ptp->last_rx_ts = rx_msg->data.ts;
+	}
 #if 0
 	if (ptp->overrides & PTP_CHECK_SYNC_TIME)
 dbg_msg(" %x; %08x; %x:%09u\n", ptp->cur_time.sec, timestamp,
@@ -2890,6 +3053,18 @@ static void ptp_set_tx_info(struct ptp_info *ptp, u8 *data, void *ptr)
 	ptp->tx_msg = ptp_get_tx_info(ptp, data, &tx_msg.port,
 		&tx_msg.ts.timestamp);
 	if (!ptp->tx_msg) {
+
+		/* Block PTP messages for blocked ports. */
+		if ((sw->features & USE_802_1X_AUTH) &&
+		    (tag->ports & sw->TAIL_TAG_LOOKUP)) {
+			if (!ptp->tx_msg_parsed) {
+				ptp->tx_msg = check_ptp_msg(data, NULL);
+				ptp->tx_msg_parsed = true;
+			}
+			if (ptp->tx_msg)
+				tag->ports = sw->on_ports;
+		}
+
 		/* Remember transmit ports for transmit timestamp report. */
 		ptp->tx_ports = tag->ports;
 		return;
@@ -3044,6 +3219,10 @@ static void ptp_set_tx_info(struct ptp_info *ptp, u8 *data, void *ptr)
 dbg_msg("  tx m:%x f:%d p:%x\n", msg->hdr.messageType, found, tag->ports);
 
 set_tx_info_done:
+	if ((sw->features & USE_802_1X_AUTH) &&
+	    (tag->ports & sw->TAIL_TAG_LOOKUP)) {
+		tag->ports = sw->on_ports;
+	}
 
 	/* Remember transmit ports for transmit timestamp report. */
 	ptp->tx_ports = tag->ports;
@@ -3933,6 +4112,7 @@ static int proc_ptp_adj_clk(struct ptp_info *ptp, u8 *data, int adjust)
 			add_nsec(&ptp->cur_time, cmd->nsec);
 		else
 			sub_nsec(&ptp->cur_time, cmd->nsec);
+		if (cmd->sec)
 		dbg_msg(" adj clk: %d %u:%09u\n", adjust, cmd->sec, cmd->nsec);
 	}
 	if (cmd->interval) {
@@ -3952,7 +4132,9 @@ if (!ptp->first_drift && ptp->drift_set)
 dbg_msg("first drift: %d\n", ptp->drift_set);
 		if (!ptp->first_drift)
 			ptp->first_drift = ptp->drift_set;
+#if 0
 		dbg_msg(" adj drift: %d\n", cmd->drift);
+#endif
 	}
 	ptp->ops->release(ptp);
 	return 0;
@@ -3961,9 +4143,12 @@ dbg_msg("first drift: %d\n", ptp->drift_set);
 static int proc_ptp_get_delay(struct ptp_info *ptp, int port, u8 *data)
 {
 	struct ptp_delay_values *delay = (struct ptp_delay_values *) data;
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
 
 	if (port >= ptp->ports)
 		return DEV_IOC_INVALID_CMD;
+	if ((sw->features & USE_FEWER_PORTS) && port == sw->last_port)
+		port = sw->HOST_PORT;
 	ptp->ops->acquire(ptp);
 	delay->rx_latency = get_ptp_ingress(ptp, port);
 	delay->tx_latency = get_ptp_egress(ptp, port);
@@ -3975,10 +4160,13 @@ static int proc_ptp_get_delay(struct ptp_info *ptp, int port, u8 *data)
 static int proc_ptp_set_delay(struct ptp_info *ptp, int port, u8 *data)
 {
 	struct ptp_delay_values *delay = (struct ptp_delay_values *) data;
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
 	int index;
 
 	if (port >= ptp->ports)
 		return DEV_IOC_INVALID_CMD;
+	if ((sw->features & USE_FEWER_PORTS) && port == sw->last_port)
+		port = sw->HOST_PORT;
 	ptp->ops->acquire(ptp);
 	set_ptp_ingress(ptp, port, delay->rx_latency);
 	set_ptp_egress(ptp, port, delay->tx_latency);
@@ -3998,10 +4186,13 @@ static int proc_ptp_set_delay(struct ptp_info *ptp, int port, u8 *data)
 static int proc_ptp_get_peer_delay(struct ptp_info *ptp, int port, u8 *data)
 {
 	struct ptp_delay_values *delay = (struct ptp_delay_values *) data;
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
 	u32 link;
 
 	if (port >= ptp->ports)
 		return DEV_IOC_INVALID_CMD;
+	if ((sw->features & USE_FEWER_PORTS) && port == sw->last_port)
+		port = sw->HOST_PORT;
 	ptp->ops->acquire(ptp);
 	delay->rx_latency = 0;
 	delay->tx_latency = 0;
@@ -4016,10 +4207,13 @@ static int proc_ptp_get_peer_delay(struct ptp_info *ptp, int port, u8 *data)
 static int proc_ptp_set_peer_delay(struct ptp_info *ptp, int port, u8 *data)
 {
 	struct ptp_delay_values *delay = (struct ptp_delay_values *) data;
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
 	u32 link;
 
 	if (port >= ptp->ports)
 		return DEV_IOC_INVALID_CMD;
+	if ((sw->features & USE_FEWER_PORTS) && port == sw->last_port)
+		port = sw->HOST_PORT;
 	ptp->ops->acquire(ptp);
 	link = delay->rx_latency;
 	link <<= 16;
@@ -4027,8 +4221,9 @@ static int proc_ptp_set_peer_delay(struct ptp_info *ptp, int port, u8 *data)
 	if (link != ptp->peer_delay[port]) {
 		set_ptp_link(ptp, port, link);
 		ptp->peer_delay[port] = link;
-		dbg_msg("set delay: %d = %d\n", port,
-			ptp->peer_delay[port]);
+		if (abs(link - ptp->peer_delay[port]) > 5)
+			dbg_msg("set delay: %d = %d\n", port,
+				ptp->peer_delay[port]);
 	}
 	ptp->ops->release(ptp);
 	return 0;
@@ -4079,8 +4274,8 @@ static struct ptp_tx_ts *proc_get_ts(struct ptp_info *ptp, u8 port, u8 msg,
 		tx = &ptp->tx_dreq[port];
 	if (seqid || mac[0] || mac[1])
 		from_stack = true;
-	if (data && tx->req_time && ptp->linked[port])
-		dbg_msg("  last %x=%04x: %d, %lu\n", msg, seqid, port,
+	if (data && tx->req_time && ptp->linked[port] && port < 5)
+		dbg_msg("  last %x=%04x: p=%d, j=%lu\n", msg, seqid, port,
 			jiffies - tx->req_time);
 	tx->missed = false;
 	tx->req_time = jiffies;
@@ -4110,8 +4305,8 @@ static struct ptp_tx_ts *proc_get_ts(struct ptp_info *ptp, u8 port, u8 msg,
 			tx->data.len = len;
 			tx->dev = info;
 		}
-		if (ptp->linked[port])
-			dbg_msg("  missed %x=%04x: %d, %lu\n",
+		if (ptp->linked[port] && port < 5)
+			dbg_msg("  missed %x=%04x: p=%d, j=%lu\n",
 				msg, seqid, port, jiffies - tx->req_time);
 		tx = NULL;
 	}
@@ -4133,6 +4328,7 @@ static int proc_ptp_get_timestamp(struct ptp_info *ptp, u8 *data,
 	} else {
 		struct ptp_tx_ts *tx;
 		struct tsm_db *db;
+		u8 port;
 
 		if (opt->port >= ptp->ports)
 			return DEV_IOC_INVALID_CMD;
@@ -4147,7 +4343,8 @@ static int proc_ptp_get_timestamp(struct ptp_info *ptp, u8 *data,
 			db->mac[0] = opt->mac[0];
 			db->mac[1] = opt->mac[1];
 		}
-		tx = proc_get_ts(ptp, opt->port, opt->msg,
+		port = ptp_get_dev_port(ptp, 0, opt->port);
+		tx = proc_get_ts(ptp, port, opt->msg,
 			opt->seqid, opt->mac, info, sizeof(struct tsm_db));
 		if (!tx)
 			return -EAGAIN;
@@ -4170,9 +4367,12 @@ static struct ptp_tx_ts *proc_get_ts_port(struct ptp_info *ptp, u8 msg,
 	int p;
 	struct ptp_tx_ts *tx;
 	struct ptp_tx_ts *xts = NULL;
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
 
 	*more = false;
 	for (p = 0; p < ptp->ports; p++) {
+		if ((sw->features & USE_FEWER_PORTS) && p == sw->last_port)
+			p = sw->HOST_PORT;
 		if (SYNC_MSG == msg)
 			tx = &ptp->tx_sync[p];
 		else if (PDELAY_RESP_MSG == msg)
@@ -4212,7 +4412,7 @@ static struct ptp_tx_ts *proc_get_ts_port(struct ptp_info *ptp, u8 msg,
 	return xts;
 }  /* proc_get_ts_port */
 
-static int proc_ptp_get_msg_info(struct ptp_info *ptp, u8 *data,
+static int proc_ptp_get_msg_info(struct ptp_info *ptp, int start, u8 *data,
 	struct ptp_dev_info *info, int *tx)
 {
 	struct ptp_msg_options *opt = (struct ptp_msg_options *) data;
@@ -4231,7 +4431,7 @@ static int proc_ptp_get_msg_info(struct ptp_info *ptp, u8 *data,
 			&ptp->rx_msg_lock, &hdr, &hdr.sourcePortIdentity,
 			true, &tx_msg);
 		if (found) {
-			opt->port = tx_msg.port + 1;
+			opt->port = ptp_get_net_port(ptp, start, tx_msg.port);
 			opt->ts = tx_msg.ts;
 		} else
 			return DEV_IOC_UNIT_UNAVAILABLE;
@@ -4253,14 +4453,14 @@ static int proc_ptp_get_msg_info(struct ptp_info *ptp, u8 *data,
 				opt->ts.t.sec = xts->ts.t.sec;
 				opt->ts.t.nsec = xts->ts.t.nsec;
 			}
-			opt->port = port + 1;
+			opt->port = ptp_get_net_port(ptp, start, port);
 		} else
 			return -EAGAIN;
 	}
 	return 0;
 }  /* proc_ptp_get_msg_info */
 
-static int proc_ptp_set_msg_info(struct ptp_info *ptp, u8 *data,
+static int proc_ptp_set_msg_info(struct ptp_info *ptp, int start, u8 *data,
 	struct ptp_dev_info *info)
 {
 	struct ptp_msg_options *opt = (struct ptp_msg_options *) data;
@@ -4270,7 +4470,7 @@ static int proc_ptp_set_msg_info(struct ptp_info *ptp, u8 *data,
 		struct ptp_msg_info *tx_msg;
 
 		tx_msg = &ptp->tx_msg_info[opt->msg];
-		tx_msg->data.port = opt->port;
+		tx_msg->data.port = ptp_get_dest_port(ptp, start, opt->port);
 		tx_msg->data.ts.timestamp = opt->ts.timestamp;
 		if (opt->port) {
 			ptp->tx_msg_cnt = -1;
@@ -4281,6 +4481,7 @@ static int proc_ptp_set_msg_info(struct ptp_info *ptp, u8 *data,
 		}
 	} else {
 		struct ptp_msg_hdr hdr;
+		u32 port = ptp_get_dest_port(ptp, start, opt->port);
 
 		memcpy(&hdr.sourcePortIdentity, &opt->id,
 			sizeof(struct ptp_port_identity));
@@ -4289,7 +4490,7 @@ static int proc_ptp_set_msg_info(struct ptp_info *ptp, u8 *data,
 		hdr.domainNumber = opt->domain;
 		opt->ts.timestamp = (opt->ts.t.sec << 30) |
 			opt->ts.t.nsec;
-		set_msg_info(ptp, &hdr, opt->port, opt->ts.timestamp);
+		set_msg_info(ptp, &hdr, port, opt->ts.timestamp);
 	}
 	return 0;
 }  /* proc_ptp_set_msg_info */
@@ -4330,6 +4531,7 @@ static int parse_tsm_msg(struct ptp_dev_info *info, int len)
 
 			if (port > ptp->ports)
 				break;
+			port = ptp_get_dev_port(ptp, 0, port);
 			tx = proc_get_ts(ptp, port, msg, ntohs(db->seqid),
 				db->mac, info, len);
 			if (tx) {
@@ -4392,6 +4594,7 @@ static int parse_tsm_msg(struct ptp_dev_info *info, int len)
 		} else {
 			u8 port = cfg->port - 1;
 
+			port = ptp_get_dev_port(ptp, 0, port);
 			if ((cfg->enable & 0x10) && port < ptp->ports &&
 					ptp->peer_delay[port] != ingress) {
 				ptp->peer_delay[port] = ingress;
@@ -4566,8 +4769,11 @@ static void proc_ptp_work(struct work_struct *work)
 	case DEV_CMD_INFO:
 		switch (parent->subcmd) {
 		case DEV_INFO_INIT:
+/* ptp_hwstamp_ctl is called first in Linuxptp, and it crashes occasionally. */
+#if 0
 			if (ptp->op_mode)
 				ptp->tx_en = ptp->rx_en = 0;
+#endif
 			ptp->cap = ptp->op_mode = 0;
 			if ('1' == data[0] &&
                             '5' == data[1] &&
@@ -4612,7 +4818,7 @@ static void proc_ptp_work(struct work_struct *work)
 dbg_msg("op_mode: %x %d %x\n", ptp->cap, ptp->op_mode, ptp->tx_en);
 			}
 			ptp_init_state(ptp);
-			parent->output = ptp->drift_set;
+			parent->output = ptp->drift;
 			break;
 		case DEV_INFO_EXIT:
 			ptp_exit_state(ptp);
@@ -4720,7 +4926,7 @@ dbg_msg("op_mode: %x %d %x\n", ptp->cap, ptp->op_mode, ptp->tx_en);
 			break;
 		case DEV_PTP_CLK:
 			if ((ptp->op_mode > 0 || ptp->cap) && parent->option) {
-				parent->output = ptp->drift_set;
+				parent->output = ptp->drift;
 				break;
 			}
 			proc_ptp_get_clk(ptp, data);
@@ -4818,6 +5024,19 @@ static int proc_ptp_hw_access(struct ptp_info *ptp, int cmd, int subcmd,
 hw_access_end:
 	return ret;
 }  /* proc_ptp_hw_access */
+
+static void exit_ptp_work(struct ptp_info *ptp)
+{
+	struct ptp_access *access;
+	struct ptp_work *work;
+	int i;
+
+	access = &ptp->hw_access;
+	for (i = 0; i < PTP_WORK_NUM; i++) {
+		work = &access->works[i];
+		flush_work(&work->work);
+	}
+}  /* exit_ptp_work */
 
 static void init_ptp_work(struct ptp_info *ptp)
 {
@@ -4920,25 +5139,14 @@ static void ptp_update_sec(struct work_struct *work)
 	struct delayed_work *dwork = to_delayed_work(work);
 	struct ptp_info *ptp =
 		container_of(dwork, struct ptp_info, update_sec);
-#if defined(NO_DIRECT_ACCESS)
-	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
-#endif
 
 	if (ptp->update_sec_jiffies) {
 #ifndef NO_SEC_TIMESTAMP
 		ptp->cur_time.sec++;
 #else
-#if defined(NO_DIRECT_ACCESS)
-if (sw->info->iba.use_iba) {
-#endif
-#if 1
 		ptp->ops->acquire(ptp);
 		ptp->reg->get_time(ptp, &ptp->cur_time);
 		ptp->ops->release(ptp);
-#endif
-#if defined(NO_DIRECT_ACCESS)
-}
-#endif
 #endif
 		ptp->sec_lo++;
 		if (!(ptp->sec_lo & 3)) {
@@ -5044,7 +5252,7 @@ static void set_ptp_drift(struct ptp_info *ptp, int drift)
 	drift /= 100;
 	drift *= 100;
 	drift = -drift;
-	ptp->first_drift = ptp->drift_set = ptp->drift = drift;
+	ptp->first_drift = ptp->drift = drift;
 	ptp->first_sec = 0;
 	ptp->adjust = clk_adjust_val(drift, NANOSEC_IN_SEC);
 	set_ptp_adjust(ptp, ptp->adjust);
@@ -5275,7 +5483,7 @@ dbg_msg("%x:%9u\n", ptp->cur_time.sec, ptp->cur_time.nsec);
 			calc_udiff(&ptp->cur_time, &sys_time, &ptp->time_diff);
 			if (!ptp->intr_sec)
 				ptp->intr_sec = ptp->cur_time.sec;
-#if 0
+#if 1
 			if ((ptp->overrides & PTP_CHECK_SYS_TIME) ||
 					!ptp->first_drift)
 				check_sys_time(ptp, jiffies, cur_ktime);
@@ -5310,6 +5518,26 @@ proc_ptp_port_intr:
 proc_ptp_intr_done:
 	return;
 }  /* proc_ptp_intr */
+
+#ifdef ETHTOOL_GET_TS_INFO
+static int ptp_get_ts_info(struct ptp_info *ptp, struct net_device *dev,
+	struct ethtool_ts_info *info)
+{
+	int ptp_clock = false;
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
+	int ret = -1;
+
+#ifdef CONFIG_PTP_1588_CLOCK
+	ptp_clock = true;
+#endif
+	if (!(sw->features & PTP_HW) || !ptp_clock)
+		return ethtool_op_get_ts_info(dev, info);
+#ifdef CONFIG_PTP_1588_CLOCK
+	ret = micrel_ptp_get_ts_info(ptp, info);
+#endif
+	return ret;
+}  /* ptp_get_ts_info */
+#endif
 
 static void proc_ptp_tx_intr(struct ptp_info *ptp, int port)
 {
@@ -5397,6 +5625,7 @@ static int ixxat_ptp_ioctl(struct ptp_info *ptp, unsigned int cmd,
 		if (port < 1 || port > ptp->ports)
 			break;
 		port--;
+		port = ptp_get_dev_port(ptp, 0, port);
 		tx = proc_get_ts(ptp, port, ptp_data.ident.mType,
 			ptp_data.ident.seqId,
 			ptp_data.ident.portId.clockIdentity.addr,
@@ -5524,7 +5753,7 @@ printk("%u:%09u\n", ts.t.sec, ts.t.nsec);
 			true);
 		break;
 	case PTP_GET_ADJ:
-		drift = ptp->drift_set;
+		drift = ptp->drift;
 		err = copy_to_user(ifr->ifr_data, &drift, sizeof(drift));
 		break;
 	case PTP_CLEANUP_TS:
@@ -5537,7 +5766,7 @@ printk("%u:%09u\n", ts.t.sec, ts.t.nsec);
 	return err;
 }
 
-static int ptp_dev_req(struct ptp_info *ptp, char *arg,
+static int ptp_dev_req(struct ptp_info *ptp, int start, char *arg,
 	struct ptp_dev_info *info)
 {
 	struct ksz_request *req = (struct ksz_request *) arg;
@@ -5601,7 +5830,7 @@ static int ptp_dev_req(struct ptp_info *ptp, char *arg,
 				data[6] = sw->HOST_PORT + 1;
 				data[7] = 0;
 			} else
-				data[5] = sw->HOST_PORT;
+				data[5] = ptp->ports - 1;
 			if (!access_ok(VERIFY_WRITE, req->param.data, len) ||
 			    copy_to_user(req->param.data, data, len)) {
 				err = -EFAULT;
@@ -5759,7 +5988,7 @@ static int ptp_dev_req(struct ptp_info *ptp, char *arg,
 					SIZEOF_ksz_request,
 					&req_size, &result, &req->param, data))
 				goto dev_ioctl_resp;
-			result = proc_ptp_set_msg_info(ptp, data, info);
+			result = proc_ptp_set_msg_info(ptp, start, data, info);
 			break;
 		default:
 			result = DEV_IOC_INVALID_CMD;
@@ -5933,7 +6162,7 @@ static int ptp_dev_req(struct ptp_info *ptp, char *arg,
 					SIZEOF_ksz_request,
 					&req_size, &result, &req->param, data))
 				goto dev_ioctl_resp;
-			result = proc_ptp_get_msg_info(ptp, data, info,
+			result = proc_ptp_get_msg_info(ptp, start, data, info,
 				&output);
 			__put_user(output, &req->output);
 			if (result)
@@ -5993,7 +6222,7 @@ static int ptp_dev_ioctl(struct inode *inode, struct file *filp,
 	if (down_interruptible(&info->sem))
 		return -ERESTARTSYS;
 
-	err = ptp_dev_req(ptp, (char *) arg, info);
+	err = ptp_dev_req(ptp, 0, (char *) arg, info);
 	up(&info->sem);
 	return err;
 }  /* ptp_dev_ioctl */
@@ -6131,7 +6360,6 @@ static int init_ptp_device(int dev_major, char *dev_name, char *minor_name)
 {
 	int result;
 
-	printk(KERN_INFO "  PTP driver %s %s\n", __DATE__, __TIME__);
 	result = register_chrdev(dev_major, dev_name, &ptp_dev_fops);
 	if (result < 0) {
 		printk(KERN_WARNING "%s: can't get major %d\n", dev_name,
@@ -6158,73 +6386,6 @@ static void exit_ptp_device(int dev_major, char *dev_name)
 	unregister_chrdev(dev_major, dev_name);
 }  /* exit_ptp_device */
 
-static void ptp_check(struct ptp_info *ptp)
-{
-	struct ptp_utime cur;
-	struct ptp_utime now;
-	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
-
-#if defined(NO_DIRECT_ACCESS)
-do {
-if (!sw->info->iba.use_iba) {
-printk("%s\n", __func__);
-	ptp->version = 2;
-return;
-}
-} while (0);
-#endif
-	ptp->features |= PTP_ADJ_HACK;
-	ptp->ops->acquire(ptp);
-	ptp->reg->get_time(ptp, &cur);
-	ptp->reg->adjust_time(ptp, true, 10, 0, true);
-	ptp->reg->get_time(ptp, &now);
-dbg_msg("%08x:%08x %08x:%08x\n", cur.sec, cur.nsec, now.sec, now.nsec);
-	if (now.sec - cur.sec >= 10) {
-		ptp->features &= ~PTP_ADJ_HACK;
-		ptp->features |= PTP_ADJ_SEC;
-		ptp->reg->adjust_time(ptp, false, 10, 0, true);
-		ptp->version = 1;
-	}
-/*
- * THa  2013/01/08
- * The Rev. D chip has a problem of decrementing nanosecond that is bigger than
- * the current nanosecond when continual clock adjustment is enabled.  The
- * workaround is to use the PTP_ADJ_HACK code although the actual problem
- * avoided is now different.
- */
-	if (!(ptp->features & PTP_ADJ_HACK)) {
-		u16 data;
-
-		data = sw->cached.ptp_clk_ctrl;
-		sw->cached.ptp_clk_ctrl |= PTP_CLK_ADJ_ENABLE;
-		sw->reg->w16(sw, REG_PTP_CLK_CTRL, sw->cached.ptp_clk_ctrl);
-		if (cur.sec < 1)
-			cur.sec = 1;
-		cur.nsec = 0;
-		ptp->reg->set_time(ptp, &cur);
-		ptp->reg->adjust_time(ptp, false, 0, 800000000, false);
-		ptp->reg->get_time(ptp, &now);
-		dbg_msg("%x:%u %x:%u\n", cur.sec, cur.nsec, now.sec, now.nsec);
-		if (abs(now.sec - cur.sec) > 2) {
-			ptp->reg->get_time(ptp, &now);
-			dbg_msg("! %x:%u\n", now.sec, now.nsec);
-			ptp->features |= PTP_ADJ_HACK;
-			sw->reg->w16(sw, REG_PTP_CLK_CTRL, data);
-
-			sw->reg->w16(sw, REG_PTP_CLK_CTRL,
-				data | PTP_CLK_ADJ_ENABLE);
-			ptp->reg->set_time(ptp, &cur);
-			ptp->reg->adjust_time(ptp, false, 0, 800000000, true);
-			ptp->reg->get_time(ptp, &now);
-			dbg_msg("ok %x:%u\n", now.sec, now.nsec);
-		}
-		sw->cached.ptp_clk_ctrl = data;
-		sw->reg->w16(sw, REG_PTP_CLK_CTRL, data);
-	}
-	ptp->version = 2;
-	ptp->ops->release(ptp);
-}  /* ptp_check */
-
 static void ptp_set_identity(struct ptp_info *ptp, u8 *addr)
 {
 	memcpy(&ptp->clockIdentity.addr[0], &addr[0], 3);
@@ -6236,7 +6397,10 @@ static void ptp_set_identity(struct ptp_info *ptp, u8 *addr)
 static void ptp_init(struct ptp_info *ptp, u8 *mac_addr)
 {
 	int i;
+	int latency[2][3];
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
 
+	ptp->utc_offset = CURRENT_UTC_OFFSET;
 	ptp->get_delay = 100000;
 	ptp->set_delay = 100000;
 	ptp->delay_ticks = 2;
@@ -6272,26 +6436,46 @@ static void ptp_init(struct ptp_info *ptp, u8 *mac_addr)
 	ptp->def_mode = ptp->mode;
 	ptp->def_cfg = ptp->cfg;
 	ptp->trig_intr = PTP_TRIG_UNIT_M;
-	ptp->tx_intr = PTP_PORT_XDELAY_REQ_INT;
-#if 0
-	ptp->tx_intr = PTP_PORT_XDELAY_REQ_INT | PTP_PORT_PDELAY_RESP_INT |
-		PTP_PORT_SYNC_INT;
-#endif
 
-#if !defined(NO_DIRECT_ACCESS)
-	ptp_hw_enable(ptp);
-#endif
+	/* KSZ8463: 574 = 415 + 45 + 114 */
+	/* KSZ9567 S1: 1246; 616 */
+	/* KSZ8463: 70m=908, 100m=1090; 1m=6.07 ns, 483; 582 */
+	/* KSZ9567 S1: 70m=1211, 100m = 1369; 1m=5.27 ns, 842; 866 */
+	/* KSZ9567 S1: 360 ns */
+	/* KSZ9567 S1: 70m=921, 100m = 1072; 1m=5.03 ns, 569; 569 */
+	/* KSZ9567 S1: 72 ns */
+	/* KSZ9567 S3: 70m=1968, 100m = 2124; 1m=5.20 ns, 1604; 1622 */
+	/* KSZ9567 S3: 1080 ns */
+	/* KSZ9567 S3: 70m=1012, 100m = 1164; 1m=5.07 ns, 657; 660 */
+	/* KSZ9567 S3: 152 ns */
+	latency[0][0] = 390;
+	latency[1][0] = 140;
+	latency[0][1] = 580;
+	latency[0][1] = 620;
+	latency[1][1] = 140;
+	if (sw->revision >= 2) {
+		latency[0][1] = 980;
+		latency[1][1] = 540;
+	}
+	latency[0][2] = latency[0][1];
+	latency[1][2] = latency[1][1];
+	for (i = 0; i < ptp->ports; i++) {
+		if ((sw->features & USE_FEWER_PORTS) && i == sw->last_port)
+			i = sw->HOST_PORT;
+		ptp->rx_latency[i][0] = latency[0][0];
+		ptp->tx_latency[i][0] = latency[1][0];
+		ptp->rx_latency[i][1] = latency[0][1];
+		ptp->tx_latency[i][1] = latency[1][1];
+		ptp->rx_latency[i][2] = latency[0][2];
+		ptp->tx_latency[i][2] = latency[1][2];
+	}
+
 	if (!ptp->ports)
 		ptp->ports = MAX_PTP_PORT;
-	ptp_check(ptp);
 	if (!ptp->get_clk_cnt)
 		ptp->get_clk_cnt = _get_clk_cnt;
 	if (!ptp->test_access_time)
 		ptp->test_access_time = _test_access_time;
-#if !defined(NO_DIRECT_ACCESS)
-	if (ptp->test_access_time)
-		ptp->test_access_time(ptp);
-#endif
 
 	ptp->gps_tsi = MAX_TIMESTAMP_UNIT;
 	ptp->gps_gpi = DEFAULT_GPS_GPI;
@@ -6309,13 +6493,11 @@ static void ptp_init(struct ptp_info *ptp, u8 *mac_addr)
 
 	init_msg_info(ptp->rx_msg_info, &ptp->rx_msg_lock);
 	init_msg_info(ptp->tx_msg_info, &ptp->tx_msg_lock);
-	ptp_init_hw(ptp);
-	do {
-		struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
-
-		for (i = sw->phy_port_cnt; i < ptp->ports; i++)
-			ptp->linked[i] = 1000;
-	} while (0);
+	for (i = sw->phy_port_cnt; i < ptp->ports; i++) {
+		if ((sw->features & USE_FEWER_PORTS) && i == sw->last_port)
+			i = sw->HOST_PORT;
+		ptp->linked[i] = 1000;
+	}
 
 	ptp_priv = ptp;
 	sprintf(ptp->dev_name[0], "ptp_dev");
@@ -6330,11 +6512,11 @@ static void ptp_init(struct ptp_info *ptp, u8 *mac_addr)
 
 static void ptp_exit(struct ptp_info *ptp)
 {
-	ptp->ops->acquire(ptp);
-	ptp->tx_intr = 0;
-	ptp_tx_intr_enable(ptp);
-	ptp->ops->release(ptp);
-
+	exit_ptp_work(ptp);
+	flush_work(&ptp->adj_clk);
+	flush_work(&ptp->set_latency);
+	cancel_delayed_work_sync(&ptp->check_pps);
+	cancel_delayed_work_sync(&ptp->update_sec);
 	if (ptp->access) {
 		destroy_workqueue(ptp->access);
 		ptp->access = NULL;
@@ -6370,6 +6552,8 @@ static ssize_t sysfs_ptp_read(struct ptp_info *ptp, int proc_num, ssize_t len,
 			PTP_PORT_FORWARD);
 		len += sprintf(buf + len, "\t%08x = PTP port TX forwarding\n",
 			PTP_PORT_TX_FORWARD);
+		len += sprintf(buf + len, "\t%08x = PTP check path delay\n",
+			PTP_CHECK_PATH_DELAY);
 		len += sprintf(buf + len, "\t%08x = PTP verify timestamp\n",
 			PTP_VERIFY_TIMESTAMP);
 		len += sprintf(buf + len, "\t%08x = PTP zero reserved field\n",
@@ -6485,6 +6669,9 @@ static struct ptp_ops ptp_ops = {
 	.ixxat_ioctl		= ixxat_ptp_ioctl,
 	.dev_req		= ptp_dev_req,
 	.proc_intr		= proc_ptp_intr,
+#ifdef ETHTOOL_GET_TS_INFO
+	.get_ts_info		= ptp_get_ts_info,
+#endif
 
 	.sysfs_read		= sysfs_ptp_read,
 	.sysfs_write		= sysfs_ptp_write,

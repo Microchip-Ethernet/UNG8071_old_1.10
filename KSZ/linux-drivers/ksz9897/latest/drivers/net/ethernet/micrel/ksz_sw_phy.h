@@ -1,7 +1,7 @@
 /**
- * Micrel switch PHY common header
+ * Microchip switch PHY common header
  *
- * Copyright (c) 2015 Microchip Technology Inc.
+ * Copyright (c) 2015-2016 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2012-2015 Micrel, Inc.
@@ -59,7 +59,8 @@
 struct phy_priv {
 	int ptp_irq;
 	int ptp_using;
-	struct ksz_port port;
+	struct ksz_port *port;
+	enum phy_state state;
 };
 
 #endif

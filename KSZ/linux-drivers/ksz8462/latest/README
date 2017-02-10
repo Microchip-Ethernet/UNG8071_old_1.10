@@ -28,6 +28,7 @@ These are the shared files for the KSZ8463 switch:
 	ksz8463.h
 	ksz_sw.h
 	ksz_sw.c
+	ksz_sysfs.h
 	ksz_sw_sysfs.c
 
 These are the shared files for the 1588 PTP function:

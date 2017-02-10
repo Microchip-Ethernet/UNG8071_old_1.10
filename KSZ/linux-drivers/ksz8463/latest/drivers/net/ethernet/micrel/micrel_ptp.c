@@ -1,8 +1,9 @@
 /*
- * PTP 1588 clock using Micrel PTP switch
+ * PTP 1588 clock using Microchip PTP switch
  *
  * Copyright (C) 2010 OMICRON electronics GmbH
  * Copyright (C) 2013-2015 Micrel, Inc.
+ * Copyright (C) 2015-2016 Microchip Technology Inc.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -202,7 +203,7 @@ static int ptp_enable(struct ptp_clock_info *clock,
 static struct ptp_clock_info ptp_caps = {
 	.owner		= THIS_MODULE,
 	/* Only 16 characters. */
-	.name		= "Micrel clock",
+	.name		= "Microchip clock",
 	.max_adj	= MAX_DRIFT_CORR,
 	.n_alarm	= N_ALARM,
 	.n_ext_ts	= N_EXT_TS,
@@ -214,6 +215,24 @@ static struct ptp_clock_info ptp_caps = {
 	.settime	= ptp_settime,
 	.enable		= ptp_enable,
 };
+
+static int micrel_ptp_get_ts_info(struct ptp_info *ptp,
+	struct ethtool_ts_info *info)
+{
+	struct micrel_ptp_info *clock_info = ptp->clock_info;
+
+	info->so_timestamping = SOF_TIMESTAMPING_TX_HARDWARE |
+		SOF_TIMESTAMPING_RX_HARDWARE |
+		SOF_TIMESTAMPING_RAW_HARDWARE;
+	if (clock_info->clock)
+		info->phc_index = ptp_clock_index(clock_info->clock);
+	else
+		info->phc_index = -1;
+	info->tx_types = (1 << HWTSTAMP_TX_OFF) | (1 << HWTSTAMP_TX_ON);
+	info->rx_filters = (1 << HWTSTAMP_FILTER_NONE) |
+		(1 << HWTSTAMP_FILTER_ALL);
+	return 0;
+}
 
 static int micrel_ptp_probe(struct ptp_info *ptp)
 {

@@ -1,5 +1,5 @@
 /**
- * Micrel IBA header
+ * Microchip IBA header
  *
  * Copyright (c) 2015 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>

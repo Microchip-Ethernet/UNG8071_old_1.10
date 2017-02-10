@@ -1,5 +1,5 @@
 /**
- * Micrel PTP common sysfs code
+ * Microchip PTP common sysfs code
  *
  * Copyright (c) 2015-2016 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>

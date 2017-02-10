@@ -1,7 +1,7 @@
 /**
- * Micrel KSZ8795 SPI driver
+ * Microchip KSZ8795 SPI driver
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  * Copyright (c) 2010-2015 Micrel, Inc.
  *
  * Copyright 2009 Simtec Electronics
@@ -28,7 +28,7 @@
 #define DEBUG_MSG
 #endif
 
-#ifndef CONFIG_MICREL_SWITCH_EMBEDDED
+#ifndef CONFIG_KSZ_SWITCH_EMBEDDED
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/kernel.h>
@@ -55,7 +55,7 @@
 #include <linux/seq_file.h>
 #include "ksz_cfg_8795.h"
 
-#ifdef KSZ_DLR
+#ifdef CONFIG_KSZ_DLR
 /* Have ACL to handle beacon timeout. */
 #define CONFIG_HAVE_ACL_HW
 #endif
@@ -85,6 +85,9 @@
 
 #define KS8795_DEV0			"ksz8795"
 #define KS8795_DEV2			"ksz8795_2"
+
+#define DRV_RELDATE			"Feb 8, 2017"
+#define DRV_VERSION			"1.1.0"
 
 /* -------------------------------------------------------------------------- */
 
@@ -373,13 +376,12 @@ static void delay_milli(uint millisec)
 	}
 }
 
+#define USE_SHOW_HELP
 #include "ksz_common.c"
 
-#ifdef KSZ_DLR
 #include "ksz_req.c"
-#endif
 
-#ifndef CONFIG_MICREL_SWITCH_EMBEDDED
+#ifndef CONFIG_KSZ_SWITCH_EMBEDDED
 static inline void copy_old_skb(struct sk_buff *old, struct sk_buff *skb)
 {
 	skb->dev = old->dev;
@@ -451,6 +453,7 @@ static void sw_ena_intr(struct ksz_sw *sw)
 	struct sw_priv *hw_priv = container_of(sw, struct sw_priv, sw);
 
 	HW_W(sw->dev, REG_INT_ENABLE, hw_priv->intr_mask);
+	HW_W(sw->dev, REG_ACL_INT_ENABLE, INT_PORT_ALL);
 }  /* sw_ena_intr */
 
 static int sw_r(struct ksz_sw *sw, u32 reg, void *buf, unsigned len)
@@ -495,35 +498,19 @@ static void sw_w32(struct ksz_sw *sw, unsigned reg, unsigned val)
 	HW_W32(sw->dev, reg, val);
 }
 
-#ifdef CONFIG_KSZ_STP
-static u8 get_port_state(struct net_device *dev, struct net_device **br_dev)
-{
-	struct net_bridge_port *p;
-	u8 state;
-
-	/* This state is not defined in kernel. */
-	state = STP_STATE_SIMPLE;
-	if (br_port_exists(dev)) {
-		p = br_port_get_rcu(dev);
-		state = p->state;
-
-		/* Port is under bridge. */
-		*br_dev = p->br->dev;
-	}
-	return state;
-}  /* get_port_state */
-#endif
-
 static void link_update_work(struct work_struct *work)
 {
 	struct ksz_port *port =
 		container_of(work, struct ksz_port, link_update);
 	struct ksz_sw *sw = port->sw;
 	struct phy_device *phydev;
+	struct ksz_port_info *info;
+	int c;
 	int i;
 	int link;
+	int p = sw->ops->get_first_port(sw);
 
-#ifdef KSZ_DLR
+#ifdef CONFIG_KSZ_DLR
 	if (sw->features & DLR_HW) {
 		struct ksz_dlr_info *dlr = &sw->info->dlr;
 
@@ -537,51 +524,69 @@ static void link_update_work(struct work_struct *work)
 	if (1 == sw->dev_count) {
 		struct sw_priv *hw_priv = container_of(sw, struct sw_priv, sw);
 
-		for (i = 0; i < SWITCH_PORT_NUM; i++) {
-			if (i == sw->port_cnt)
-				continue;
-			if (port->linked == &sw->port_info[i]) {
-				hw_priv->phy_id = i + 1;
-				break;
-			}
-		}
+		if (hw_priv->phy_id != port->linked->phy_id)
+			hw_priv->phy_id = port->linked->phy_id;
 	}
-	for (i = 0; i < SWITCH_PORT_NUM; i++) {
-		struct ksz_port_info *info = &sw->port_info[i];
+	for (c = 0, i = p; c < sw->port_cnt; c++, i++) {
+		info = &sw->port_info[i];
 
-		if (i == sw->port_cnt)
-			continue;
 		if (!info->report)
 			continue;
 		info->report = false;
 		phydev = sw->phy[i + 1];
+		if (!phydev)
+			continue;
 		phydev->link = (info->state == media_connected);
 		phydev->speed = info->tx_rate / TX_RATE_UNIT;
 		phydev->duplex = (info->duplex == 2);
-		if (phydev->attached_dev) {
-			link = netif_carrier_ok(phydev->attached_dev);
-			if (link != phydev->link) {
-				if (phydev->link)
-					netif_carrier_on(phydev->attached_dev);
-				else
-					netif_carrier_off(phydev->attached_dev);
-				if (netif_msg_link(sw))
-					pr_info("%s link %s\n",
-						phydev->attached_dev->name,
-						phydev->link ? "on" : "off");
-			}
-			if (phydev->adjust_link)
-				phydev->adjust_link(phydev->attached_dev);
+	}
+
+	for (i = 0; i < sw->eth_cnt; i++) {
+		if (sw->eth_maps[i].port == port->first_port) {
+			if (sw->eth_maps[i].phy_id != port->linked->phy_id)
+				sw->eth_maps[i].phy_id = port->linked->phy_id;
+			break;
+		}
+	}
+
+	info = port->linked;
+	phydev = sw->phy[port->first_port + 1];
+	phydev->link = (info->state == media_connected);
+	phydev->speed = info->tx_rate / TX_RATE_UNIT;
+	phydev->duplex = (info->duplex == 2);
+	if (phydev->attached_dev) {
+		link = netif_carrier_ok(phydev->attached_dev);
+		if (link != phydev->link) {
+			if (phydev->link)
+				netif_carrier_on(phydev->attached_dev);
+			else
+				netif_carrier_off(phydev->attached_dev);
+			if (netif_msg_link(sw))
+				pr_info("%s link %s\n",
+					phydev->attached_dev->name,
+					phydev->link ? "on" : "off");
 		}
 	}
 
 	/* The switch is always linked; speed and duplex are also fixed. */
-	phydev = sw->phydev;
+	if (sw->netdev[0]) {
+		phydev = sw->netdev[0]->phydev;
+		if (!phydev)
+			phydev = sw->phydev;
+		if (sw->net_ops->get_priv_port)
+			port = sw->net_ops->get_priv_port(sw->netdev[0]);
+	} else
+		phydev = sw->phydev;
 	if (phydev->attached_dev) {
-		int phy_link = 1;
+		int phy_link;
 
-		if (1 == sw->dev_count || 1 == sw->dev_offset)
-			phy_link = (port->linked->state == media_connected);
+		/* phydev settings may be changed by ethtool. */
+		info = &sw->port_info[sw->HOST_PORT];
+		phydev->link = 1;
+		phydev->speed = info->tx_rate / TX_RATE_UNIT;
+		phydev->duplex = (info->duplex == 2);
+		phydev->pause = 1;
+		phy_link = (port->linked->state == media_connected);
 		link = netif_carrier_ok(phydev->attached_dev);
 		if (link != phy_link) {
 			if (phy_link)
@@ -596,6 +601,24 @@ static void link_update_work(struct work_struct *work)
 		if (phydev->adjust_link)
 			phydev->adjust_link(phydev->attached_dev);
 	}
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->features & STP_SUPPORT) {
+		struct ksz_stp_info *stp = &sw->info->rstp;
+
+		stp->ops->link_change(stp, true);
+	}
+#endif
+
+#ifdef CONFIG_KSZ_HSR
+	if (sw->features & HSR_HW) {
+		struct ksz_hsr_info *hsr = &sw->info->hsr;
+
+		if (hsr->ports[0] <= port->first_port &&
+		    port->first_port <= hsr->ports[1])
+			hsr->ops->check_announce(hsr);
+	}
+#endif
 }  /* link_update_work */
 
 #include "ksz_sw_8795.c"
@@ -647,7 +670,7 @@ static void create_debugfs(struct sw_priv *ks)
 	struct dentry *root;
 	char root_name[32];
 
-	snprintf(root_name, sizeof(root_name), "spi_%s",
+	snprintf(root_name, sizeof(root_name), "%s",
 		 dev_name(ks->dev));
 
 	root = debugfs_create_dir(root_name, NULL);
@@ -674,7 +697,7 @@ static void delete_debugfs(struct sw_priv *ks)
 #define USE_SPEED_LINK
 #define USE_MIB
 #include "ksz_sw_sysfs_8795.c"
-#ifdef KSZ_DLR
+#ifdef CONFIG_KSZ_DLR
 #include "ksz_dlr_sysfs.c"
 #endif
 
@@ -686,7 +709,7 @@ static irqreturn_t sw_interrupt(int irq, void *phy_dat)
 	if (IRQF_TRIGGER_LOW == ks->intr_mode)
 		disable_irq_nosync(irq);
 	atomic_inc(&phydev->irq_disable);
-	ks->sw.intr_using = 1;
+	ks->sw.intr_using += 1;
 	schedule_work(&phydev->phy_queue);
 
 	return IRQ_HANDLED;
@@ -700,10 +723,27 @@ static void sw_change(struct work_struct *work)
 	struct ksz_sw *sw = &ks->sw;
 	SW_D status;
 
-	ks->intr_working = true;
 	mutex_lock(&ks->hwlock);
 	mutex_lock(&ks->lock);
 	sw->intr_using++;
+	status = HW_R(ks, REG_ACL_INT_STATUS);
+	if (status) {
+		int p;
+
+		HW_W(ks, REG_ACL_INT_ENABLE, INT_PORT_ALL & ~status);
+		HW_W(ks, REG_ACL_INT_STATUS, status);
+		HW_W(ks, REG_ACL_INT_ENABLE, INT_PORT_ALL);
+		for (p = 0; p < sw->mib_port_cnt; p++) {
+			if (!(status & (1 << p)))
+				continue;
+#ifdef CONFIG_KSZ_DLR
+			if (sw->features & DLR_HW)
+				dlr_timeout(&sw->info->dlr, p);
+#endif
+		}
+		ks->intr_working |= 0x40000000;
+	} else
+		ks->intr_working &= ~0x40000000;
 	status = HW_R(ks, REG_INT_STATUS);
 	status &= ks->intr_mask;
 	if (status & ks->intr_mask) {
@@ -711,7 +751,13 @@ static void sw_change(struct work_struct *work)
 		HW_W(ks, REG_INT_STATUS, status);
 		status &= ~ks->intr_mask;
 		schedule_delayed_work(&ks->link_read, 0);
-	}
+		if (ks->intr_working & 0x80000000)
+			ks->intr_working |= 1;
+		ks->intr_working |= 0x80000000;
+	} else
+		ks->intr_working &= ~0x80000000;
+	if (!(ks->intr_working & 0xc0000000))
+		ks->intr_working = 0;
 	sw->intr_using--;
 	mutex_unlock(&ks->lock);
 	if (status) {
@@ -770,7 +816,7 @@ static int kszphy_config_init(struct phy_device *phydev)
 static struct phy_driver kszsw_phy_driver = {
 	.phy_id		= PHY_ID_KSZ_SW,
 	.phy_id_mask	= 0x00ffffff,
-	.name		= "Micrel KSZ8795 Switch",
+	.name		= "Microchip KSZ8795 Switch",
 	.features	= (PHY_BASIC_FEATURES |
 				SUPPORTED_Pause | SUPPORTED_Asym_Pause),
 	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
@@ -1023,26 +1069,26 @@ static int ksz_mii_read(struct mii_bus *bus, int phy_id, int regnum)
 		break;
 	default:
 		if (regnum < 6) {
-			int id = phy_id;
-
 			if (0 == phy_id)
 				phy_id = ks->phy_id;
-			sw_r_phy(&ks->sw, phy_id, regnum, &data);
-			ret = data;
-			if (0 == id) {
-				switch (regnum) {
-				case 0:
-					ret = 0x3120;
-					break;
-				case 1:
-					ret = 0x782c;
-					break;
-				case 4:
-				case 5:
-					ret = 0x05e1;
-					break;
+			else {
+				int n;
+
+				/*
+				 * Get the represented PHY id when using
+				 * multiple ports.
+				 */
+				for (n = 0; n < sw->eth_cnt; n++) {
+					if (sw->eth_maps[n].port + 1 ==
+					    phy_id) {
+						phy_id = sw->eth_maps[n].phy_id;
+						break;
+					}
 				}
 			}
+
+			sw_r_phy(&ks->sw, phy_id, regnum, &data);
+			ret = data;
 		} else
 			ret = 0;
 	}
@@ -1111,17 +1157,41 @@ static int ksz_mii_write(struct mii_bus *bus, int phy_id, int regnum, u16 val)
 	default:
 		if (regnum < 6) {
 			int i;
+			int first;
+			int last;
+
+			if (0 == phy_id) {
+				first = sw->ops->get_first_port(sw);
+				last = first + sw->port_cnt;
+			} else {
+				int n;
+				int f;
+				int l;
+
+				first = phy_id - 1;
+				last = phy_id;
+				for (n = 0; n < sw->eth_cnt; n++) {
+					f = sw->eth_maps[n].port + 1;
+					l = f + sw->eth_maps[n].cnt;
+					if (f <= phy_id && phy_id < l) {
+						first = sw->eth_maps[n].port;
+						last = first +
+							sw->eth_maps[n].cnt;
+						break;
+					}
+				}
+			}
 
 			/* PHY device driver resets or powers down the PHY. */
 			if (0 == regnum &&
 			    (val & (PHY_RESET | PHY_POWER_DOWN)))
 				break;
-			for (i = 0; i < SWITCH_PORT_NUM; i++) {
-				if (i == sw->port_cnt)
-					continue;
-				if (i + 1 == phy_id || 0 == phy_id)
-					sw_w_phy(sw, i + 1, regnum, val);
+			for (i = first; i < last; i++) {
+				sw_w_phy(sw, i + 1, regnum, val);
 			}
+			if (PHY_REG_CTRL == regnum &&
+			    !(val & PHY_AUTO_NEG_ENABLE))
+				schedule_delayed_work(&ks->link_read, 1);
 		}
 		break;
 	}
@@ -1129,13 +1199,14 @@ static int ksz_mii_write(struct mii_bus *bus, int phy_id, int regnum, u16 val)
 	return 0;
 }  /* ksz_mii_write */
 
+static int driver_installed;
+
 static int ksz_mii_init(struct sw_priv *ks)
 {
 	struct platform_device *pdev;
 	struct mii_bus *bus;
 	int err;
 	int i;
-	int driver_installed = false;
 
 	pdev = platform_device_register_simple("Switch MII bus", ks->sw.id,
 		NULL, 0);
@@ -1148,10 +1219,12 @@ static int ksz_mii_init(struct sw_priv *ks)
 		goto mii_init_reg;
 	}
 
-	err = phy_driver_register(&kszsw_phy_driver);
-	if (err)
-		goto mii_init_free_mii_bus;
-	driver_installed = true;
+	if (!driver_installed) {
+		err = phy_driver_register(&kszsw_phy_driver);
+		if (err)
+			goto mii_init_free_mii_bus;
+		driver_installed = true;
+	}
 
 	bus->name = "Switch MII bus",
 	bus->read = ksz_mii_read;
@@ -1180,14 +1253,27 @@ static int ksz_mii_init(struct sw_priv *ks)
 	for (i = 0; i < PHY_MAX_ADDR; i++)
 		if (bus->phy_map[i]) {
 			struct phy_priv *phydata;
+			struct ksz_port *port;
+			int p = i;
+
+			if (!p)
+				p = 1;
 
 			phydata = kzalloc(sizeof(struct phy_priv), GFP_KERNEL);
 			if (!phydata) {
 				err = -ENOMEM;
 				goto mii_init_free_mii_bus;
 			}
-			phydata->port.sw = &ks->sw;
-			INIT_WORK(&phydata->port.link_update, link_update_work);
+			port = &ks->ports[i];
+			phydata->port = port;
+			port->sw = &ks->sw;
+			port->first_port = p - 1;
+			port->port_cnt = 1;
+			port->mib_port_cnt = 1;
+			port->flow_ctrl = PHY_FLOW_CTRL;
+			port->linked = &ks->sw.port_info[port->first_port];
+			INIT_WORK(&port->link_update, link_update_work);
+			phydata->state = bus->phy_map[i]->state;
 			bus->phy_map[i]->priv = phydata;
 		}
 
@@ -1213,8 +1299,10 @@ mii_init_free_mii_bus:
 	for (i = 0; i < PHY_MAX_ADDR; i++)
 		if (bus->phy_map[i])
 			kfree(bus->phy_map[i]->priv);
-	if (driver_installed)
+	if (driver_installed) {
 		phy_driver_unregister(&kszsw_phy_driver);
+		driver_installed = false;
+	}
 	mdiobus_free(bus);
 
 mii_init_reg:
@@ -1232,19 +1320,56 @@ static void ksz_mii_exit(struct sw_priv *ks)
 	if (ks->irq > 0) {
 		mutex_lock(&ks->lock);
 		HW_W(ks, REG_INT_ENABLE, 0);
+		HW_W(ks, REG_ACL_INT_ENABLE, 0);
 		mutex_unlock(&ks->lock);
 		sw_stop_interrupt(ks);
 	}
 	for (i = 0; i < PHY_MAX_ADDR; i++)
-		if (bus->phy_map[i])
+		if (bus->phy_map[i]) {
+			struct ksz_port *port;
+
+			port = & ks->ports[i];
+			flush_work(&port->link_update);
 			kfree(bus->phy_map[i]->priv);
+		}
 	mdiobus_unregister(bus);
-	phy_driver_unregister(&kszsw_phy_driver);
+	if (driver_installed) {
+		phy_driver_unregister(&kszsw_phy_driver);
+		driver_installed = false;
+	}
 	mdiobus_free(bus);
 	platform_device_unregister(pdev);
 }  /* ksz_mii_exit */
 
 /* driver bus management functions */
+
+static void determine_rate(struct ksz_sw *sw, struct ksz_port_mib *mib)
+{
+	int j;
+
+	for (j = 0; j < 2; j++) {
+		if (mib->rate[j].last) {
+			unsigned long diff = jiffies - mib->rate[j].last;
+			u64 cnt = mib->counter[MIB_RX_TOTAL + j] -
+				mib->rate[j].last_cnt;
+
+			if (cnt > 1000000 && diff >= 100) {
+				u32 rem;
+				u64 rate = cnt;
+
+				rate *= 8;
+				diff *= 10 * 100;
+				rate = div_u64_rem(rate, diff, &rem);
+				mib->rate[j].last = jiffies;
+				mib->rate[j].last_cnt =
+					mib->counter[MIB_RX_TOTAL + j];
+				if (mib->rate[j].peak < (u32) rate)
+					mib->rate[j].peak = (u32) rate;
+			}
+		} else
+			mib->rate[j].last = jiffies;
+	}
+}  /* determine_rate */
 
 static void ksz8795_mib_read_work(struct work_struct *work)
 {
@@ -1253,11 +1378,11 @@ static void ksz8795_mib_read_work(struct work_struct *work)
 	struct ksz_sw *sw = &hw_priv->sw;
 	struct ksz_port_mib *mib;
 	int i;
+	int p = sw->ops->get_first_port(sw);
 
 	next_jiffies = jiffies;
-	for (i = 0; i < sw->mib_port_cnt; i++) {
-		if (i == sw->port_cnt)
-			continue;
+	for (i = p; i < sw->mib_port_cnt; i++) {
+		i = chk_last_port(sw, i);
 		mib = &sw->port_mib[i];
 
 		/* Reading MIB counters or requested to read. */
@@ -1273,6 +1398,8 @@ static void ksz8795_mib_read_work(struct work_struct *work)
 				hw_priv->counter[i].read = 2;
 				wake_up_interruptible(
 					&hw_priv->counter[i].counter);
+				if (i != sw->HOST_PORT)
+					determine_rate(sw, mib);
 			}
 		} else if (jiffies >= hw_priv->counter[i].time) {
 			/* Only read MIB counters when the port is connected. */
@@ -1285,6 +1412,10 @@ static void ksz8795_mib_read_work(struct work_struct *work)
 
 		/* Port is just disconnected. */
 		} else if (sw->port_state[i].link_down) {
+			int j;
+
+			for (j = 0; j < TOTAL_SWITCH_COUNTER_NUM; j++)
+				mib->read_cnt[j] += mib->read_max[j];
 			sw->port_state[i].link_down = 0;
 
 			/* Read counters one last time after link is lost. */
@@ -1309,12 +1440,24 @@ static void link_read_work(struct work_struct *work)
 	struct ksz_sw *sw = &hw_priv->sw;
 	struct phy_device *phydev;
 	struct ksz_port *port = NULL;
+	struct ksz_port *sw_port = NULL;
 	int i;
 	int changes = 0;
 	int s = 1;
 
 	if (1 == sw->dev_count || 1 == sw->dev_offset)
 		s = 0;
+	if (sw->dev_offset) {
+		struct phy_priv *phydata;
+		struct net_device *dev = sw->netdev[0];
+
+		phydev = sw->phydev;
+		phydata = phydev->priv;
+		if (dev && sw->net_ops->get_priv_port)
+			sw_port = sw->net_ops->get_priv_port(dev);
+		else
+			sw_port = phydata->port;
+	}
 	sw->ops->acquire(sw);
 	if (!sw->phy_intr) {
 		sw->phy_intr = HW_R(hw_priv, REG_INT_STATUS);
@@ -1322,45 +1465,58 @@ static void link_read_work(struct work_struct *work)
 		if (sw->phy_intr)
 			HW_W(hw_priv, REG_INT_STATUS, sw->phy_intr);
 	}
-	for (i = 0; i < sw->dev_count + sw->dev_offset; i++) {
+	for (i = sw->dev_offset; i < sw->dev_count + sw->dev_offset; i++) {
 		struct phy_priv *phydata;
 		struct net_device *dev = sw->netdev[i];
 
 		phydev = sw->phy[i + s];
+		if (sw->features & SW_VLAN_DEV)
+			phydev = sw->phy[sw->eth_maps[i].port + 1];
 		phydata = phydev->priv;
 		if (dev && sw->net_ops->get_priv_port)
 			port = sw->net_ops->get_priv_port(dev);
 		else
-			port = &phydata->port;
+			port = phydata->port;
 		changes |= port_get_link_speed(port);
 
 		/* Copy all port information for user access. */
-		if (port != &phydata->port) {
-			copy_port_status(port, &phydata->port);
+		if (port != phydata->port) {
+			copy_port_status(port, phydata->port);
 			if (phydata != hw_priv->phydev->priv) {
 				phydata = hw_priv->phydev->priv;
-				copy_port_status(port, &phydata->port);
+				copy_port_status(port, phydata->port);
 			}
 		}
 	}
+	sw->phy_intr = 0;
 	sw->ops->release(sw);
+
+	if (!sw->dev_offset || (media_connected == sw_port->linked->state))
+		changes = 0;
 
 	/* Not to read PHY registers unnecessarily if no link change. */
 	if (!changes)
 		return;
+
+	for (i = sw->dev_offset; i < sw->dev_count + sw->dev_offset; i++) {
+		struct phy_priv *phydata;
+		struct net_device *dev = sw->netdev[i];
+
+		phydev = sw->phy[i + s];
+		if (sw->features & SW_VLAN_DEV)
+			phydev = sw->phy[sw->eth_maps[i].port + 1];
+		phydata = phydev->priv;
+		if (dev && sw->net_ops->get_priv_port)
+			port = sw->net_ops->get_priv_port(dev);
+		else
+			port = phydata->port;
+		if (media_connected == port->linked->state) {
+			sw_port->linked = port->linked;
+			hw_priv->phy_id = port->linked->phy_id;
+			break;
+		}
+	}
 }  /* link_read_work */
-
-static void stp_work(struct work_struct *work)
-{
-#ifdef CONFIG_KSZ_STP
-	struct delayed_work *dwork = to_delayed_work(work);
-	struct sw_priv *hw_priv =
-		container_of(dwork, struct sw_priv, stp_monitor);
-	struct ksz_sw *sw = &hw_priv->sw;
-
-	sw->net_ops->monitor_ports(sw);
-#endif
-}  /* stp_work */
 
 /*
  * Hardware monitoring
@@ -1378,13 +1534,25 @@ static void ksz8795_mib_monitor(unsigned long ptr)
 static void ksz8795_dev_monitor(unsigned long ptr)
 {
 	struct sw_priv *hw_priv = (struct sw_priv *) ptr;
+	struct phy_device *phydev;
+	struct phy_priv *priv;
+	int i;
 
-	if (hw_priv->intr_working && !(hw_priv->sw.features & STP_SUPPORT))
-		return;
-	if (!hw_priv->intr_working)
+	/* For MAC driver that does not add code to device open function. */
+	for (i = 0; i <= TOTAL_PORT_NUM; i++) {
+		phydev = hw_priv->bus->phy_map[i];
+		if (!phydev)
+			continue;
+		priv = phydev->priv;
+		if (priv->state != phydev->state) {
+			priv->state = phydev->state;
+			if (PHY_UP == phydev->state ||
+			    PHY_RESUMING == phydev->state)
+				schedule_work(&priv->port->link_update);
+		}
+	}
+	if (!(hw_priv->intr_working & 1))
 		schedule_delayed_work(&hw_priv->link_read, 0);
-	if (hw_priv->sw.features & STP_SUPPORT)
-		schedule_delayed_work(&hw_priv->stp_monitor, 0);
 
 	ksz_update_timer(&hw_priv->monitor_timer_info);
 }  /* ksz8795_dev_monitor */
@@ -1407,6 +1575,7 @@ static int ksz8795_probe(struct spi_device *spi)
 	struct sw_priv *ks;
 	struct ksz_sw *sw;
 	struct ksz_port *port;
+	struct ksz_port_info *info;
 	struct phy_device *phydev;
 	struct phy_priv *priv;
 	u16 id;
@@ -1470,27 +1639,29 @@ static int ksz8795_probe(struct spi_device *spi)
 
 	sw = &ks->sw;
 	mutex_init(&sw->lock);
+	mutex_init(&sw->acllock);
 	sw->hwlock = &ks->hwlock;
 	sw->reglock = &ks->lock;
 
 	sw->dev_count = 1;
 
 	port_count = SWITCH_PORT_NUM;
-	mib_port_count = SWITCH_PORT_NUM;
-	sw->port_cnt = TOTAL_PORT_NUM;
+	mib_port_count = TOTAL_PORT_NUM;
+	sw->HOST_PORT = mib_port_count - 1;
+	sw->HOST_MASK = (1 << sw->HOST_PORT);
+
 	if (CHIP_ID_94 == id2) {
 		port_count--;
 		mib_port_count--;
-		sw->port_cnt = port_count;
+		sw->last_port = port_count;
+		sw->features |= USE_FEWER_PORTS;
 	}
+	sw->port_cnt = port_count;
+	sw->mib_port_cnt = mib_port_count;
+	sw->PORT_MASK = (1 << port_count) - 1;
+	sw->PORT_MASK |= sw->HOST_MASK;
 
 	sw->mib_cnt = TOTAL_SWITCH_COUNTER_NUM;
-	sw->mib_port_cnt = TOTAL_PORT_NUM;
-	sw->PORT_MASK = (1 << sw->mib_port_cnt) - 1;
-	if (sw->port_cnt < sw->mib_port_cnt)
-		sw->PORT_MASK &= ~(1 << sw->port_cnt);
-	sw->HOST_PORT = sw->mib_port_cnt - 1;
-	sw->HOST_MASK = (1 << sw->HOST_PORT);
 
 	sw->dev = ks;
 	sw->id = sw_device_present;
@@ -1507,28 +1678,37 @@ static int ksz8795_probe(struct spi_device *spi)
 
 	init_waitqueue_head(&sw->queue);
 	INIT_DELAYED_WORK(&ks->link_read, link_read_work);
-	INIT_DELAYED_WORK(&ks->stp_monitor, stp_work);
 
-	for (cnt = 0, pi = 0; cnt < port_count; cnt++, pi++) {
+	mutex_lock(&ks->lock);
+	for (pi = 0; pi < SWITCH_PORT_NUM; pi++) {
+		SW_D remote;
+
 		/*
 		 * Initialize to invalid value so that link detection
 		 * is done.
 		 */
-		sw->port_info[pi].link = 0xFF;
-		sw->port_info[pi].state = media_disconnected;
-		sw->port_info[pi].report = true;
+		info = &sw->port_info[pi];
+		info->link = 0xFF;
+		info->state = media_disconnected;
+		info->report = true;
+		info->phy_id = pi + 1;
+		port_r(sw, pi, P_REMOTE_STATUS, &remote);
+		if (remote & PORT_FIBER_MODE)
+			info->fiber = true;
 	}
+	mutex_unlock(&ks->lock);
 	sw->interface = PHY_INTERFACE_MODE_MII;
 	mutex_lock(&ks->lock);
-	for (; cnt < sw->mib_port_cnt; cnt++, pi++) {
+	for (cnt = pi = sw->port_cnt; cnt < sw->mib_port_cnt; cnt++, pi++) {
 		u8 ctrl;
 		u8 data;
 		int speed;
 		phy_interface_t phy;
-		struct ksz_port_info *info = &sw->port_info[pi];
 
-		if (cnt == sw->port_cnt)
-			continue;
+		if (sw->features & USE_FEWER_PORTS)
+			pi = sw->HOST_PORT;
+		info = &sw->port_info[pi];
+		info->phy_id = pi + 1;
 		ctrl = SW_R(sw, REG_SW_CTRL_4);
 #ifdef USE_10_MBIT_MODE
 		ctrl |= SW_10_MBIT;
@@ -1606,12 +1786,12 @@ static int ksz8795_probe(struct spi_device *spi)
 	sw->multi_dev |= multi_dev;
 	sw->stp |= stp;
 	sw->fast_aging |= fast_aging;
+	sw_setup_zone(sw);
 
 	sw->phydev = ks->phydev;
 	sw->counter = ks->counter;
 	sw->monitor_timer_info = &ks->monitor_timer_info;
 	sw->link_read = &ks->link_read;
-	sw->stp_monitor = &ks->stp_monitor;
 
 	sw_init_mib(sw);
 
@@ -1620,20 +1800,28 @@ static int ksz8795_probe(struct spi_device *spi)
 
 	create_debugfs(ks);
 
-#ifdef KSZ_DLR
-	sw->features |= DLR_HW;
+#ifdef CONFIG_KSZ_STP
+	ksz_stp_init(&sw->info->rstp, sw);
+#endif
+#ifdef CONFIG_KSZ_DLR
 	if (sw->features & DLR_HW)
 		ksz_dlr_init(&sw->info->dlr, sw);
+#endif
+#ifdef CONFIG_KSZ_HSR
+	if (sw->features & HSR_HW)
+		ksz_hsr_init(&sw->info->hsr, sw);
 #endif
 	sw->ops->acquire(sw);
 	sw_reset(sw);
 	sw_init(sw);
 	sw_setup(sw);
+	sw_enable(sw);
 	sw->ops->release(sw);
+	sw->ops->init(sw);
 
-#ifndef CONFIG_MICREL_SWITCH_EMBEDDED
+#ifndef CONFIG_KSZ8795_EMBEDDED
 	init_sw_sysfs(sw, &ks->sysfs, ks->dev);
-#ifdef KSZ_DLR
+#ifdef CONFIG_KSZ_DLR
 	if (sw->features & DLR_HW)
 		init_dlr_sysfs(ks->dev);
 #endif
@@ -1643,22 +1831,17 @@ static int ksz8795_probe(struct spi_device *spi)
 	sema_init(&ks->proc_sem, 1);
 
 	for (i = 0; i <= SWITCH_PORT_NUM; i++) {
-		if (i == sw->port_cnt + 1)
-			continue;
 		sw->phy[i] = ks->bus->phy_map[i];
-		phydev = sw->phy[i];
-		if (!phydev)
-			continue;
-		priv = phydev->priv;
-		port = &priv->port;
-		port->port_cnt = port_count;
-		port->mib_port_cnt = mib_port_count;
-		port->first_port = i ? i - 1 : 0;
-		port->flow_ctrl = PHY_FLOW_CTRL;
-
-		port->linked = &sw->port_info[port->first_port];
-		port_count = mib_port_count = 1;
 	}
+
+	/* User ports does not include host port. */
+	mib_port_count = port_count;
+	phydev = sw->phy[0];
+	priv = phydev->priv;
+	port = priv->port;
+	port->port_cnt = port_count;
+	port->mib_port_cnt = mib_port_count;
+	port->flow_ctrl = PHY_FLOW_CTRL;
 
 	INIT_WORK(&ks->mib_read, ksz8795_mib_read_work);
 
@@ -1669,9 +1852,9 @@ static int ksz8795_probe(struct spi_device *spi)
 		ksz8795_dev_monitor, ks);
 
 	ksz_start_timer(&ks->mib_timer_info, ks->mib_timer_info.period);
-	if (!sw->multi_dev && !sw->stp)
+	if (sw->multi_dev < 3 && !sw->stp)
 		ksz_start_timer(&ks->monitor_timer_info,
-			ks->monitor_timer_info.period);
+			ks->monitor_timer_info.period * 10);
 
 	sw_device_present++;
 
@@ -1682,10 +1865,12 @@ static int ksz8795_probe(struct spi_device *spi)
 	if (ks->irq <= 0)
 		return 0;
 	ks->intr_mask = INT_PORT_1 | INT_PORT_2 |
-		INT_PORT_3 | INT_PORT_4 | INT_PORT_5;
+		INT_PORT_3 | INT_PORT_4 | INT_PME;
 	mutex_lock(&ks->lock);
 	HW_W(ks, REG_INT_ENABLE, 0);
+	HW_W(ks, REG_ACL_INT_ENABLE, 0);
 	HW_W(ks, REG_INT_STATUS, ks->intr_mask);
+	HW_W(ks, REG_ACL_INT_STATUS, INT_PORT_ALL);
 	mutex_unlock(&ks->lock);
 	ret = sw_start_interrupt(ks, dev_name(ks->dev));
 	if (ret < 0)
@@ -1693,6 +1878,7 @@ static int ksz8795_probe(struct spi_device *spi)
 	else {
 		mutex_lock(&ks->lock);
 		HW_W(ks, REG_INT_ENABLE, ks->intr_mask);
+		HW_W(ks, REG_ACL_INT_ENABLE, INT_PORT_ALL);
 		mutex_unlock(&ks->lock);
 	}
 
@@ -1716,27 +1902,33 @@ static int ksz8795_remove(struct spi_device *spi)
 #ifdef CONFIG_NET_DSA_TAG_TAIL
 	ksz_dsa_cleanup();
 #endif
+	ksz_mii_exit(ks);
 	ksz_stop_timer(&ks->monitor_timer_info);
 	ksz_stop_timer(&ks->mib_timer_info);
 	flush_work(&ks->mib_read);
 
 	sysfs_remove_bin_file(&ks->dev->kobj, &kszsw_registers_attr);
-#ifndef CONFIG_MICREL_SWITCH_EMBEDDED
-#ifdef KSZ_DLR
+
+#ifndef CONFIG_KSZ8795_EMBEDDED
+#ifdef CONFIG_KSZ_DLR
 	if (sw->features & DLR_HW)
 		exit_dlr_sysfs(ks->dev);
 #endif
 	exit_sw_sysfs(sw, &ks->sysfs, ks->dev);
 #endif
+	sw->ops->exit(sw);
 	cancel_delayed_work_sync(&ks->link_read);
-	cancel_delayed_work_sync(&ks->stp_monitor);
+
 	delete_debugfs(ks);
-#ifdef KSZ_DLR
+
+#ifdef CONFIG_KSZ_STP
+	ksz_stp_exit(&sw->info->rstp);
+#endif
+#ifdef CONFIG_KSZ_DLR
 	if (sw->features & DLR_HW)
 		ksz_dlr_exit(&sw->info->dlr);
 #endif
 	kfree(sw->info);
-	ksz_mii_exit(ks);
 	kfree(ks->hw_dev);
 	kfree(ks);
 
@@ -1744,8 +1936,9 @@ static int ksz8795_remove(struct spi_device *spi)
 }
 
 static const struct of_device_id ksz8795_dt_ids[] = {
-	{ .compatible = "micrel,ksz8795" },
-	{ .compatible = "micrel,ksz8794" },
+	{ .compatible = "microchip,ksz8795" },
+	{ .compatible = "microchip,ksz8794" },
+	{ .compatible = "microchip,ksz8765" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, ksz8795_dt_ids);
@@ -1760,30 +1953,14 @@ static struct spi_driver ksz8795_driver = {
 	.remove = ksz8795_remove,
 };
 
-#if defined(CONFIG_SPI_FTDI) && defined(CONFIG_ARCH_MICREL_PEGASUS) && !defined(CONFIG_SPI_KSZ8795_MODULE)
-static void ksz8795_late_init(void)
-{
-	spi_register_driver(&ksz8795_driver);
-}
-#endif
-
 static int __init ksz8795_init(void)
 {
 #ifdef DEBUG_MSG
 	if (init_dbg())
 		return -ENOMEM;
 #endif
-#if defined(CONFIG_SPI_FTDI) && defined(CONFIG_ARCH_MICREL_PEGASUS)
-	if (spi_bus == 2)
-		sprintf((char *) ksz8795_driver.driver.name, KS8795_DEV2);
-#endif
 
-#if defined(CONFIG_SPI_FTDI) && defined(CONFIG_ARCH_MICREL_PEGASUS) && !defined(CONFIG_SPI_KSZ8795_MODULE)
-	pegasus_register_late_call(ksz8795_late_init);
-	return 0;
-#else
 	return spi_register_driver(&ksz8795_driver);
-#endif
 }
 
 static void __exit ksz8795_exit(void)
@@ -1794,8 +1971,8 @@ static void __exit ksz8795_exit(void)
 #endif
 }
 
-#ifndef CONFIG_MICREL_KSZ8795_EMBEDDED
-module_init(ksz8795_init);
+#ifndef CONFIG_KSZ8795_EMBEDDED
+subsys_initcall(ksz8795_init);
 module_exit(ksz8795_exit);
 
 module_param(fast_aging, int, 0);
@@ -1818,7 +1995,34 @@ module_param(spi_bus, int, 0);
 MODULE_PARM_DESC(spi_bus,
 	"Configure which spi master to use(0=KSZ8692, 2=FTDI)");
 
-#ifndef CONFIG_MICREL_KSZ8795_EMBEDDED
+module_param(eth1_ports, int, 0);
+module_param(eth2_ports, int, 0);
+module_param(eth3_ports, int, 0);
+module_param(eth4_ports, int, 0);
+MODULE_PARM_DESC(eth1_ports, "Ports to use on device 1.");
+MODULE_PARM_DESC(eth2_ports, "Ports to use on device 2.");
+MODULE_PARM_DESC(eth3_ports, "Ports to use on device 3.");
+MODULE_PARM_DESC(eth4_ports, "Ports to use on device 4.");
+
+module_param(eth1_vlan, int, 0);
+module_param(eth2_vlan, int, 0);
+module_param(eth3_vlan, int, 0);
+module_param(eth4_vlan, int, 0);
+MODULE_PARM_DESC(eth1_vlan, "VLAN to use on device 1.");
+MODULE_PARM_DESC(eth2_vlan, "VLAN to use on device 2.");
+MODULE_PARM_DESC(eth3_vlan, "VLAN to use on device 3.");
+MODULE_PARM_DESC(eth4_vlan, "VLAN to use on device 4.");
+
+module_param(eth1_proto, charp, 0);
+module_param(eth2_proto, charp, 0);
+module_param(eth3_proto, charp, 0);
+module_param(eth4_proto, charp, 0);
+MODULE_PARM_DESC(eth1_proto, "Protocol to use on device 1.");
+MODULE_PARM_DESC(eth2_proto, "Protocol to use on device 2.");
+MODULE_PARM_DESC(eth3_proto, "Protocol to use on device 3.");
+MODULE_PARM_DESC(eth4_proto, "Protocol to use on device 4.");
+
+#ifndef CONFIG_KSZ8795_EMBEDDED
 MODULE_DESCRIPTION("KSZ8795 switch driver");
 MODULE_AUTHOR("Tristram Ha <Tristram.Ha@microchip.com>");
 MODULE_LICENSE("GPL");

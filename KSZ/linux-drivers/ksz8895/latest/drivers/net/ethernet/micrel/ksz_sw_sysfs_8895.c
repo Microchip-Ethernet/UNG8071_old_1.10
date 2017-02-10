@@ -1,7 +1,7 @@
 /**
- * Micrel KSZ8895 switch common sysfs code
+ * Microchip KSZ8895 switch common sysfs code
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2011-2015 Micrel, Inc.
@@ -15,6 +15,9 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
+
+
+#include "ksz_sysfs.h"
 
 
 static char *sw_name[TOTAL_PORT_NUM] = {
@@ -52,6 +55,12 @@ static ssize_t netlan_show(struct device *d, struct device_attribute *attr,
 	if (len)
 		goto netlan_show_done;
 
+#ifdef CONFIG_KSZ_STP
+	len = sw->ops->sysfs_stp_read(sw, proc_num, len, buf);
+	if (len)
+		goto netlan_show_done;
+#endif
+
 	/* Require hardware to be acquired first. */
 	sw->ops->acquire(sw);
 	len = sw->ops->sysfs_read_hw(sw, proc_num, len, buf);
@@ -85,6 +94,11 @@ static ssize_t netlan_store(struct device *d, struct device_attribute *attr,
 
 	if (sw->ops->sysfs_vlan_write(sw, proc_num, num))
 		goto netlan_store_done;
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->ops->sysfs_stp_write(sw, proc_num, num, buf))
+		goto netlan_store_done;
+#endif
 
 	sw->ops->acquire(sw);
 	sw->ops->sysfs_write(sw, proc_num, port, num, buf);
@@ -120,6 +134,12 @@ static ssize_t netsw_show(struct device *d, struct device_attribute *attr,
 	if (len)
 		goto netsw_show_done;
 
+#ifdef CONFIG_KSZ_STP
+	len = sw->ops->sysfs_stp_port_read(sw, num, port, len, buf);
+	if (len)
+		goto netsw_show_done;
+#endif
+
 	/* Require hardware to be acquired first. */
 	sw->ops->acquire(sw);
 	len = sw->ops->sysfs_port_read_hw(sw, num, port, len, buf);
@@ -153,10 +173,18 @@ static ssize_t netsw_store(struct device *d, struct device_attribute *attr,
 	proc_num = offset / sizeof(int);
 	ret = count;
 
+#ifdef CONFIG_KSZ_STP
+	if (sw->ops->sysfs_stp_port_write(sw, proc_num, port, num, buf))
+		goto netsw_store_done;
+#endif
+
 	sw->ops->acquire(sw);
 	sw->ops->sysfs_port_write(sw, proc_num, port, num, buf);
 	sw->ops->release(sw);
 
+#ifdef CONFIG_KSZ_STP
+netsw_store_done:
+#endif
 	up(proc_sem);
 	return ret;
 }
@@ -222,6 +250,7 @@ static ssize_t store_sw_##name(struct device *d,			\
 static SW_ATTR(name, S_IRUGO | S_IWUSR, show_sw_##name, store_sw_##name)
 
 NETLAN_WR_ENTRY(info);
+NETLAN_RD_ENTRY(version);
 NETLAN_WR_ENTRY(duplex);
 NETLAN_WR_ENTRY(speed);
 NETLAN_WR_ENTRY(force);
@@ -240,6 +269,7 @@ NETLAN_WR_ENTRY(fast_aging);
 NETLAN_WR_ENTRY(link_aging);
 NETLAN_WR_ENTRY(bcast_per);
 NETLAN_WR_ENTRY(mcast_storm);
+NETLAN_WR_ENTRY(tx_queue_based);
 NETLAN_WR_ENTRY(diffserv_map);
 NETLAN_WR_ENTRY(p_802_1p_map);
 NETLAN_WR_ENTRY(vlan);
@@ -280,6 +310,17 @@ NETLAN_RD_ENTRY(ports);
 NETLAN_RD_ENTRY(dev_start);
 NETLAN_RD_ENTRY(vlan_start);
 NETLAN_RD_ENTRY(stp);
+
+#ifdef CONFIG_KSZ_STP
+NETLAN_RD_ENTRY(stp_br_info);
+NETLAN_WR_ENTRY(stp_br_on);
+NETLAN_WR_ENTRY(stp_br_prio);
+NETLAN_WR_ENTRY(stp_br_fwd_delay);
+NETLAN_WR_ENTRY(stp_br_hello_time);
+NETLAN_WR_ENTRY(stp_br_max_age);
+NETLAN_WR_ENTRY(stp_br_tx_hold);
+NETLAN_WR_ENTRY(stp_version);
+#endif
 
 NETLAN_WR_ENTRY(mac_fid);
 NETLAN_WR_ENTRY(mac_use_fid);
@@ -349,12 +390,26 @@ NETSW_WR_ENTRY(fw_unk_ucast_dest);
 NETSW_WR_ENTRY(fw_unk_mcast_dest);
 NETSW_WR_ENTRY(fw_inv_vid);
 NETSW_WR_ENTRY(fw_unk_ip_mcast_dest);
+
 NETSW_RD_ENTRY(duplex);
 NETSW_RD_ENTRY(speed);
 NETSW_WR_ENTRY(linkmd);
 
+#ifdef CONFIG_KSZ_STP
+NETSW_RD_ENTRY(stp_info);
+NETSW_WR_ENTRY(stp_on);
+NETSW_WR_ENTRY(stp_prio);
+NETSW_WR_ENTRY(stp_admin_path_cost);
+NETSW_WR_ENTRY(stp_path_cost);
+NETSW_WR_ENTRY(stp_admin_edge);
+NETSW_WR_ENTRY(stp_auto_edge);
+NETSW_WR_ENTRY(stp_mcheck);
+NETSW_WR_ENTRY(stp_admin_p2p);
+#endif
+
 static struct attribute *lan_attrs[] = {
 	&lan_attr_info.attr,
+	&lan_attr_version.attr,
 #ifdef USE_SPEED_LINK
 	&lan_attr_duplex.attr,
 	&lan_attr_speed.attr,
@@ -377,6 +432,7 @@ static struct attribute *lan_attrs[] = {
 	&lan_attr_link_aging.attr,
 	&lan_attr_bcast_per.attr,
 	&lan_attr_mcast_storm.attr,
+	&lan_attr_tx_queue_based.attr,
 	&lan_attr_diffserv_map.attr,
 	&lan_attr_p_802_1p_map.attr,
 	&lan_attr_vlan.attr,
@@ -432,6 +488,17 @@ static struct attribute *lan_attrs[] = {
 	&lan_attr_vlan_fid.attr,
 	&lan_attr_vlan_index.attr,
 	&lan_attr_vlan_info.attr,
+
+#ifdef CONFIG_KSZ_STP
+	&lan_attr_stp_br_info.attr,
+	&lan_attr_stp_br_on.attr,
+	&lan_attr_stp_br_prio.attr,
+	&lan_attr_stp_br_fwd_delay.attr,
+	&lan_attr_stp_br_hello_time.attr,
+	&lan_attr_stp_br_max_age.attr,
+	&lan_attr_stp_br_tx_hold.attr,
+	&lan_attr_stp_version.attr,
+#endif
 
 	NULL
 };
@@ -495,6 +562,18 @@ static struct attribute *sw_attrs[] = {
 	&sw_attr_speed.attr,
 	&sw_attr_linkmd.attr,
 
+#ifdef CONFIG_KSZ_STP
+	&sw_attr_stp_info.attr,
+	&sw_attr_stp_on.attr,
+	&sw_attr_stp_prio.attr,
+	&sw_attr_stp_admin_path_cost.attr,
+	&sw_attr_stp_path_cost.attr,
+	&sw_attr_stp_admin_edge.attr,
+	&sw_attr_stp_auto_edge.attr,
+	&sw_attr_stp_mcheck.attr,
+	&sw_attr_stp_admin_p2p.attr,
+#endif
+
 	NULL
 };
 
@@ -521,11 +600,11 @@ static void exit_sw_sysfs(struct ksz_sw *sw, struct ksz_sw_sysfs *info,
 	struct device *dev)
 {
 	int i;
-	int p = 0;
+	int j;
+	int p = sw->ops->get_first_port(sw);
 
-	if (sw->port_cnt < sw->mib_port_cnt)
-		p = 1;
-	for (i = p; i < sw->HOST_PORT; i++) {
+	for (j = p; j < sw->mib_port_cnt; j++) {
+		i = j - p;
 		sw_group.name = sw_name[i];
 		sw_group.attrs = info->port_attrs[i];
 		sysfs_remove_group(&dev->kobj, &sw_group);
@@ -533,13 +612,6 @@ static void exit_sw_sysfs(struct ksz_sw *sw, struct ksz_sw_sysfs *info,
 		info->port_attrs[i] = NULL;
 		info->ksz_port_attrs[i] = NULL;
 	}
-	i = sw->HOST_PORT;
-	sw_group.name = sw_name[i];
-	sw_group.attrs = info->port_attrs[i];
-	sysfs_remove_group(&dev->kobj, &sw_group);
-	kfree(info->port_attrs[i]);
-	info->port_attrs[i] = NULL;
-	info->ksz_port_attrs[i] = NULL;
 
 	sysfs_remove_group(&dev->kobj, &lan_group);
 }
@@ -549,18 +621,24 @@ static int init_sw_sysfs(struct ksz_sw *sw, struct ksz_sw_sysfs *info,
 {
 	int err;
 	int i;
-	int p = 0;
+	int j;
+	int p = sw->ops->get_first_port(sw);
 
-	if (sw->port_cnt < sw->mib_port_cnt)
-		p = 1;
 	err = sysfs_create_group(&dev->kobj, &lan_group);
 	if (err)
 		return err;
-	for (i = p; i < sw->HOST_PORT; i++) {
-		err = alloc_dev_attr(sw_attrs,
-			sizeof(sw_attrs) / sizeof(void *), i,
-			&info->ksz_port_attrs[i],
-			&info->port_attrs[i], NULL, &ksz_sw_dev_attrs_ptr);
+	for (j = p; j < sw->mib_port_cnt; j++) {
+		i = j - p;
+		if (j == sw->HOST_PORT)
+			err = alloc_dev_attr(sw_attrs,
+				sizeof(sw_attrs) / sizeof(void *), i,
+				&info->ksz_port_attrs[i], &info->port_attrs[i],
+				"0_linkmd", &ksz_sw_dev_attrs_ptr);
+		else
+			err = alloc_dev_attr(sw_attrs,
+				sizeof(sw_attrs) / sizeof(void *), i,
+				&info->ksz_port_attrs[i], &info->port_attrs[i],
+				NULL, &ksz_sw_dev_attrs_ptr);
 		if (err)
 			return err;
 		sw_group.name = sw_name[i];
@@ -569,22 +647,6 @@ static int init_sw_sysfs(struct ksz_sw *sw, struct ksz_sw_sysfs *info,
 		if (err)
 			return err;
 	}
-	i = sw->HOST_PORT;
-	err = alloc_dev_attr(sw_attrs,
-		sizeof(sw_attrs) / sizeof(void *), i,
-		&info->ksz_port_attrs[i], &info->port_attrs[i],
-#if 0
-		"0_duplex", &ksz_sw_dev_attrs_ptr);
-#else
-		NULL, &ksz_sw_dev_attrs_ptr);
-#endif
-	if (err)
-		return err;
-	sw_group.name = sw_name[i];
-	sw_group.attrs = info->port_attrs[i];
-	err = sysfs_create_group(&dev->kobj, &sw_group);
-	if (err)
-		return err;
 	return err;
 }
 

@@ -1,7 +1,7 @@
 /**
- * Micrel KSZ8692 Ethernet driver
+ * Microchip KSZ8692 Ethernet driver
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2009-2015 Micrel, Inc.
@@ -46,8 +46,8 @@
 #include <net/ipv6.h>
 #include <net/tcp.h>
 
-#if defined(CONFIG_MICREL_SWITCH) || defined(CONFIG_NET_DSA_TAG_TAIL)
-#define HAVE_MICREL_SWITCH
+#if defined(CONFIG_KSZ_SWITCH) || defined(CONFIG_KSZ_DSA)
+#define HAVE_KSZ_SWITCH
 #endif
 
 #ifdef CONFIG_NET_PEGASUS_PASSTHRU
@@ -369,7 +369,7 @@ enum {
 #define BUFFER_ALIGNMENT		8
 
 #define NUM_OF_RX_DESC			64
-#if defined(HAVE_MICREL_SWITCH)
+#if defined(HAVE_KSZ_SWITCH)
 #define NUM_OF_TX_DESC			64 * 2
 #else
 #define NUM_OF_TX_DESC			64
@@ -581,6 +581,11 @@ struct ksz_hw_mib {
 	u8 mib_start;
 
 	u64 counter[TOTAL_PORT_COUNTER_NUM];
+	struct {
+		unsigned long last;
+		u64 last_cnt;
+		u32 peak;
+	} rate[2];
 };
 
 /* Adjust this number down if there is transmit problem in user space. */
@@ -600,7 +605,7 @@ struct ksz_hw_mib {
 #ifdef CONFIG_NET_PEGASUS_PASSTHRU
 #define PASSTHRU			(1 << 24)
 #endif
-#if defined(HAVE_MICREL_SWITCH)
+#if defined(HAVE_KSZ_SWITCH)
 #define MII_SWITCH			(1 << 27)
 #endif
 
@@ -790,26 +795,43 @@ enum {
 static inline void copy_old_skb(struct sk_buff *old, struct sk_buff *skb)
 {
 	skb->dev = old->dev;
+	skb->sk = old->sk;
 	skb->protocol = old->protocol;
 	skb->ip_summed = old->ip_summed;
 	skb->csum = old->csum;
+	skb_shinfo(skb)->tx_flags = skb_shinfo(old)->tx_flags;
 	skb_set_network_header(skb, ETH_HLEN);
 
 	dev_kfree_skb(old);
 }  /* copy_old_skb */
 
-#if defined(CONFIG_MICREL_SWITCH_EMBEDDED)
+#if defined(CONFIG_KSZ_SWITCH_EMBEDDED)
+
+/* Need to predefine get_sysfs_data. */
+
+#ifndef get_sysfs_data
+struct ksz_port;
+
+static void get_sysfs_data_(struct net_device *dev,
+	struct semaphore **proc_sem, struct ksz_port **port);
+
+#define get_sysfs_data		get_sysfs_data_
+#endif
+
+#endif
+
+#if defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 #include <linux/of.h>
 #endif
-#if defined(CONFIG_MICREL_KSZ8863_EMBEDDED)
+#if defined(CONFIG_KSZ8863_EMBEDDED)
 #include "spi-ksz8863.c"
-#elif defined(CONFIG_MICREL_KSZ8463_EMBEDDED)
+#elif defined(CONFIG_KSZ8463_EMBEDDED)
 #include "spi-ksz8463.c"
-#elif defined(CONFIG_MICREL_KSZ8795_EMBEDDED)
+#elif defined(CONFIG_KSZ8795_EMBEDDED)
 #include "spi-ksz8795.c"
-#elif defined(CONFIG_MICREL_KSZ8895_EMBEDDED)
+#elif defined(CONFIG_KSZ8895_EMBEDDED)
 #include "spi-ksz8895.c"
-#elif defined(CONFIG_MICREL_KSZ9897_EMBEDDED)
+#elif defined(CONFIG_KSZ9897_EMBEDDED) || defined(CONFIG_KSZ_IBA_ONLY)
 #include "spi-ksz9897.c"
 #elif defined(CONFIG_HAVE_KSZ8863)
 #include "ksz_cfg_8863.h"
@@ -823,7 +845,21 @@ static inline void copy_old_skb(struct sk_buff *old, struct sk_buff *skb)
 #include "ksz_cfg_8895.h"
 #endif
 
-#ifdef HAVE_MICREL_SWITCH
+#if defined(CONFIG_KSZ_SWITCH_EMBEDDED)
+static void get_sysfs_data_(struct net_device *dev,
+	struct semaphore **proc_sem, struct ksz_port **port)
+{
+	struct dev_priv *priv;
+	struct sw_priv *hw_priv;
+
+	priv = netdev_priv(dev);
+	hw_priv = priv->parent;
+	*port = &priv->port;
+	*proc_sem = &hw_priv->proc_sem;
+}  /* get_sysfs_data */
+#endif
+
+#ifdef HAVE_KSZ_SWITCH
 static inline int sw_is_switch(struct ksz_sw *sw)
 {
 	return sw != NULL;
@@ -834,22 +870,22 @@ static inline int sw_is_switch(struct ksz_sw *sw)
 #include "ksz_req.h"
 #endif
 
-#if !defined(CONFIG_MICREL_SWITCH_EMBEDDED)
+#if !defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 #include "ksz_common.c"
 #endif
 
 /* -------------------------------------------------------------------------- */
 
-#ifdef CONFIG_NET_DSA_TAG_TAIL
+#ifdef CONFIG_KSZ_DSA
 #include "setup_dsa.c"
 #endif
 
 /* -------------------------------------------------------------------------- */
 
-#if defined(HAVE_MICREL_SWITCH) && !defined(CONFIG_MICREL_SWITCH_EMBEDDED)
+#if defined(HAVE_KSZ_SWITCH) && !defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 #include "ksz_sw_phy.h"
-#ifndef HAVE_MICREL_SWITCH
-#define SKIP_MICREL_SWITCH_SYSFS
+#ifndef HAVE_KSZ_SWITCH
+#define SKIP_KSZ_SWITCH_SYSFS
 #endif
 #include "ksz_spi_net.h"
 #endif
@@ -902,11 +938,11 @@ struct dev_info {
 	spinlock_t hwlock;
 	struct mutex lock;
 
-#if defined(HAVE_MICREL_SWITCH)
+#if defined(HAVE_KSZ_SWITCH)
 	struct ksz_sw *sw;
 	struct phy_device *phydev;
 #endif
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	struct ksz_sw_sysfs sysfs;
 #ifdef CONFIG_1588_PTP
 	struct ksz_ptp_sysfs ptp_sysfs;
@@ -950,7 +986,7 @@ struct dev_info {
 	char irq_name[6][40];
 };
 
-#if !defined(HAVE_MICREL_SWITCH)
+#if !defined(HAVE_KSZ_SWITCH)
 /**
  * struct dev_priv - Network device private data structure
  * @adapter:		Adapter device information.
@@ -975,6 +1011,7 @@ struct dev_priv {
 	struct dev_info *adapter;
 	struct net_device_stats stats;
 
+	struct phy_device dummy_phy;
 	struct phy_device *phydev;
 	struct work_struct phy_pause;
 
@@ -996,10 +1033,13 @@ struct dev_priv {
 #define DRV_NAME			"pegasus-net"
 #define DEVICE_NAME			"Pegasus"
 #define DRV_VERSION			"1.0.11"
-#define DRV_RELDATE			"Dec 25, 2015"
+
+#ifndef DRV_RELDATE
+#define DRV_RELDATE			"Dec 22, 2016"
+#endif
 
 static char version[] =
-	"Micrel " DEVICE_NAME " " DRV_VERSION " (" DRV_RELDATE ")";
+	"Microchip " DEVICE_NAME " " DRV_VERSION " (" DRV_RELDATE ")";
 
 #ifdef CONFIG_KSZ8692VA
 static u8 DEFAULT_MAC_ADDRESS[] = { 0x00, 0x10, 0xA1, 0x86, 0x92, 0x01 };
@@ -1039,7 +1079,7 @@ static u8 DEFAULT_MAC_ADDRESS[] = { 0x00, 0x10, 0xA1, 0x96, 0x92, 0x01 };
 
 /* -------------------------------------------------------------------------- */
 
-#if defined(HAVE_MICREL_SWITCH)
+#if defined(HAVE_KSZ_SWITCH)
 #ifdef CONFIG_1588_PTP
 
 extern unsigned int ksz_system_bus_clock;
@@ -2154,7 +2194,7 @@ static void hw_setup(struct ksz_hw *hw)
 #ifndef CONFIG_KSZ8692VA
 	hw->rx_cfg |= DMA_RX_CTRL_CSUM_TCP;
 #endif
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	if (hw->features & MII_SWITCH) {
 		hw->rx_cfg |= DMA_RX_CTRL_FLOW_ENABLE;
 		hw->tx_cfg |= DMA_TX_CTRL_FLOW_ENABLE;
@@ -2423,7 +2463,7 @@ static int hw_alloc_pkt(struct ksz_hw *hw, int length, int physical)
 	if (hw->tx_size >= MAX_TX_HELD_SIZE)
 		hw->tx_int_cnt = hw->tx_int_mask + 1;
 
-#if defined(HAVE_MICREL_SWITCH)
+#if defined(HAVE_KSZ_SWITCH)
 	/* May add another descriptor for tail tag. */
 	extra = 1;
 #endif
@@ -3200,6 +3240,22 @@ static int display_mib_counters(struct ksz_hw *hw, char *buf)
 				ksz8692_mib_names[tx].string,
 				mib->counter[tx_i]);
 	}
+	for (cnt = 0; cnt < 2; cnt++) {
+		if (mib->rate[cnt].peak) {
+			u32 num;
+			u32 frac;
+
+			num = mib->rate[cnt].peak / 10;
+			frac = mib->rate[cnt].peak % 10;
+			if (buf)
+				len += sprintf(buf + len,
+					"%d=%u.%u\n", cnt, num, frac);
+			else
+				printk(KERN_INFO 
+					"%d=%u.%u\n", cnt, num, frac);
+			mib->rate[cnt].peak = 0;
+		}
+	}
 	return len;
 }  /* display_mib_counter */
 
@@ -3283,7 +3339,7 @@ static void hw_cfg_link_speed(struct ksz_hw *hw, struct phy_device *phydev)
 	int duplex = phydev->duplex;
 	struct mii_bus *bus = phydev->bus;
 
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	if (hw->features & MII_SWITCH) {
 		struct dev_info *hw_priv =
 			container_of(hw, struct dev_info, hw);
@@ -3558,18 +3614,18 @@ static void tx_done(struct dev_info *hw_priv)
 	int port;
 	int dev_count = 1;
 	struct net_device *dev = hw_priv->dev;
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 	struct ksz_sw *sw = hw_priv->sw;
 #endif
 
 	transmit_cleanup(hw_priv, 1);
 
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 	if (sw_is_switch(sw))
 		dev_count = sw->dev_count + sw->dev_offset;
 #endif
 	for (port = 0; port < dev_count; port++) {
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 		if (sw_is_switch(sw)) {
 			dev = sw->netdev[port];
 			if (!dev)
@@ -3582,7 +3638,7 @@ static void tx_done(struct dev_info *hw_priv)
 			/* Do not restart tx if descriptors are not enough. */
 			if (hw->tx_desc_info.avail > 1 + MIN_TX_DESC)
 				netif_wake_queue(dev);
-#if defined(CONFIG_MICREL_SWITCH) && defined(CONFIG_HAVE_KSZ9897)
+#if defined(CONFIG_KSZ_SWITCH) && defined(CONFIG_HAVE_KSZ9897)
 			if (sw_is_switch(sw))
 				wake_up_interruptible(&sw->queue);
 #endif
@@ -3610,17 +3666,19 @@ static int netdev_tx(struct sk_buff *skb, struct net_device *dev)
 	struct dev_info *hw_priv = priv->adapter;
 	struct ksz_hw *hw = &hw_priv->hw;
 	int left;
+	int header = 0;
 	int len = skb->len;
 	int num = 1;
 	int rc = 0;
 
 	num = skb_shinfo(skb)->nr_frags + 1;
 
-#if defined(HAVE_MICREL_SWITCH)
+#if defined(HAVE_KSZ_SWITCH)
 	if (hw->features & MII_SWITCH) {
 		struct ksz_sw *sw = hw_priv->sw;
 
-		len = sw->net_ops->get_tx_len(sw, skb);
+		len = sw->net_ops->get_tx_len(sw, skb, priv->port.first_port,
+			&header);
 		if (len != skb->len && num > 1)
 			++num;
 	}
@@ -3630,9 +3688,9 @@ static int netdev_tx(struct sk_buff *skb, struct net_device *dev)
 
 	left = hw_alloc_pkt(hw, len, num);
 	if (left) {
-		if (left < num) {
+		if (left < num || header > VLAN_HLEN) {
 			struct sk_buff *org_skb = skb;
-			int new_len = org_skb->len;
+			int new_len = len;
 
 			if (new_len < 70)
 				new_len = 70;
@@ -3647,7 +3705,7 @@ static int netdev_tx(struct sk_buff *skb, struct net_device *dev)
 			skb->len = org_skb->len;
 			copy_old_skb(org_skb, skb);
 		}
-#if defined(HAVE_MICREL_SWITCH)
+#if defined(HAVE_KSZ_SWITCH)
 		if (hw->features & MII_SWITCH) {
 			struct ksz_sw *sw = hw_priv->sw;
 
@@ -3736,6 +3794,7 @@ static void netdev_tx_timeout(struct net_device *dev)
 
 static inline void csum_verified(struct sk_buff *skb)
 {
+#ifdef CONFIG_KSZ8692VA
 	unsigned short protocol;
 	struct iphdr *iph;
 
@@ -3751,9 +3810,39 @@ static inline void csum_verified(struct sk_buff *skb)
 		if (iph->protocol == IPPROTO_TCP)
 			skb->ip_summed = CHECKSUM_UNNECESSARY;
 	}
+#else
+	struct ethhdr *eth;
+	u16 *proto;
+	struct iphdr *iph;
+
+	skb_reset_mac_header(skb);
+	eth = (struct ethhdr *) skb_mac_header(skb);
+	proto = &eth->h_proto;
+	iph = (struct iphdr *)(eth + 1);
+	if (eth->h_proto == htons(ETH_P_8021Q)) {
+		struct vlan_ethhdr *vlan =
+			(struct vlan_ethhdr *) skb_mac_header(skb);
+
+		proto = &vlan->h_vlan_encapsulated_proto;
+		iph = (struct iphdr *)(vlan + 1);
+	}
+	if (*proto == htons(ETH_P_IP)) {
+		if (iph->protocol == IPPROTO_TCP)
+			skb->ip_summed = CHECKSUM_UNNECESSARY;
+	}
+#endif
 }  /* csum_verified */
 
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
+#ifdef CONFIG_HAVE_KSZ9897
+static int priv_multicast(void *ptr)
+{
+	struct dev_priv *priv = ptr;
+
+	return priv->multicast;
+}  /* priv_multicast */
+#endif
+
 static int priv_promiscuous(void *ptr)
 {
 	struct dev_priv *priv = ptr;
@@ -3761,6 +3850,7 @@ static int priv_promiscuous(void *ptr)
 	return priv->promiscuous;
 }  /* priv_promiscuous */
 
+#ifndef CONFIG_HAVE_KSZ9897
 static int priv_match_multi(void *ptr, u8 *data)
 {
 	int i;
@@ -3777,26 +3867,39 @@ static int priv_match_multi(void *ptr, u8 *data)
 	return drop;
 }  /* priv_match_multi */
 #endif
+#endif
 
 #ifdef CONFIG_NET_DSA_TAG_TAIL
 void net_add_tail_tag(struct sk_buff *skb, struct net_device *dev, int port)
 {
+#ifdef CONFIG_KSZ_DSA
 	struct dev_priv *priv = netdev_priv(dev);
 	struct dev_info *hw_priv = priv->adapter;
 	struct ksz_sw *sw = hw_priv->sw;
 
+	if (sw->net_ops->get_phys_port)
+		port = sw->net_ops->get_phys_port(sw, port);
 	sw->net_ops->add_tail_tag(sw, skb, 1 << port);
+#endif
 }  /* net_add_tail_tag */
 
 int net_get_tail_tag(struct sk_buff *skb, struct net_device *dev, int *port)
 {
+#ifdef CONFIG_KSZ_DSA
 	u8 *trailer;
+	int len;
 	struct dev_priv *priv = netdev_priv(dev);
 	struct dev_info *hw_priv = priv->adapter;
 	struct ksz_sw *sw = hw_priv->sw;
 
 	trailer = skb_tail_pointer(skb) - 1;
-	return sw->net_ops->get_tail_tag(trailer, port);
+	len = sw->net_ops->get_tail_tag(trailer, port);
+	if (sw->net_ops->get_virt_port)
+		*port = sw->net_ops->get_virt_port(sw, *port);
+	return len;
+#else
+	return skb->len;
+#endif
 }  /* net_get_tail_tag */
 #endif
 
@@ -3814,19 +3917,19 @@ static inline int rx_proc(struct dev_info *hw_priv, struct ksz_hw *hw,
 #ifdef CONFIG_NET_PEGASUS_PASSTHRU
 	int filter_flag;
 #endif
-#ifdef HAVE_MICREL_SWITCH
-#if defined(CONFIG_MICREL_SWITCH) || defined(CONFIG_1588_PTP)
+#ifdef HAVE_KSZ_SWITCH
 	struct ksz_sw *sw = hw_priv->sw;
-	int forward = 0;
+	int rx_port = 0;
 	int tag = 0;
+#if defined(CONFIG_KSZ_SWITCH) || defined(CONFIG_1588_PTP)
+	int forward = 0;
 	void *ptr = NULL;
 	void (*rx_tstamp)(void *ptr, struct sk_buff *skb) = NULL;
 #endif
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 	struct net_device *parent_dev = NULL;
 	struct sk_buff *parent_skb = NULL;
 	int extra_skb;
-	int rx_port = 0;
 #endif
 #ifdef CONFIG_1588_PTP
 	struct ptp_info *ptp = &sw->ptp_hw;
@@ -3838,7 +3941,10 @@ static inline int rx_proc(struct dev_info *hw_priv, struct ksz_hw *hw,
 	dma_sync_single_for_cpu((struct device *) NULL, dma_buf->dma,
 		status.rx.frame_len, DMA_FROM_DEVICE);
 
-#ifdef CONFIG_MICREL_SWITCH
+	/* Received length includes 4-byte CRC. */
+	frame_len -= 4;
+
+#ifdef HAVE_KSZ_SWITCH
 	if (sw_is_switch(sw)) {
 		dev = sw->net_ops->rx_dev(sw, &dma_buf->skb->data[aligned],
 			&frame_len, &tag, &rx_port);
@@ -3849,7 +3955,7 @@ static inline int rx_proc(struct dev_info *hw_priv, struct ksz_hw *hw,
 	priv = netdev_priv(dev);
 
 	/* Received length includes 4-byte CRC. */
-	packet_len = frame_len - 4;
+	packet_len = frame_len;
 
 #ifdef CONFIG_NET_PEGASUS_PASSTHRU
 	filter_flag = filter_packet(hw->override_addr, dma_buf->skb);
@@ -3864,9 +3970,9 @@ static inline int rx_proc(struct dev_info *hw_priv, struct ksz_hw *hw,
 		dma_buf->skb = NULL;
 
 		/* skb->data != skb->head */
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 #ifdef CONFIG_HAVE_KSZ9897
-		if (sw->features & IBA_SUPPORT) {
+		if (sw_is_switch(sw) && (sw->features & IBA_SUPPORT)) {
 			spin_lock(&hw_priv->hwlock);
 			dma_buf->skb = hw_priv->new_skb;
 			hw_priv->new_skb = NULL;
@@ -3897,9 +4003,9 @@ static inline int rx_proc(struct dev_info *hw_priv, struct ksz_hw *hw,
 #else
 	} else {
 #endif
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 #ifdef CONFIG_HAVE_KSZ9897
-		if (sw->features & IBA_SUPPORT) {
+		if (sw_is_switch(sw) && (sw->features & IBA_SUPPORT)) {
 			spin_lock(&hw_priv->hwlock);
 			skb = hw_priv->new_skb;
 			hw_priv->new_skb = NULL;
@@ -3963,32 +4069,50 @@ static inline int rx_proc(struct dev_info *hw_priv, struct ksz_hw *hw,
 		return 0;
 #endif
 
-#ifdef CONFIG_MICREL_SWITCH
-	if (sw_is_switch(sw) && !sw->net_ops->match_pkt(sw, &dev,
-			(void **) &priv, priv_promiscuous, priv_match_multi,
-			skb, hw->promiscuous)) {
-		dev_kfree_skb_irq(skb);
-		return 0;
-	}
+	/* vlan_get_tag requires network device in socket buffer. */
+	skb->dev = dev;
+
+#ifdef HAVE_KSZ_SWITCH
 	if (sw_is_switch(sw)) {
 
 		/* Internal packets handled by the switch. */
 		if (!sw->net_ops->drv_rx(sw, skb, rx_port))
 			goto done;
 	}
+
+#ifdef CONFIG_KSZ_SWITCH
+	if (sw_is_switch(sw) && !sw->net_ops->match_pkt(sw, &dev,
+			(void **) &priv, priv_promiscuous,
+#ifdef CONFIG_HAVE_KSZ9897
+			priv_multicast,
+#else
+			priv_match_multi,
+#endif
+			skb, hw->promiscuous)) {
+		dev_kfree_skb_irq(skb);
+		return 0;
+	}
+#endif
 #endif
 
 #ifndef CONFIG_KSZ8692VA
+#if defined(CONFIG_KSZ_SWITCH)
+	if (sw_is_switch(sw) && (sw->features & HSR_HW))
+		csum_verified(skb);
+	else
+#endif
 	if (0 == status.rx.csum_error && 0 == status.rx.csum_not_done)
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
 #endif
 
-	/* vlan_get_tag requires network device in socket buffer. */
-	skb->dev = dev;
+#ifdef CONFIG_KSZ_DSA
+	if (sw_is_switch(sw) && (sw->features & DSA_SUPPORT))
+		goto rx;
+#endif
 
 #ifdef CONFIG_1588_PTP
 	ptr = ptp;
-	if (sw->features & PTP_HW) {
+	if (sw_is_switch(sw) && sw->features & PTP_HW) {
 		if (ptp->ops->drop_pkt(ptp, skb, sw->vlan_id, &tag, &ptp_tag)) {
 			dev_kfree_skb_irq(skb);
 			return 0;
@@ -4000,34 +4124,27 @@ static inline int rx_proc(struct dev_info *hw_priv, struct ksz_hw *hw,
 		}
 	}
 #endif
-#ifdef CONFIG_KSZ_STP
-	if (sw_is_switch(sw) && sw->net_ops->stp_rx(sw, dev, skb, rx_port,
-			&forward)) {
-		if (!forward) {
-			if (!sw->net_ops->blocked_rx(sw, skb->data))
-				dbg_msg(
-					"rxd%d=%02x:%02x:%02x:%02x:%02x:%02x\n",
-					rx_port,
-					skb->data[0], skb->data[1],
-					skb->data[2], skb->data[3],
-					skb->data[4], skb->data[5]);
-			dev_kfree_skb_irq(skb);
-			return 0;
-		}
-	}
-#endif
-#if defined(CONFIG_MICREL_SWITCH)
+#if defined(CONFIG_KSZ_SWITCH)
 	if (sw_is_switch(sw)) {
 
+#if 1
 		/* Need to forward to VLAN devices for MRP messages. */
 		if (!forward) {
 			struct ethhdr *eth = (struct ethhdr *) skb->data;
 
+#if 0
 			if (eth->h_proto == htons(0x88F5) ||
 			    eth->h_proto == htons(0x88F6) ||
 			    eth->h_proto == htons(0x22EA))
+#endif
+			if (eth->h_proto == htons(0x888E))
 				forward = FWD_VLAN_DEV;
+#if 0
+			else
+				forward = FWD_VLAN_DEV | FWD_MAIN_DEV;
+#endif
 		}
+#endif
 
 		/* No VLAN port forwarding; need to send to parent. */
 		if ((forward & FWD_VLAN_DEV) && !tag)
@@ -4041,10 +4158,14 @@ static inline int rx_proc(struct dev_info *hw_priv, struct ksz_hw *hw,
 	extra_skb = (parent_skb != NULL);
 #endif
 
-#if defined(CONFIG_MICREL_SWITCH)
+#if defined(CONFIG_KSZ_SWITCH)
 	if (sw_is_switch(sw))
 		extra_skb |= sw->net_ops->port_vlan_rx(sw, dev, parent_dev,
 			skb, forward, tag, ptr, rx_tstamp);
+#endif
+
+#ifdef CONFIG_KSZ_DSA
+rx:
 #endif
 	skb->protocol = eth_type_trans(skb, dev);
 
@@ -4055,7 +4176,8 @@ static inline int rx_proc(struct dev_info *hw_priv, struct ksz_hw *hw,
 	if (skb)
 		rx_status = netif_rx(skb);
 
-#if defined(CONFIG_MICREL_SWITCH)
+#ifdef HAVE_KSZ_SWITCH
+#if defined(CONFIG_KSZ_SWITCH)
 	if (parent_skb) {
 		struct dev_priv *parent_priv = netdev_priv(parent_dev);
 
@@ -4073,6 +4195,7 @@ static inline int rx_proc(struct dev_info *hw_priv, struct ksz_hw *hw,
 		parent_skb->protocol = eth_type_trans(parent_skb, parent_dev);
 		rx_status = netif_rx(parent_skb);
 	}
+#endif
 
 done:
 #endif
@@ -4379,7 +4502,7 @@ static int netdev_close(struct net_device *dev)
 	struct dev_priv *priv = netdev_priv(dev);
 	struct dev_info *hw_priv = priv->adapter;
 	struct ksz_hw *hw = &hw_priv->hw;
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	struct ksz_sw *sw = hw_priv->sw;
 #endif
 	int irq;
@@ -4394,10 +4517,13 @@ static int netdev_close(struct net_device *dev)
 #endif
 	netif_stop_queue(dev);
 
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	if (sw_is_switch(sw))
 		sw->net_ops->close_port(sw, dev, &priv->port);
 #endif
+
+	if (priv->phydev->bus)
+		phy_stop(priv->phydev);
 
 	if (priv->multicast)
 		--hw->all_multi;
@@ -4410,10 +4536,21 @@ static int netdev_close(struct net_device *dev)
 
 	ksz_stop_timer(&hw_priv->mib_timer_info);
 	flush_work(&hw_priv->mib_read);
-#ifdef HAVE_MICREL_SWITCH
-	if (hw->features & MII_SWITCH) {
+#ifdef HAVE_KSZ_SWITCH
+	if (sw_is_switch(sw)) {
 		sw->net_ops->close(sw);
 		sw->net_ops->stop(sw, true);
+
+#ifdef CONFIG_KSZ_IBA_ONLY
+		sw->net_ops->leave_dev(sw);
+		if (priv->phydev) {
+			phy_detach(priv->phydev);
+			priv->phydev = &priv->dummy_phy;
+		}
+		ksz_remove(sw->dev);
+		hw_priv->sw = NULL;
+		hw->features &= ~MII_SWITCH;
+#endif
 	}
 #endif
 
@@ -4529,7 +4666,7 @@ static void hw_set_link_speed(struct ksz_hw *hw, struct phy_device *phydev)
 	}
 	if (hw->force_link || advertising != phydev->advertising) {
 		phydev->advertising = advertising;
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 		if (hw->features & MII_SWITCH)
 			return;
 #endif
@@ -4538,12 +4675,16 @@ static void hw_set_link_speed(struct ksz_hw *hw, struct phy_device *phydev)
 	}
 }  /* hw_set_link_speed */
 
+#ifdef CONFIG_KSZ_IBA_ONLY
+static void netdev_start_iba(struct work_struct *work);
+#endif
+
 static void hw_cfg_huge_frame(struct dev_info *hw_priv, struct ksz_hw *hw)
 {
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 	struct ksz_sw *sw = hw_priv->sw;
 
-	if (sw && sw->info) {
+	if (sw_is_switch(sw) && sw->info) {
 		int set;
 
 		if (hw->features & RX_HUGE_FRAME)
@@ -4566,7 +4707,7 @@ static void hw_cfg_huge_frame(struct dev_info *hw_priv, struct ksz_hw *hw)
 	}
 }  /* hw_cfg_huge_frame */
 
-static int prepare_hardware(struct net_device *dev)
+static int prepare_hardware(struct net_device *dev, int rx_mode)
 {
 	struct dev_priv *priv = netdev_priv(dev);
 	struct dev_info *hw_priv = priv->adapter;
@@ -4618,10 +4759,11 @@ static int prepare_hardware(struct net_device *dev)
 	tasklet_enable(&hw_priv->tx_tasklet);
 
 	hw->all_multi = 0;
-#ifdef KSZ_DLR
-	hw->all_multi = 1;
-#endif
 	hw->multi_list_size = 0;
+	if (rx_mode & 1)
+		hw->all_multi = 1;
+	if (rx_mode & 2)
+		hw->promiscuous = 1;
 
 	hw_setup(hw);
 	hw_reset(hw);
@@ -4640,17 +4782,19 @@ static int netdev_open_before(struct net_device *dev, struct dev_priv *priv,
 	struct dev_info *hw_priv, struct ksz_hw *hw)
 {
 	int rc;
+	int rx_mode = 0;
 
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	do {
 		struct ksz_sw *sw = hw_priv->sw;
 
 		if (sw_is_switch(sw))
-			sw->net_ops->open_dev(sw, dev, hw->override_addr);
+			rx_mode = sw->net_ops->open_dev(sw, dev,
+				hw->override_addr);
 	} while (0);
 #endif
 
-	rc = prepare_hardware(dev);
+	rc = prepare_hardware(dev, rx_mode);
 	if (rc)
 		return rc;
 
@@ -4679,7 +4823,7 @@ static void netdev_open_after(struct dev_info *hw_priv, struct ksz_hw *hw)
 	ksz_start_timer(&hw_priv->mib_timer_info,
 		hw_priv->mib_timer_info.period);
 
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	do {
 		struct ksz_sw *sw = hw_priv->sw;
 
@@ -4719,7 +4863,7 @@ static int netdev_open(struct net_device *dev)
 			return rc;
 	}
 
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	do {
 		struct ksz_sw *sw = hw_priv->sw;
 
@@ -4749,6 +4893,52 @@ static int netdev_open(struct net_device *dev)
 		struct dev_info *other_hw_priv = other_priv->adapter;
 
 		other_hw_priv->otherdev_running = true;
+	}
+#endif
+
+#ifdef CONFIG_KSZ_IBA_ONLY
+	if (!hw_priv->sw) {
+		struct sw_priv *ks;
+		struct ksz_sw *sw;
+
+		/*
+		 * Stop normal traffic from going out until the switch is
+		 * configured to block looping frames.
+		 */
+		netif_carrier_off(dev);
+
+		ks = kzalloc(sizeof(struct sw_priv), GFP_KERNEL);
+		ks->hw_dev = dev;
+		ks->dev = &dev->dev;
+		ks->irq = get_irq(ks, &dev->dev, 34);
+
+		sw_device_present = 0;
+		ksz_probe_prep(ks, dev);
+		sw = &ks->sw;
+
+		sw->net_ops->get_state = get_priv_state;
+		sw->net_ops->set_state = set_priv_state;
+		sw->net_ops->get_priv_port = get_priv_port;
+		sw->netdev[0] = dev;
+		sw->dev_count = 1;
+
+#ifdef CONFIG_1588_PTP
+		do {
+			struct ptp_info *ptp = &sw->ptp_hw;
+
+			ptp->get_clk_cnt = get_clk_cnt;
+			ptp->clk_divider = ksz_system_bus_clock;
+		} while (0);
+#endif
+
+		INIT_DELAYED_WORK(&sw->set_ops, netdev_start_iba);
+
+		sw_set_dev(sw, dev, dev->dev_addr);
+
+		priv->parent = sw->dev;
+		priv->dev = dev;
+		hw->features |= MII_SWITCH;
+		hw_priv->sw = sw;
 	}
 #endif
 
@@ -4833,11 +5023,17 @@ static int netdev_set_mac_address(struct net_device *dev, void *addr)
 	hw->mac_override = true;
 	memcpy(hw->override_addr, mac->sa_data, ETH_ALEN);
 
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 	if (hw->features & MII_SWITCH) {
 		struct ksz_sw *sw = hw_priv->sw;
 		u8 promiscuous = hw->promiscuous;
 
+/*
+ * THa  2016/02/11
+ * Turning on promiscuous mode disables rx flow control, so lots of transmitted
+ * packets are dropped!  So the engine accepts all addresses and does not check
+ * PAUSE frame?!
+ */
 		promiscuous = sw->net_ops->set_mac_addr(sw, dev, promiscuous,
 			priv->port.first_port);
 		if (promiscuous != hw->promiscuous) {
@@ -4916,13 +5112,11 @@ static void netdev_set_rx_mode(struct net_device *dev)
 	dev_set_promiscuous(dev, priv, hw,
 		((dev->flags & IFF_PROMISC) == IFF_PROMISC));
 
-#ifdef CONFIG_MICREL_SWITCH
-	if (hw_priv->sw && hw_priv->sw->dev_count > 1) {
-#ifdef CONFIG_KSZ_STP
+#ifdef CONFIG_KSZ_SWITCH
+	if (sw_is_switch(hw_priv->sw) && hw_priv->sw->dev_count > 1) {
 		if ((flags & IFF_MULTICAST) && !netdev_mc_empty(dev))
 			hw_priv->sw->net_ops->set_multi(hw_priv->sw, dev,
 				&priv->port);
-#endif
 		priv->multi_list_size = 0;
 
 		/* Do not update multi_list_size. */
@@ -4945,7 +5139,7 @@ static void netdev_set_rx_mode(struct net_device *dev)
 				++hw->all_multi;
 				hw_set_multicast(hw, hw->all_multi);
 			}
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 			priv->multi_list_size = 0;
 #endif
 			return;
@@ -4956,12 +5150,12 @@ static void netdev_set_rx_mode(struct net_device *dev)
 				continue;
 			if (i >= MAX_MULTICAST_LIST)
 				break;
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 			memcpy(priv->multi_list[i], ha->addr, ETH_ALEN);
 #endif
 			memcpy(hw->multi_list[i++], ha->addr, ETH_ALEN);
 		}
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 		priv->multi_list_size = (u8) i;
 #endif
 		hw->multi_list_size = (u8) i;
@@ -4971,7 +5165,7 @@ static void netdev_set_rx_mode(struct net_device *dev)
 			--hw->all_multi;
 			hw_set_multicast(hw, hw->all_multi);
 		}
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 		priv->multi_list_size = 0;
 #endif
 		hw->multi_list_size = 0;
@@ -4993,22 +5187,18 @@ static int netdev_change_mtu(struct net_device *dev, int new_mtu)
 	if (hw->features & PASSTHRU)
 		return -EBUSY;
 #endif
-#ifdef HAVE_MICREL_SWITCH_
-	if (hw->features & MII_SWITCH)
-		return -EBUSY;
-#endif
 
 	if (new_mtu < 60)
 		return -ERANGE;
 
 	if (dev->mtu != new_mtu) {
 		hw_mtu = new_mtu + ETHERNET_HEADER_SIZE + 4;
-#if defined(CONFIG_MICREL_KSZ9897_PTP)
+#ifdef HAVE_KSZ_SWITCH
 		do {
 			struct ksz_sw *sw = hw_priv->sw;
 
 			if (sw_is_switch(sw))
-				hw_mtu += 5;
+				hw_mtu += sw->net_ops->get_mtu(sw);
 		} while (0);
 #endif
 		if (hw_mtu > hw_priv->max_buf_size)
@@ -5053,20 +5243,15 @@ static int netdev_change_mtu(struct net_device *dev, int new_mtu)
 
 /* -------------------------------------------------------------------------- */
 
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 static int netdev_add_vid(struct net_device *dev, __be16 proto, u16 vid)
 {
 	struct dev_priv *priv = netdev_priv(dev);
 	struct dev_info *hw_priv = priv->adapter;
 	struct ksz_sw *sw = hw_priv->sw;
 
-	if (!sw)
-		return 0;
-	if ((sw->features & VLAN_PORT) && vid >= VLAN_PORT_START) {
-		vid -= VLAN_PORT_START;
-		if (vid <= SWITCH_PORT_NUM)
-			sw->vlan_id |= (1 << vid);
-	}
+	if (sw_is_switch(sw))
+		sw->net_ops->add_vid(sw, vid);
 	return 0;
 }
 
@@ -5076,13 +5261,8 @@ static int netdev_kill_vid(struct net_device *dev, __be16 proto, u16 vid)
 	struct dev_info *hw_priv = priv->adapter;
 	struct ksz_sw *sw = hw_priv->sw;
 
-	if (!sw)
-		return 0;
-	if ((sw->features & VLAN_PORT) && vid >= VLAN_PORT_START) {
-		vid -= VLAN_PORT_START;
-		if (vid <= SWITCH_PORT_NUM)
-			sw->vlan_id &= ~(1 << vid);
-	}
+	if (sw_is_switch(sw))
+		sw->net_ops->kill_vid(sw, vid);
 	return 0;
 }
 #endif
@@ -5177,10 +5357,11 @@ static int netdev_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 	if (!priv->phydev->bus)
 		return -1;
 	mutex_lock(&hw_priv->lock);
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	rc = mii_ethtool_gset(&priv->mii_if, cmd);
+	cmd->supported = priv->phydev->supported;
 	cmd->advertising |= SUPPORTED_TP;
-	cmd->port = PORT_TP;
+	cmd->port |= PORT_TP;
 #else
 	rc = phy_ethtool_gset(priv->phydev, cmd);
 #endif
@@ -5259,7 +5440,7 @@ static int netdev_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 		else
 			hw->force_link = 1;
 	}
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	if (hw->features & MII_SWITCH) {
 		struct ksz_port *port = &priv->port;
 
@@ -5528,7 +5709,7 @@ static u32 netdev_get_msglevel(struct net_device *dev)
 static void netdev_set_msglevel(struct net_device *dev, u32 value)
 {
 	struct dev_priv *priv = netdev_priv(dev);
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	struct dev_info *hw_priv = priv->adapter;
 	struct ksz_sw *sw = hw_priv->sw;
 
@@ -5550,7 +5731,7 @@ static void netdev_get_pauseparam(struct net_device *dev,
 	struct dev_priv *priv = netdev_priv(dev);
 	struct dev_info *hw_priv = priv->adapter;
 	struct ksz_hw *hw = &hw_priv->hw;
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	struct ksz_sw *sw = hw_priv->sw;
 
 	pause->autoneg = (sw->overrides & PAUSE_FLOW_CTRL) ? 0 : 1;
@@ -5577,7 +5758,7 @@ static int netdev_set_pauseparam(struct net_device *dev,
 	struct dev_priv *priv = netdev_priv(dev);
 	struct dev_info *hw_priv = priv->adapter;
 	struct ksz_hw *hw = &hw_priv->hw;
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	struct ksz_sw *sw = hw_priv->sw;
 	struct ksz_port *port = &priv->port;
 #endif
@@ -5594,7 +5775,7 @@ static int netdev_set_pauseparam(struct net_device *dev,
 			hw->flow_ctrl = PHY_FLOW_CTRL;
 		hw->overrides &= ~PAUSE_FLOW_CTRL;
 		hw->force_link = 0;
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 		if (sw_is_switch(sw)) {
 			port->flow_ctrl = hw->flow_ctrl;
 			sw->overrides &= ~PAUSE_FLOW_CTRL;
@@ -5604,7 +5785,7 @@ static int netdev_set_pauseparam(struct net_device *dev,
 #endif
 		hw_set_link_speed(hw, priv->phydev);
 	} else {
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 		if (sw_is_switch(sw))
 			sw->overrides |= PAUSE_FLOW_CTRL;
 #endif
@@ -5808,6 +5989,19 @@ static void netdev_get_ethtool_stats(struct net_device *dev,
 		*data++ = hw->port_mib.counter[i];
 }  /* netdev_get_ethtool_stats */
 
+#ifdef CONFIG_1588_PTP
+static int netdev_get_ts_info(struct net_device *dev,
+	struct ethtool_ts_info *info)
+{
+	struct dev_priv *priv = netdev_priv(dev);
+	struct dev_info *hw_priv = priv->adapter;
+	struct ksz_sw *sw = hw_priv->sw;
+	struct ptp_info *ptp = &sw->ptp_hw;
+
+	return ptp->ops->get_ts_info(ptp, dev, info);
+}  /* netdev_get_ts_info */
+#endif
+
 static struct ethtool_ops netdev_ethtool_ops = {
 	.get_settings		= netdev_get_settings,
 	.set_settings		= netdev_set_settings,
@@ -5826,6 +6020,9 @@ static struct ethtool_ops netdev_ethtool_ops = {
 	.get_strings		= netdev_get_strings,
 	.get_sset_count		= netdev_get_sset_count,
 	.get_ethtool_stats	= netdev_get_ethtool_stats,
+#ifdef CONFIG_1588_PTP
+	.get_ts_info		= netdev_get_ts_info,
+#endif
 };
 
 #define SIOCDEVDEBUG			(SIOCDEVPRIVATE + 10)
@@ -5844,8 +6041,10 @@ static int netdev_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
 	struct dev_priv *priv = netdev_priv(dev);
 	struct dev_info *hw_priv = priv->adapter;
-#ifdef CONFIG_1588_PTP
+#if defined(CONFIG_1588_PTP) || defined(CONFIG_KSZ_MRP)
 	struct ksz_sw *sw = hw_priv->sw;
+#endif
+#ifdef CONFIG_1588_PTP
 	struct ptp_info *ptp = &sw->ptp_hw;
 #endif
 	int result = 0;
@@ -5890,17 +6089,29 @@ static int netdev_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 	case SIOCDEVPRIVATE + 15:
 		result = -EOPNOTSUPP;
 		if (sw->features & PTP_HW)
-			result = ptp->ops->dev_req(ptp, ifr->ifr_data, NULL);
+			result = ptp->ops->dev_req(ptp, priv->port.first_port,
+				ifr->ifr_data, NULL);
 		break;
 #endif
-#ifdef KSZ_MRP
+#ifdef CONFIG_KSZ_MRP
 	case SIOCDEVPRIVATE + 14:
 	{
 		struct mrp_info *mrp = &sw->mrp;
 
 		result = -EOPNOTSUPP;
 		if (sw->features & MRP_SUPPORT)
-			result = mrp->ops->dev_req(mrp, ifr->ifr_data);
+			result = mrp->ops->dev_req(mrp, priv->port.first_port,
+				ifr->ifr_data);
+		break;
+	}
+#endif
+#ifdef CONFIG_HAVE_KSZ9897
+	case SIOCDEVPRIVATE + 13:
+	{
+		struct ksz_sw *sw = hw_priv->sw;
+
+		result = sw->ops->dev_req(sw, priv->port.first_port,
+			ifr->ifr_data, NULL);
 		break;
 	}
 #endif
@@ -5916,6 +6127,41 @@ static int netdev_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 
 	return result;
 }  /* netdev_ioctl */
+
+static void determine_hw_rate(struct ksz_hw_mib *mib)
+{
+	int j;
+
+	for (j = 0; j < 2; j++) {
+		if (mib->rate[j].last) {
+			int offset;
+			u64 cnt;
+			u64 last_cnt;
+			unsigned long diff = jiffies - mib->rate[j].last;
+
+			if (0 == j)
+				offset = MIB_COUNTER_RX;
+			else
+				offset = MIB_COUNTER_TX;
+			cnt = mib->counter[offset];
+			last_cnt = cnt;
+			cnt -= mib->rate[j].last_cnt;
+			if (cnt > 1000000 && diff >= 10) {
+				u32 rem;
+				u64 rate = cnt;
+
+				rate *= 8;
+				diff *= 10 * 100;
+				rate = div_u64_rem(rate, diff, &rem);
+				mib->rate[j].last = jiffies;
+				mib->rate[j].last_cnt = last_cnt;
+				if (mib->rate[j].peak < (u32) rate)
+					mib->rate[j].peak = (u32) rate;
+			}
+		} else
+			mib->rate[j].last = jiffies;
+	}
+}  /* determine_hw_rate */
 
 static void mib_read_work(struct work_struct *work)
 {
@@ -5940,6 +6186,7 @@ static void mib_read_work(struct work_struct *work)
 			hw_priv->counter.read = 2;
 			wake_up_interruptible(
 				&hw_priv->counter.counter);
+			determine_hw_rate(mib);
 		}
 	} else if (jiffies >= hw_priv->counter.time) {
 		/* Only read MIB counters when the port is connected. */
@@ -5974,6 +6221,7 @@ static int device_present;
 
 /* -------------------------------------------------------------------------- */
 
+#if !defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 #define KSZ8692_REGS_SIZE	0x10000
 
 static int check_hw_reg_range(unsigned addr)
@@ -6087,6 +6335,7 @@ static struct bin_attribute ksz8692_registers_attr = {
 	.read	= ksz8692_registers_read,
 	.write	= ksz8692_registers_write,
 };
+#endif
 
 /* -------------------------------------------------------------------------- */
 
@@ -6422,7 +6671,49 @@ static void hw_set_diffserv(struct ksz_hw *hw, const char *str, int num,
 			hw->diffserv0, hw->diffserv1);
 }  /* hw_set_diffserv */
 
-#if defined(HAVE_MICREL_SWITCH) && !defined(CONFIG_MICREL_SWITCH_EMBEDDED)
+#ifndef get_num_val
+static int get_num_val_(const char *buf)
+{
+	int num = -1;
+
+	if ('0' == buf[0] && 'x' == buf[1])
+		sscanf(&buf[2], "%x", (unsigned int *) &num);
+	else if ('0' == buf[0] && 'b' == buf[1]) {
+		int i = 2;
+
+		num = 0;
+		while (buf[i]) {
+			num <<= 1;
+			num |= buf[i] - '0';
+			i++;
+		}
+	} else if ('0' == buf[0] && 'd' == buf[1])
+		sscanf(&buf[2], "%u", &num);
+	else
+		sscanf(buf, "%d", &num);
+	return num;
+}  /* get_num_val */
+
+#define get_num_val		get_num_val_
+#endif
+
+#if defined(HAVE_KSZ_SWITCH) && !defined(CONFIG_KSZ_SWITCH_EMBEDDED)
+
+#ifndef get_sysfs_data
+static void get_sysfs_data_(struct net_device *dev,
+	struct semaphore **proc_sem, struct ksz_port **port)
+{
+	struct dev_priv *priv;
+	struct sw_priv *hw_priv;
+
+	priv = netdev_priv(dev);
+	hw_priv = priv->parent;
+	*port = &priv->port;
+	*proc_sem = &hw_priv->proc_sem;
+}  /* get_sysfs_data */
+
+#define get_sysfs_data		get_sysfs_data_
+#endif
 
 #define USE_MIB
 #if defined(CONFIG_HAVE_KSZ9897)
@@ -6438,7 +6729,7 @@ static void hw_set_diffserv(struct ksz_hw *hw, const char *str, int num,
 #ifdef CONFIG_1588_PTP
 #include "ksz_ptp_sysfs.c"
 #endif
-#ifdef KSZ_DLR
+#ifdef CONFIG_KSZ_DLR
 #include "ksz_dlr_sysfs.c"
 #endif
 #endif
@@ -6689,7 +6980,7 @@ static ssize_t net_show(const struct device *d,
 		len += sprintf(buf + len, "\t%08x = passthru\n",
 			PASSTHRU);
 #endif
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 		len += sprintf(buf + len, "\t%08x = MII switch\n",
 			MII_SWITCH);
 #endif
@@ -7315,7 +7606,7 @@ static struct attribute *net_attrs[] = {
 	NULL
 };
 
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 static struct attribute *netlan_attrs[] = {
 	&lan_attr_duplex.attr,
 	&lan_attr_speed.attr,
@@ -7456,13 +7747,13 @@ static int alloc_acl_attr(struct dev_info *priv, struct attribute **attrs,
 
 static void exit_netdev_sysfs(struct net_device *dev)
 {
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	struct dev_priv *priv = netdev_priv(dev);
 	struct dev_info *hw_priv = priv->adapter;
 #endif
 
 	net_group.attrs = net_attrs;
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	if (hw_priv->hw.features & MII_SWITCH)
 		net_group.attrs = netlan_attrs;
 #endif
@@ -7471,13 +7762,13 @@ static void exit_netdev_sysfs(struct net_device *dev)
 
 static int init_netdev_sysfs(struct net_device *dev)
 {
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	struct dev_priv *priv = netdev_priv(dev);
 	struct dev_info *hw_priv = priv->adapter;
 #endif
 
 	net_group.attrs = net_attrs;
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	if (hw_priv->hw.features & MII_SWITCH)
 		net_group.attrs = netlan_attrs;
 #endif
@@ -7501,7 +7792,9 @@ static void exit_sysfs(struct net_device *dev)
 		hw_priv->ksz_attrs[i] = NULL;
 	}
 	sysfs_remove_group(&dev->dev.kobj, &all_group);
+#if !defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 	sysfs_remove_bin_file(&dev->dev.kobj, &ksz8692_registers_attr);
+#endif
 }
 
 static int init_sysfs(struct net_device *dev)
@@ -7513,9 +7806,11 @@ static int init_sysfs(struct net_device *dev)
 	int err;
 	int i;
 
+#if !defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 	err = sysfs_create_bin_file(&dev->dev.kobj, &ksz8692_registers_attr);
 	if (err)
 		return err;
+#endif
 	err = sysfs_create_group(&dev->dev.kobj, &all_group);
 	if (err)
 		return err;
@@ -7566,12 +7861,12 @@ static char *wan_mac_addr = ":";
 static int lan_phy;
 static int wan_phy;
 
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 static int lan_multi_dev;
 static int wan_multi_dev;
 static int initial_multi_dev;
 #endif
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 static int lan_mii;
 static int wan_mii;
 #endif
@@ -7600,7 +7895,7 @@ static void tx_reset_work(struct work_struct *work)
 		container_of(work, struct dev_info, tx_reset);
 	struct net_device *dev = hw_priv->dev;
 	struct dev_priv *priv = netdev_priv(dev);
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	struct ksz_hw *hw = &hw_priv->hw;
 	struct ksz_sw *sw = hw_priv->sw;
 
@@ -7636,7 +7931,7 @@ static void promisc_reset_work(struct work_struct *work)
 static int netdev_init(struct net_device *dev)
 {
 	struct dev_priv *priv = netdev_priv(dev);
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 	struct dev_info *hw_priv = priv->adapter;
 	struct ksz_sw *sw = hw_priv->sw;
 #endif
@@ -7667,7 +7962,7 @@ static int netdev_init(struct net_device *dev)
 
 	priv->msg_enable = netif_msg_init(msg_enable,
 		(NETIF_MSG_DRV | NETIF_MSG_PROBE | NETIF_MSG_LINK));
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 	if (sw)
 		sw->msg_enable = priv->msg_enable;
 #endif
@@ -7689,7 +7984,7 @@ static const struct net_device_ops netdev_ops = {
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= netdev_netpoll,
 #endif
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 	.ndo_vlan_rx_add_vid	= netdev_add_vid,
 	.ndo_vlan_rx_kill_vid	= netdev_kill_vid,
 #endif
@@ -7719,38 +8014,32 @@ static void netdev_free(struct net_device *dev)
 		free_netdev(dev);
 		return;
 	}
-#ifdef HAVE_MICREL_SWITCH
+
+	exit_netdev_sysfs(dev);
+	if (dev == hw_priv->main_dev)
+		exit_sysfs(dev);
+
+	/* netdev_close will be called here if not called before. */
+	if (dev->watchdog_timeo)
+		unregister_netdev(dev);
+
+#ifdef HAVE_KSZ_SWITCH
 	if (priv->phydev) {
-#ifdef CONFIG_1588_PTP
 		struct ksz_sw *sw = hw_priv->sw;
 
-		if (sw->features & PTP_HW) {
-			struct ptp_info *ptp = &sw->ptp_hw;
-
-			ptp->ops->exit(ptp);
-		}
-#endif
-		if (hw_priv->hw.features & MII_SWITCH) {
+		if (sw_is_switch(sw)) {
+			sw->net_ops->leave_dev(sw);
 			phy_detach(priv->phydev);
 			priv->phydev = NULL;
 		}
 	}
 #endif
-	/* It is a pseudo placeholder phy device. */
-	if (priv->phydev && !priv->phydev->bus) {
-		kfree(priv->phydev);
-		priv->phydev = NULL;
-	}
-	if (priv->phydev) {
-		phy_stop(priv->phydev);
-		phy_disconnect(priv->phydev);
-	}
 
-	exit_netdev_sysfs(dev);
-	if (dev == hw_priv->main_dev)
-		exit_sysfs(dev);
-	if (dev->watchdog_timeo)
-		unregister_netdev(dev);
+	/* It is a pseudo placeholder phy device. */
+	if (priv->phydev == &priv->dummy_phy)
+		priv->phydev = NULL;
+	if (priv->phydev)
+		phy_disconnect(priv->phydev);
 
 	free_netdev(dev);
 }  /* netdev_free */
@@ -7785,7 +8074,7 @@ static int netdev_resume(struct platform_device *pdev)
 	struct platform_info *info = platform_get_drvdata(pdev);
 	struct net_device *dev = info->netdev;
 	int dev_count = 1;
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 	struct dev_info *hw_priv = &info->dev_info;
 	struct ksz_sw *sw = hw_priv->sw;
 
@@ -7793,7 +8082,7 @@ static int netdev_resume(struct platform_device *pdev)
 		dev_count = sw->dev_count + sw->dev_offset;
 #endif
 	for (i = 0; i < dev_count; i++) {
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 		if (sw_is_switch(sw)) {
 			dev = sw->netdev[i];
 			if (!dev)
@@ -7814,7 +8103,7 @@ static int netdev_suspend(struct platform_device *pdev, pm_message_t state)
 	struct platform_info *info = platform_get_drvdata(pdev);
 	struct net_device *dev = info->netdev;
 	int dev_count = 1;
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 	struct dev_info *hw_priv = &info->dev_info;
 	struct ksz_sw *sw = hw_priv->sw;
 
@@ -7822,7 +8111,7 @@ static int netdev_suspend(struct platform_device *pdev, pm_message_t state)
 		dev_count = sw->dev_count + sw->dev_offset;
 #endif
 	for (i = 0; i < dev_count; i++) {
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 		if (sw_is_switch(sw)) {
 			dev = sw->netdev[i];
 			if (!dev)
@@ -7843,7 +8132,7 @@ static void netdev_shutdown(struct platform_device *pdev)
 	struct platform_info *info = platform_get_drvdata(pdev);
 	struct net_device *dev = info->netdev;
 	int dev_count = 1;
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 	struct dev_info *hw_priv = &info->dev_info;
 	struct ksz_sw *sw = hw_priv->sw;
 
@@ -7851,7 +8140,7 @@ static void netdev_shutdown(struct platform_device *pdev)
 		dev_count = sw->dev_count + sw->dev_offset;
 #endif
 	for (i = 0; i < dev_count; i++) {
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 		if (sw_is_switch(sw)) {
 			dev = sw->netdev[i];
 			if (!dev)
@@ -7927,7 +8216,7 @@ static void phy_adjust_link(struct net_device *dev)
 }  /* phy_adjust_link */
 #endif
 
-#if defined(HAVE_MICREL_SWITCH)
+#if defined(HAVE_KSZ_SWITCH)
 static void sw_adjust_link(struct net_device *dev)
 {
 	struct dev_priv *priv = netdev_priv(dev);
@@ -7937,7 +8226,8 @@ static void sw_adjust_link(struct net_device *dev)
 
 	if (hw_priv->phydev != priv->phydev)
 		return;
-	hw_cfg_link_speed(hw, phydev);
+	if (phydev->link)
+		hw_cfg_link_speed(hw, phydev);
 	if (hw->features & GIGABIT_RATE_CHANGE_BUG) {
 		if (phydev->link) {
 			if (1000 == phydev->speed)
@@ -7953,7 +8243,7 @@ static void sw_adjust_link(struct net_device *dev)
 static int sw_device_seen;
 #endif
 
-#if defined(HAVE_MICREL_SWITCH) && !defined(CONFIG_MICREL_SWITCH_EMBEDDED)
+#if defined(HAVE_KSZ_SWITCH) && !defined(CONFIG_KSZ_SWITCH_EMBEDDED)
 /*
  * This enables multiple network device mode for the switch, which contains at
  * least two physical ports.  Some users like to take control of the ports for
@@ -7988,15 +8278,158 @@ static int stp;
 static int fast_aging;
 #endif
 
-#if defined(HAVE_MICREL_SWITCH)
+#ifdef CONFIG_KSZ_IBA_ONLY
+/**
+ * netdev_start_iba - Start using IBA for register access
+ *
+ * This routine starts using IBA for register access.
+ */
+static void netdev_start_iba(struct work_struct *work)
+{
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct ksz_sw *sw = container_of(dwork, struct ksz_sw, set_ops);
+	struct ksz_iba_info *iba = &sw->info->iba;
+#ifdef CONFIG_1588_PTP
+	struct ptp_info *ptp = &sw->ptp_hw;
+#endif
+	char dev_name[IFNAMSIZ];
+	int dev_count;
+	int port_count;
+	int mib_port_count;
+	struct net_device *dev;
+	int rx_mode;
+	int i;
+	uint mem_start;
+	int phy_mode;
+	char phy_id[MII_BUS_ID_SIZE];
+	char bus_id[MII_BUS_ID_SIZE];
+	struct dev_priv *priv;
+	struct dev_info *hw_priv;
+	struct ksz_hw *hw;
+	struct phy_device *phydev;
+	int err;
+
+	if (2 != iba->use_iba)
+		return;
+
+	dev = sw->netdev[0];
+	priv = netdev_priv(dev);
+	hw_priv = priv->adapter;
+	hw = &hw_priv->hw;
+
+	sw->reg = &sw_iba_ops;
+	iba->cnt = 0;
+	if (ksz_probe_next(sw->dev)) {
+		priv->parent = NULL;
+		hw->features &= ~MII_SWITCH;
+		hw_priv->sw = NULL;
+		return;
+	}
+
+#ifdef CONFIG_1588_PTP
+	ptp->reg = &ptp_iba_ops;
+#endif
+
+	dev_count = 1;
+
+	dev_name[0] = '\0';
+	port_count = 1;
+	mib_port_count = 1;
+	sw->multi_dev |= multi_dev;
+	sw->stp |= stp;
+	sw->fast_aging |= fast_aging;
+	sw->net_ops->setup_special(sw, &port_count, &mib_port_count,
+		&dev_count);
+
+	priv->phy_addr = sw->net_ops->setup_dev(sw, dev, dev_name, &priv->port,
+		0, port_count, mib_port_count);
+
+	phydev = sw->phydev;
+	phy_mode = phydev->interface;
+	mem_start = dev->mem_start;
+
+	hw_priv->phydev = priv->phydev;
+
+	snprintf(bus_id, MII_BUS_ID_SIZE, "sw.%d", sw_device_seen);
+	snprintf(phy_id, MII_BUS_ID_SIZE, PHY_ID_FMT, bus_id, priv->phy_addr);
+	priv->phydev = phy_attach(dev, phy_id, phy_mode);
+	if (IS_ERR(priv->phydev)) {
+		sw->net_ops->leave_dev(sw);
+		ksz_remove(sw->dev);
+		priv->parent = NULL;
+		priv->phydev = hw_priv->phydev;
+		hw->features &= ~MII_SWITCH;
+		hw_priv->sw = NULL;
+		return;
+	}
+	if (!priv->phy_addr)
+		priv->phydev->adjust_link = sw_adjust_link;
+	priv->mii_if.phy_id = priv->phy_addr;
+	priv->mii_if.supports_gmii = 1;
+
+	rx_mode = sw->net_ops->open_dev(sw, dev, dev->dev_addr);
+	if (rx_mode & 1) {
+		hw->all_multi = 1;
+		hw_set_multicast(hw, hw->all_multi);
+	}
+	if (rx_mode & 2) {
+		hw->promiscuous = 1;
+		hw_set_promiscuous(hw, hw->promiscuous);
+	}
+
+	sw->net_ops->open(sw);
+
+	sw->net_ops->open_port(sw, dev, &priv->port, &priv->state);
+
+	/* Save the base device name. */
+	strlcpy(dev_name, dev->name, IFNAMSIZ);
+	for (i = 1; i < dev_count; i++) {
+		dev = alloc_etherdev(sizeof(struct dev_priv));
+		if (!dev)
+			break;
+
+		priv = netdev_priv(dev);
+		priv->adapter = hw_priv;
+
+		priv->phy_addr = sw->net_ops->setup_dev(sw, dev, dev_name,
+			&priv->port, i, port_count, mib_port_count);
+
+		snprintf(bus_id, MII_BUS_ID_SIZE, "sw.%d", sw_device_seen);
+		snprintf(phy_id, MII_BUS_ID_SIZE, PHY_ID_FMT, bus_id,
+			priv->phy_addr);
+		priv->phydev = phy_attach(dev, phy_id, phy_mode);
+
+		priv->parent = sw->dev;
+		priv->dev = dev;
+
+		dev->mem_start = mem_start;
+		err = netdev_create(dev);
+		if (err)
+			break;
+
+		netif_carrier_off(dev);
+
+		priv->id = net_device_present;
+
+		err = init_netdev_sysfs(dev);
+		if (err)
+			break;
+		net_device_present++;
+
+	}
+}  /* netdev_start_iba */
+#endif
+
+#if defined(HAVE_KSZ_SWITCH)
 static struct ksz_sw *avail_sw;
 
 struct ksz_sw *check_avail_switch(int id)
 {
+	/* Avoid compiler warning as net_device is very big. */
+	static struct net_device netdev;
 	int phy_mode;
 	char phy_id[MII_BUS_ID_SIZE];
 	char bus_id[MII_BUS_ID_SIZE];
-	struct net_device netdev;
 	struct ksz_sw *sw = NULL;
 	struct phy_device *phydev = NULL;
 
@@ -8008,7 +8441,7 @@ struct ksz_sw *check_avail_switch(int id)
 	if (!IS_ERR(phydev)) {
 		struct phy_priv *phydata = phydev->priv;
 
-		sw = phydata->port.sw;
+		sw = phydata->port->sw;
 
 		/*
 		 * In case multiple devices mode is used and this phydev is not
@@ -8035,11 +8468,11 @@ static int netdev_probe(struct platform_device *pdev)
 	int i;
 	int dev_count;
 	int port_phy;
-#if !defined(CONFIG_PEGASUS_NO_MDIO) || defined(HAVE_MICREL_SWITCH)
-	int phy_mode;
+#if !defined(CONFIG_PEGASUS_NO_MDIO) || defined(HAVE_KSZ_SWITCH)
+	int phy_mode = PHY_INTERFACE_MODE_MII;
 	char phy_id[MII_BUS_ID_SIZE];
 #endif
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	char bus_id[MII_BUS_ID_SIZE];
 	struct ksz_sw *sw = NULL;
 	char dev_name[IFNAMSIZ];
@@ -8055,7 +8488,7 @@ static int netdev_probe(struct platform_device *pdev)
 	hw_priv = &info->dev_info;
 	hw = &hw_priv->hw;
 
-#if defined(HAVE_MICREL_SWITCH)
+#if defined(HAVE_KSZ_SWITCH)
 	if (avail_sw) {
 		sw = avail_sw;
 		if (sw_device_seen > 0)
@@ -8084,11 +8517,11 @@ static int netdev_probe(struct platform_device *pdev)
 			get_mac_addr(hw, wan_mac_addr);
 		port_phy = wan_phy;
 
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 		if (!initial_multi_dev || wan_multi_dev)
 			multi_dev = wan_multi_dev;
 #endif
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 		port_mii = wan_mii;
 #endif
 	} else {
@@ -8110,18 +8543,18 @@ static int netdev_probe(struct platform_device *pdev)
 			get_mac_addr(hw, lan_mac_addr);
 		port_phy = lan_phy;
 
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 		if (!initial_multi_dev || lan_multi_dev)
 			multi_dev = lan_multi_dev;
 #endif
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 		port_mii = lan_mii;
 #endif
 	}
 	dev_count = 1;
 	dev = NULL;
 
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	dev_name[0] = '\0';
 	port_count = 1;
 	mib_port_count = 1;
@@ -8142,11 +8575,11 @@ static int netdev_probe(struct platform_device *pdev)
 	/* Default MTU is 1500. */
 	if (hw->features & IP_HEADER_ALIGN) {
 		hw_priv->mtu = MAX_ETHERNET_PACKET_SIZE + 4;
-#if defined(CONFIG_MICREL_KSZ9897_PTP)
-		if (sw_is_switch(sw))
-			hw_priv->mtu += 5;
-#endif
 		hw_priv->mtu += MAX_ALIGN_OFFSET;
+#ifdef HAVE_KSZ_SWITCH
+		if (sw_is_switch(sw))
+			hw_priv->mtu += sw->net_ops->get_mtu(sw);
+#endif
 	} else
 		hw_priv->mtu = REGULAR_RX_BUF_SIZE;
 	hw_priv->mtu = (hw_priv->mtu + 3) & ~3;
@@ -8194,7 +8627,7 @@ static int netdev_probe(struct platform_device *pdev)
 		priv->phydev = ERR_PTR(-ENODEV);
 		if (PHY_MAX_ADDR == port_phy)
 			priv->phydev = NULL;
-#ifndef CONFIG_MICREL_SWITCH
+#if !defined(CONFIG_KSZ_SWITCH) || defined(CONFIG_KSZ_IBA_ONLY)
 		priv->phydev = NULL;
 #endif
 #ifndef CONFIG_PEGASUS_NO_MDIO
@@ -8210,8 +8643,12 @@ static int netdev_probe(struct platform_device *pdev)
 				phy_connect(dev, phy_id, phy_adjust_link,
 					phy_mode);
 #endif
-#if defined(HAVE_MICREL_SWITCH)
-		if (sw && (IS_ERR(priv->phydev) || !priv->phydev)) {
+#if defined(HAVE_KSZ_SWITCH)
+		if (sw_is_switch(sw) &&
+		    (IS_ERR(priv->phydev) || !priv->phydev)) {
+			priv->phy_addr = sw->net_ops->setup_dev(sw, dev,
+				dev_name, &priv->port, i, port_count,
+				mib_port_count);
 			if (0 == port_mii)
 				phy_mode = sw->interface;
 			else if (1 == port_mii)
@@ -8228,7 +8665,6 @@ static int netdev_probe(struct platform_device *pdev)
 				hw->features &= ~RGMII_PHY;
 			hw->features &= ~MII_PHY;
 			hw->features |= MII_SWITCH;
-			priv->phy_addr = i + sw->phy_offset;
 			snprintf(bus_id, MII_BUS_ID_SIZE, "sw.%d",
 				sw_device_seen);
 			snprintf(phy_id, MII_BUS_ID_SIZE, PHY_ID_FMT,
@@ -8240,19 +8676,19 @@ static int netdev_probe(struct platform_device *pdev)
 			err = -ENODEV;
 			goto netdev_probe_reg_err;
 		}
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 		/* This network hardware is not connected to a switch. */
-		if (sw && !(hw->features & MII_SWITCH)) {
+		if (sw_is_switch(sw) && !(hw->features & MII_SWITCH)) {
 			sw = NULL;
 			hw_priv->sw = NULL;
 		}
 		if (sw_is_switch(sw)) {
-			priv->phydev->adjust_link = sw_adjust_link;
+
+			/* Only the first device uses adjust_link. */
+			if (!i)
+				priv->phydev->adjust_link = sw_adjust_link;
 			priv->parent = sw->dev;
 			priv->dev = dev;
-
-			sw->net_ops->setup_dev(sw, dev, dev_name, &priv->port,
-				i, port_count, mib_port_count);
 		}
 #endif
 
@@ -8264,7 +8700,7 @@ static int netdev_probe(struct platform_device *pdev)
 			goto netdev_probe_reg_err;
 
 		if (priv->phydev) {
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 			if (!sw_is_switch(sw))
 #endif
 			if ((priv->phydev->drv->features & PHY_GBIT_FEATURES) !=
@@ -8281,12 +8717,18 @@ static int netdev_probe(struct platform_device *pdev)
 			 */
 			netif_carrier_off(dev);
 		} else {
-			priv->phydev = kzalloc(sizeof(struct phy_device),
-				GFP_KERNEL);
+			priv->phydev = &priv->dummy_phy;
 			priv->phydev->link = 1;
-			priv->phydev->speed = 100;
 			priv->phydev->duplex = 1;
+#if !defined(CONFIG_KSZ_IBA_ONLY)
+			priv->phydev->speed = 100;
+			priv->phydev->interface = PHY_INTERFACE_MODE_MII;
 			hw->features &= ~RGMII_PHY;
+#else
+			priv->phydev->speed = 1000;
+			priv->phydev->interface =
+				PHY_INTERFACE_MODE_RGMII_TXID;
+#endif
 		}
 		if (!i) {
 			hw_priv->main_dev = dev;
@@ -8299,17 +8741,21 @@ static int netdev_probe(struct platform_device *pdev)
 			goto netdev_probe_reg_err;
 		net_device_present++;
 
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 		/* Save the base device name. */
 		if (!dev_name[0])
 			strlcpy(dev_name, dev->name, IFNAMSIZ);
 #endif
 	}
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	if (sw_is_switch(sw)) {
 		dev = sw->netdev[0];
 
 		hw_priv->phydev = sw->phydev;
+		if (dev_count > 1) {
+			hw_priv->phydev->adjust_link = sw_adjust_link;
+			hw_priv->phydev->interface = phy_mode;
+		}
 
 		err = init_sw_sysfs(sw, &hw_priv->sysfs, &dev->dev);
 		if (err)
@@ -8329,16 +8775,13 @@ static int netdev_probe(struct platform_device *pdev)
 
 			ptp->get_clk_cnt = get_clk_cnt;
 			ptp->clk_divider = ksz_system_bus_clock;
-			ptp->ops->init(ptp, hw->mac_addr);
-			if (ptp->version < 1)
-				sw->features &= ~VLAN_PORT_REMOVE_TAG;
 
 			err = init_ptp_sysfs(&hw_priv->ptp_sysfs, &dev->dev);
 			if (err)
 				goto netdev_probe_reg_err;
 		}
 #endif
-#ifdef KSZ_DLR
+#ifdef CONFIG_KSZ_DLR
 		if (sw->features & DLR_HW) {
 			err = init_dlr_sysfs(&dev->dev);
 			if (err)
@@ -8384,7 +8827,7 @@ static int netdev_probe(struct platform_device *pdev)
 	return 0;
 
 netdev_probe_reg_err:
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 	if (sw_is_switch(sw)) {
 		int dev_count = sw->dev_count + sw->dev_offset;
 
@@ -8412,7 +8855,7 @@ static int netdev_remove(struct platform_device *pdev)
 	struct platform_info *info = platform_get_drvdata(pdev);
 	struct net_device *dev = info->netdev;
 	struct dev_info *hw_priv = &info->dev_info;
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	struct ksz_sw *sw = hw_priv->sw;
 #endif
 
@@ -8423,14 +8866,15 @@ static int netdev_remove(struct platform_device *pdev)
 		free_skb_pool();
 #endif
 	release_mem_region(hw_priv->mem_start, BASE_IO_RANGE);
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 	if (sw_is_switch(sw)) {
 		int i;
 		int dev_count = sw->dev_count + sw->dev_offset;
 
+#ifndef CONFIG_KSZ_IBA_ONLY
 		dev = sw->netdev[0];
 		if (dev) {
-#ifdef KSZ_DLR
+#ifdef CONFIG_KSZ_DLR
 			if (sw->features & DLR_HW)
 				exit_dlr_sysfs(&dev->dev);
 #endif
@@ -8440,6 +8884,7 @@ static int netdev_remove(struct platform_device *pdev)
 #endif
 			exit_sw_sysfs(sw, &hw_priv->sysfs, &dev->dev);
 		}
+#endif
 		for (i = 0; i < dev_count; i++) {
 			dev = sw->netdev[i];
 			if (dev)
@@ -8849,8 +9294,8 @@ static void __exit ksz_mdio_exit(void)
 }
 #endif
 
-#ifdef CONFIG_NET_DSA_TAG_TAIL
-static void setup_micrel_switch(struct platform_device *pdev,
+#ifdef CONFIG_KSZ_DSA
+static void setup_ksz_switch(struct platform_device *pdev,
 	struct ksz_sw *sw)
 {
 	struct platform_info *info = platform_get_drvdata(pdev);
@@ -8859,7 +9304,7 @@ static void setup_micrel_switch(struct platform_device *pdev,
 
 	if (!priv->phydev->bus || !sw)
 		return;
-	micrel_switch_init(&micrel_switch_plat_data, NO_IRQ,
+	ksz_switch_init(&ksz_switch_plat_data, NO_IRQ,
 		&dev->dev, &priv->phydev->bus->dev, sw);
 }
 #endif
@@ -8888,7 +9333,7 @@ static int INIT platform_init(void)
 	int max = MAX_DEVICES;
 	int first = 0;
 
-#if defined(HAVE_MICREL_SWITCH)
+#if defined(HAVE_KSZ_SWITCH)
 	struct ksz_sw *sw = NULL;
 
 	sw = check_avail_switch(0);
@@ -8901,13 +9346,13 @@ static int INIT platform_init(void)
 		goto device_reg_err;
 #endif
 
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
 	initial_multi_dev = multi_dev;
 #endif
 #ifdef CONFIG_PEGASUS_WAN_ONLY
 	max = 1;
 #endif
-#if defined(HAVE_MICREL_SWITCH) && defined(CONFIG_MICREL_CTRL_BOARD)
+#if defined(HAVE_KSZ_SWITCH) && defined(CONFIG_KSZ_CTRL_BOARD)
 	if (sw) {
 		/*
 		 * Default U-Boot setting in Micrel Control Board is that the
@@ -8951,8 +9396,8 @@ static int INIT platform_init(void)
 	if (err)
 		goto device_reg_err;
 
-#ifdef CONFIG_NET_DSA_TAG_TAIL
-	setup_micrel_switch(ksz8692_platform[0], sw);
+#ifdef CONFIG_KSZ_DSA
+	setup_ksz_switch(ksz8692_platform[0], sw);
 #endif
 
 	return 0;
@@ -8970,19 +9415,19 @@ static void __exit platform_exit(void)
 #ifndef CONFIG_PEGASUS_NO_MDIO
 	ksz_mdio_exit();
 #endif
-#ifdef CONFIG_MICREL_KSZ8463_EMBEDDED
+#ifdef CONFIG_KSZ8463_EMBEDDED
 	ksz8463_exit();
 #endif
-#ifdef CONFIG_MICREL_KSZ8863_EMBEDDED
+#ifdef CONFIG_KSZ8863_EMBEDDED
 	ksz8863_exit();
 #endif
-#ifdef CONFIG_MICREL_KSZ8795_EMBEDDED
+#ifdef CONFIG_KSZ8795_EMBEDDED
 	ksz8795_exit();
 #endif
-#ifdef CONFIG_MICREL_KSZ8895_EMBEDDED
+#ifdef CONFIG_KSZ8895_EMBEDDED
 	ksz8895_exit();
 #endif
-#ifdef CONFIG_MICREL_KSZ9897_EMBEDDED
+#ifdef CONFIG_KSZ9897_EMBEDDED
 	ksz9897_exit();
 #endif
 }  /* platform_exit */
@@ -9003,19 +9448,19 @@ static int __init ksz8692_init_module(void)
 
 	printk(KERN_INFO "%s\n", version);
 
-#ifdef CONFIG_MICREL_KSZ8463_EMBEDDED
+#ifdef CONFIG_KSZ8463_EMBEDDED
 	ksz8463_init();
 #endif
-#ifdef CONFIG_MICREL_KSZ8863_EMBEDDED
+#ifdef CONFIG_KSZ8863_EMBEDDED
 	ksz8863_init();
 #endif
-#ifdef CONFIG_MICREL_KSZ8795_EMBEDDED
+#ifdef CONFIG_KSZ8795_EMBEDDED
 	ksz8795_init();
 #endif
-#ifdef CONFIG_MICREL_KSZ8895_EMBEDDED
+#ifdef CONFIG_KSZ8895_EMBEDDED
 	ksz8895_init();
 #endif
-#ifdef CONFIG_MICREL_KSZ9897_EMBEDDED
+#ifdef CONFIG_KSZ9897_EMBEDDED
 	ksz9897_init();
 #endif
 #if defined(CONFIG_SPI_FTDI) && defined(CONFIG_NET_PEGASUS)
@@ -9055,19 +9500,23 @@ module_param(wan_phy, int, 0);
 MODULE_PARM_DESC(lan_phy, "LAN PHY address");
 MODULE_PARM_DESC(wan_phy, "WAN PHY address");
 
-#ifdef CONFIG_MICREL_SWITCH
+#ifdef CONFIG_KSZ_SWITCH
+#if 0
 module_param(fast_aging, int, 0);
 module_param(multi_dev, int, 0);
 module_param(stp, int, 0);
+#endif
 module_param(lan_multi_dev, int, 0);
 module_param(wan_multi_dev, int, 0);
+#if 0
 MODULE_PARM_DESC(fast_aging, "Fast aging");
 MODULE_PARM_DESC(multi_dev, "Multiple device interfaces");
 MODULE_PARM_DESC(stp, "STP support");
+#endif
 MODULE_PARM_DESC(lan_multi_dev, "Multiple device interfaces in LAN port");
 MODULE_PARM_DESC(wan_multi_dev, "Multiple device interfaces in WAN port");
 #endif
-#ifdef HAVE_MICREL_SWITCH
+#ifdef HAVE_KSZ_SWITCH
 module_param(lan_mii, int, 0);
 module_param(wan_mii, int, 0);
 MODULE_PARM_DESC(wan_mii, "MII interface for WAN port");

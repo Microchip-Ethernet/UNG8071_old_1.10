@@ -1,8 +1,10 @@
 /**
  * Micrel MRP driver API header
  *
+ * Copyright (c) 2015-2016 Microchip Technology Inc.
+ *	Tristram Ha <Tristram.Ha@microchip.com>
+ *
  * Copyright (c) 2014-2015 Micrel, Inc.
- *	Tristram Ha <Tristram.Ha@micrel.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -29,6 +31,7 @@ enum {
 
 enum {
 	DEV_MRP_ATTRIBUTE,
+	DEV_MRP_MCAST_ADDR,
 };
 
 struct MRP_mac {
@@ -59,9 +62,9 @@ struct SRP_talker {
 	u16 vlan_id;
 	u16 MaxFrameSize;
 	u16 MaxIntervalFrames;
-	u8 priority:3;
-	u8 rank:1;
 	u8 reserved:4;
+	u8 rank:1;
+	u8 priority:3;
 	u32 AccumulatedLatency;
 	u8 bridge_id[8];
 	u8 FailureCode;
@@ -91,9 +94,14 @@ enum {
 };
 
 enum {
-	SR_CLASS_UNDEFINED,
-	SR_CLASS_A,
+	SR_CLASS_G,
+	SR_CLASS_F,
+	SR_CLASS_E,
+	SR_CLASS_D,
+	SR_CLASS_C,
 	SR_CLASS_B,
+	SR_CLASS_A,
+	SR_CLASS_NUM
 };
 
 #define SR_CLASS_A_ID	6
@@ -119,6 +127,11 @@ enum {
 	MRP_ACTION_LV,
 	MRP_ACTION_ON,
 	MRP_ACTION_OFF,
+	MRP_ACTION_DECL,
+	MRP_ACTION_DROP,
+
+	MRP_ACTION_DBG,
+	MRP_ACTION_SPEED,
 };
 
 enum {
@@ -128,6 +141,7 @@ enum {
 	MRP_TYPE_TALKER,
 	MRP_TYPE_LISTENER,
 	MRP_TYPE_DOMAIN,
+	MRP_TYPE_PORT,
 };
 
 struct mrp_cfg_options {

@@ -1,5 +1,5 @@
 /**
- * Micrel KSZ8463 definition file
+ * Microchip KSZ8463 definition file
  *
  * Copyright (c) 2015-2016 Microchp Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
@@ -28,7 +28,7 @@
 
 #define KS_PRIO_IN_REG			8
 
-#define SWITCH_PORT_NUM			2
+#define TOTAL_PORT_NUM			3
 
 #define KSZ8463_COUNTER_NUM		0x20
 #define TOTAL_KSZ8463_COUNTER_NUM	(KSZ8463_COUNTER_NUM + 2)
@@ -57,6 +57,8 @@
 #define P_SPEED_STATUS			REG_PORT_STATUS
 #define P_RATE_LIMIT_CTRL		REG_PORT_CTRL3
 #define P_SA_MAC_CTRL			REG_PORT_CTRL1
+#define P_2_QUEUE_CTRL			REG_PORT_CTRL1
+#define P_4_QUEUE_CTRL			REG_PORT_CTRL1
 
 #define S_LINK_AGING_CTRL		REG_SWITCH_CTRL_1
 #define S_MIRROR_CTRL			REG_SWITCH_CTRL_2
@@ -87,8 +89,6 @@
 #define REG_PORT_OUT_RATE_0		REG_PORT_OUT_RATE0
 #define REG_PORT_1_IN_RATE_0		REG_PORT_IN_RATE0
 #define REG_PORT_1_OUT_RATE_0		REG_PORT_OUT_RATE0
-
-#define PORT_4_PRIORITIES_ENABLE	PORT_PRIORITY_ENABLE
 
 #define SWITCH_FLUSH_DYN_MAC_TABLE	SWITCH_FLUSH_DYNA_MAC
 #define SWITCH_INS_TAG_1_PORT_2		SWITCH_INS_TAG_0_1

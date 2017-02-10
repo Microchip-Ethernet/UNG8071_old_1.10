@@ -1,7 +1,7 @@
 /**
- * Micrel switch common sysfs code
+ * Microchip switch common sysfs code
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2011-2013 Micrel, Inc.
@@ -15,6 +15,9 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
+
+
+#include "ksz_sysfs.h"
 
 
 static char *sw_name[TOTAL_PORT_NUM] = {
@@ -80,6 +83,12 @@ static ssize_t netlan_show(struct device *d, struct device_attribute *attr,
 	if (len)
 		goto netlan_show_done;
 
+#ifdef CONFIG_KSZ_STP
+	len = sw->ops->sysfs_stp_read(sw, proc_num, len, buf);
+	if (len)
+		goto netlan_show_done;
+#endif
+
 	/* Require hardware to be acquired first. */
 	sw->ops->acquire(sw);
 	len = sw->ops->sysfs_read_hw(sw, proc_num, len, buf);
@@ -107,9 +116,19 @@ static ssize_t netlan_store(struct device *d, struct device_attribute *attr,
 
 	proc_num = offset / sizeof(int);
 	ret = count;
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->ops->sysfs_stp_write(sw, proc_num, num, buf))
+		goto netlan_store_done;
+#endif
+
 	sw->ops->acquire(sw);
 	sw->ops->sysfs_write(sw, proc_num, port, num, buf);
 	sw->ops->release(sw);
+
+#ifdef CONFIG_KSZ_STP
+netlan_store_done:
+#endif
 	up(proc_sem);
 	return ret;
 }
@@ -138,6 +157,12 @@ static ssize_t netsw_show(struct device *d, struct device_attribute *attr,
 	len = sw->ops->sysfs_port_read(sw, num, port, len, buf);
 	if (len)
 		goto netsw_show_done;
+
+#ifdef CONFIG_KSZ_STP
+	len = sw->ops->sysfs_stp_port_read(sw, num, port, len, buf);
+	if (len)
+		goto netsw_show_done;
+#endif
 
 	/* Require hardware to be acquired first. */
 	sw->ops->acquire(sw);
@@ -171,9 +196,19 @@ static ssize_t netsw_store(struct device *d, struct device_attribute *attr,
 
 	proc_num = offset / sizeof(int);
 	ret = count;
+
+#ifdef CONFIG_KSZ_STP
+	if (sw->ops->sysfs_stp_port_write(sw, proc_num, port, num, buf))
+		goto netsw_store_done;
+#endif
+
 	sw->ops->acquire(sw);
 	sw->ops->sysfs_port_write(sw, proc_num, port, num, buf);
 	sw->ops->release(sw);
+
+#ifdef CONFIG_KSZ_STP
+netsw_store_done:
+#endif
 	up(proc_sem);
 	return ret;
 }
@@ -421,6 +456,7 @@ static ssize_t store_vlan_##name(struct device *d,			\
 static VLAN_ATTR(name, S_IRUGO | S_IWUSR, show_vlan_##name, store_vlan_##name)
 
 NETLAN_WR_ENTRY(info);
+NETLAN_RD_ENTRY(version);
 NETLAN_WR_ENTRY(duplex);
 NETLAN_WR_ENTRY(speed);
 NETLAN_WR_ENTRY(force);
@@ -484,6 +520,17 @@ NETLAN_RD_ENTRY(dev_start);
 NETLAN_RD_ENTRY(vlan_start);
 NETLAN_RD_ENTRY(stp);
 
+#ifdef CONFIG_KSZ_STP
+NETLAN_RD_ENTRY(stp_br_info);
+NETLAN_WR_ENTRY(stp_br_on);
+NETLAN_WR_ENTRY(stp_br_prio);
+NETLAN_WR_ENTRY(stp_br_fwd_delay);
+NETLAN_WR_ENTRY(stp_br_hello_time);
+NETLAN_WR_ENTRY(stp_br_max_age);
+NETLAN_WR_ENTRY(stp_br_tx_hold);
+NETLAN_WR_ENTRY(stp_version);
+#endif
+
 NETSW_WR_ENTRY(mib);
 NETSW_WR_ENTRY(vid);
 NETSW_WR_ENTRY(member);
@@ -517,7 +564,8 @@ NETSW_WR_ENTRY(tx_p1_ratio);
 NETSW_WR_ENTRY(tx_p2_ratio);
 NETSW_WR_ENTRY(tx_p3_ratio);
 #endif
-NETSW_WR_ENTRY(prio_rate);
+NETSW_WR_ENTRY(rx_prio_rate);
+NETSW_WR_ENTRY(tx_prio_rate);
 NETSW_WR_ENTRY(rx_limit);
 NETSW_WR_ENTRY(cnt_ifg);
 NETSW_WR_ENTRY(cnt_pre);
@@ -533,12 +581,25 @@ NETSW_WR_ENTRY(back_pressure);
 NETSW_WR_ENTRY(force_flow_ctrl);
 NETSW_WR_ENTRY(fw_unk_dest);
 NETSW_WR_ENTRY(fw_inv_vid);
+
 NETSW_RD_ENTRY(duplex);
 NETSW_RD_ENTRY(speed);
 NETSW_WR_ENTRY(linkmd);
 NETSW_WR_ENTRY(macaddr);
 NETSW_WR_ENTRY(src_filter_0);
 NETSW_WR_ENTRY(src_filter_1);
+
+#ifdef CONFIG_KSZ_STP
+NETSW_RD_ENTRY(stp_info);
+NETSW_WR_ENTRY(stp_on);
+NETSW_WR_ENTRY(stp_prio);
+NETSW_WR_ENTRY(stp_admin_path_cost);
+NETSW_WR_ENTRY(stp_path_cost);
+NETSW_WR_ENTRY(stp_admin_edge);
+NETSW_WR_ENTRY(stp_auto_edge);
+NETSW_WR_ENTRY(stp_mcheck);
+NETSW_WR_ENTRY(stp_admin_p2p);
+#endif
 
 NETMAC_WR_ENTRY(fid);
 NETMAC_WR_ENTRY(use_fid);
@@ -554,6 +615,7 @@ NETVLAN_WR_ENTRY(vid);
 
 static struct attribute *lan_attrs[] = {
 	&lan_attr_info.attr,
+	&lan_attr_version.attr,
 #ifdef USE_SPEED_LINK
 	&lan_attr_duplex.attr,
 	&lan_attr_speed.attr,
@@ -620,6 +682,18 @@ static struct attribute *lan_attrs[] = {
 	&lan_attr_dev_start.attr,
 	&lan_attr_vlan_start.attr,
 	&lan_attr_stp.attr,
+
+#ifdef CONFIG_KSZ_STP
+	&lan_attr_stp_br_info.attr,
+	&lan_attr_stp_br_on.attr,
+	&lan_attr_stp_br_prio.attr,
+	&lan_attr_stp_br_fwd_delay.attr,
+	&lan_attr_stp_br_hello_time.attr,
+	&lan_attr_stp_br_max_age.attr,
+	&lan_attr_stp_br_tx_hold.attr,
+	&lan_attr_stp_version.attr,
+#endif
+
 	NULL
 };
 
@@ -656,7 +730,8 @@ static struct attribute *sw_attrs[] = {
 	&sw_attr_tx_p2_ratio.attr,
 	&sw_attr_tx_p3_ratio.attr,
 #endif
-	&sw_attr_prio_rate.attr,
+	&sw_attr_rx_prio_rate.attr,
+	&sw_attr_tx_prio_rate.attr,
 	&sw_attr_rx_limit.attr,
 	&sw_attr_cnt_ifg.attr,
 	&sw_attr_cnt_pre.attr,
@@ -673,12 +748,25 @@ static struct attribute *sw_attrs[] = {
 	&sw_attr_fw_unk_dest.attr,
 	&sw_attr_fw_inv_vid.attr,
 	&sw_attr_mib.attr,
+
 	&sw_attr_duplex.attr,
 	&sw_attr_speed.attr,
 	&sw_attr_linkmd.attr,
 	&sw_attr_macaddr.attr,
 	&sw_attr_src_filter_0.attr,
 	&sw_attr_src_filter_1.attr,
+
+#ifdef CONFIG_KSZ_STP
+	&sw_attr_stp_info.attr,
+	&sw_attr_stp_on.attr,
+	&sw_attr_stp_prio.attr,
+	&sw_attr_stp_admin_path_cost.attr,
+	&sw_attr_stp_path_cost.attr,
+	&sw_attr_stp_admin_edge.attr,
+	&sw_attr_stp_auto_edge.attr,
+	&sw_attr_stp_mcheck.attr,
+	&sw_attr_stp_admin_p2p.attr,
+#endif
 	NULL
 };
 

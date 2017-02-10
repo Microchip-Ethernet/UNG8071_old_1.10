@@ -653,7 +653,7 @@ int ptp_dev_init(void *fd,
 			*ports = req.param.data[5];
 			if (*version >= 2) {
 				*host_port = req.param.data[6];
-				if (*host_port == *ports)
+				if (*host_port)
 					*ports -= 1;
 			}
 		}

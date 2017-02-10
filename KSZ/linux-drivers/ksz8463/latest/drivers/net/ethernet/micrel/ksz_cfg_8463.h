@@ -7,19 +7,10 @@
 #ifndef KSZ_CFG_8463_H
 #define KSZ_CFG_8463_H
 
-#if defined(CONFIG_MICREL_KSZ8463_PTP)
+#if defined(CONFIG_KSZ_PTP)
 /* Support 1588 PTP. */
 #define CONFIG_1588_PTP
 #define PTP_SPI
-#endif
-
-#if defined(CONFIG_MICREL_KSZ8463_STP)
-/* Support STP. */
-#define CONFIG_KSZ_STP
-#endif
-
-#ifdef CONFIG_KSZ_STP
-#include <../net/bridge/br_private.h>
 #endif
 
 

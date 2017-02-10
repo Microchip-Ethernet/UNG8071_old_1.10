@@ -266,7 +266,7 @@ err_doit (
 
     if ( daemon_proc ) {
         if ( logfp ) {
-            fprintf( logfp, buf );
+            fprintf( logfp, "%s", buf );
             if ( LOG_ERR == level ) {
                 fflush( logfp );
             }

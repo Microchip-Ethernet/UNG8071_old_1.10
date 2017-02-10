@@ -1,7 +1,7 @@
 /**
- * Micrel KSZ8795 definition file
+ * Microchip KSZ8795 definition file
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2014-2015 Micrel, Inc.
@@ -230,6 +230,9 @@
 #define REG_PORT_3_STATUS_0		0x38
 #define REG_PORT_4_STATUS_0		0x48
 
+/* For KSZ8765. */
+#define PORT_FIBER_MODE			(1 << 7)
+
 #define PORT_REMOTE_ASYM_PAUSE		(1 << 5)
 #define PORT_REMOTE_SYM_PAUSE		(1 << 4)
 #define PORT_REMOTE_100BTX_FD		(1 << 3)
@@ -420,6 +423,9 @@
 #define INT_PORT_2			(1 << 1)
 #define INT_PORT_1			(1 << 0)
 
+#define INT_PORT_ALL			\
+	(INT_PORT_5 | INT_PORT_4 | INT_PORT_3 | INT_PORT_2 | INT_PORT_1)
+
 #define REG_SW_CTRL_12			0x80
 #define REG_SW_CTRL_13			0x81
 
@@ -460,7 +466,7 @@
 #define SW_IN_RATE_LIMIT_16_MS		0
 #define SW_IN_RATE_LIMIT_64_MS		1
 #define SW_IN_RATE_LIMIT_256_MS		2
-#define SW_QUEUE_BASED_OUT_RATE_LIMIT	(1 << 3)
+#define SW_OUT_RATE_LIMIT_QUEUE_BASED	(1 << 3)
 #define SW_INS_TAG_ENABLE		(1 << 2)
 
 #define REG_TOS_PRIO_CTRL_0		0x90
@@ -736,10 +742,12 @@
 #define ACL_ACTION_LEN			2
 #define ACL_INTR_CNT_START		0xB
 #define ACL_RULESET_START		0xC
+#define ACL_RULESET_LEN			2
 #define ACL_TABLE_LEN			14
 
 #define ACL_ACTION_ENABLE		0x000C
-#define ACL_MATCH_ENABLE		((ACL_BYTE_EN_MSB_M << 8) | 0xF3)
+#define ACL_MATCH_ENABLE		0x1FF0
+#define ACL_RULESET_ENABLE		0x2003
 #define ACL_BYTE_ENABLE			((ACL_BYTE_EN_MSB_M << 8) | 0xFF)
 #define ACL_MODE_ENABLE			(0x10 << 8)
 
@@ -846,7 +854,7 @@
 
 #define KS_PRIO_IN_REG			4
 
-#define SWITCH_PORT_NUM			4
+#define TOTAL_PORT_NUM			5
 
 #define KSZ8795_COUNTER_NUM		0x20
 #define TOTAL_KSZ8795_COUNTER_NUM	(KSZ8795_COUNTER_NUM + 4)

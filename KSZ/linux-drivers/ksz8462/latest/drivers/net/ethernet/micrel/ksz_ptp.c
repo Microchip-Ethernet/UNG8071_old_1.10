@@ -1,5 +1,5 @@
 /**
- * Micrel PTP common code
+ * Microchip PTP common code
  *
  * Copyright (c) 2015-2016 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
@@ -15,6 +15,9 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
+
+
+#define CURRENT_UTC_OFFSET  36 /* 1 Jul 2015 */
 
 
 #if 1
@@ -1262,6 +1265,15 @@ static void save_tx_ts(struct ptp_info *ptp, struct ptp_tx_ts *tx,
 	unsigned long diff = 0;
 
 	add_tx_delay(&htx->ts, delay, ptp->cur_time.sec);
+	if (ptp->overrides & PTP_CHECK_PATH_DELAY) {
+		if (ptp->last_rx_ts.t.sec) {
+			struct ksz_ptp_time diff;
+
+			calc_udiff(&htx->ts.t, &ptp->last_rx_ts.t, &diff);
+			dbg_msg("pd: %d\n", diff.nsec);
+		} else
+			ptp->last_tx_ts = htx->ts;
+	}
 	if (!htx->sim_2step) {
 		struct tsm_db *db = (struct tsm_db *) tx->data.buf;
 		u8 msg = tx->data.buf[0] & 3;
@@ -1478,12 +1490,76 @@ static void prepare_pps(struct ptp_info *ptp)
 
 /* -------------------------------------------------------------------------- */
 
+static void ptp_check(struct ptp_info *ptp)
+{
+	struct ptp_utime cur;
+	struct ptp_utime now;
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
+
+	ptp->features |= PTP_ADJ_HACK;
+	ptp->ops->acquire(ptp);
+	sw->cached.ptp_clk_ctrl = ptp->reg->read(ptp, ADDR_16, PTP_CLK_CTRL);
+	ptp->reg->get_time(ptp, &cur);
+	ptp->reg->adjust_time(ptp, true, 10, 0, true);
+	ptp->reg->get_time(ptp, &now);
+	if (now.sec - cur.sec >= 10) {
+		ptp->features &= ~PTP_ADJ_HACK;
+		ptp->features |= PTP_ADJ_SEC;
+		ptp->features |= PTP_PDELAY_HACK;
+		ptp->reg->adjust_time(ptp, false, 10, 0, true);
+		ptp->version = 1;
+	}
+/*
+ * THa  2013/01/08
+ * The Rev. D chip has a problem of decrementing nanosecond that is bigger than
+ * the current nanosecond when continual clock adjustment is enabled.  The
+ * workaround is to use the PTP_ADJ_HACK code although the actual problem
+ * avoided is now different.
+ */
+	if (!(ptp->features & PTP_ADJ_HACK)) {
+		u16 data;
+
+		data = sw->cached.ptp_clk_ctrl;
+		sw->cached.ptp_clk_ctrl |= PTP_CLK_ADJ_ENABLE;
+		ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL,
+			sw->cached.ptp_clk_ctrl);
+		if (cur.sec < 1)
+			cur.sec = 1;
+		cur.nsec = 0;
+		ptp->reg->set_time(ptp, &cur);
+		ptp->reg->adjust_time(ptp, false, 0, 800000000, false);
+		ptp->reg->get_time(ptp, &now);
+		dbg_msg("%x:%u %x:%u\n", cur.sec, cur.nsec, now.sec, now.nsec);
+		if (abs(now.sec - cur.sec) > 2) {
+			ptp->reg->get_time(ptp, &now);
+			dbg_msg("! %x:%u\n", now.sec, now.nsec);
+			ptp->features |= PTP_ADJ_HACK;
+			ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL, data);
+
+			ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL,
+				data | PTP_CLK_ADJ_ENABLE);
+			ptp->reg->set_time(ptp, &cur);
+			ptp->reg->adjust_time(ptp, false, 0, 800000000, true);
+			ptp->reg->get_time(ptp, &now);
+			dbg_msg("ok %x:%u\n", now.sec, now.nsec);
+		}
+		sw->cached.ptp_clk_ctrl = data;
+		ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL, data);
+	}
+	ptp->ops->release(ptp);
+}  /* ptp_check */
+
 static void ptp_start(struct ptp_info *ptp, int init)
 {
 	u16 ctrl;
 	struct timespec ts;
 	struct ptp_utime t;
 
+	if (!ptp->features) {
+		ptp_check(ptp);
+		if (ptp->test_access_time)
+			ptp->test_access_time(ptp);
+	}
 	ptp_acquire(ptp);
 	ctrl = ptp_read(ptp, ADDR_16, PTP_MSG_CONF1);
 	if (ctrl == ptp->mode) {
@@ -1509,11 +1585,24 @@ static void ptp_start(struct ptp_info *ptp, int init)
 	ptp_write(ptp, ADDR_16, PTP_MSG_CONF2, ptp->cfg);
 	ptp_write(ptp, ADDR_16, TRIG_INT_ENABLE, ptp->trig_intr);
 	ptp_write(ptp, ADDR_16, TS_INT_ENABLE, ptp->ts_intr);
+
+	/* PTP stack is still running while device is reset. */
+	if (ptp->drift_set) {
+		ptp->drift = ptp->drift_set;
+		ptp->adjust = clk_adjust_val(ptp->drift, NANOSEC_IN_SEC);
+		set_ptp_adjust(ptp, ptp->adjust);
+		syntonize_clk(ptp);
+		ptp->ptp_synt = true;
+	}
+
 	ptp_release(ptp);
 
 	ts = ktime_to_timespec(ktime_get_real());
 	t.sec = ts.tv_sec;
 	t.nsec = ts.tv_nsec;
+
+	/* Adjust for leap seconds. */
+	t.sec += ptp->utc_offset;
 	ptp_acquire(ptp);
 	set_ptp_time(ptp, &t);
 	ptp->cur_time = t;
@@ -1694,6 +1783,8 @@ static int ptp_stop(struct ptp_info *ptp)
 	flush_work(&ptp->adj_clk);
 	flush_workqueue(ptp->access);
 #endif
+	cancel_delayed_work_sync(&ptp->check_pps);
+	cancel_delayed_work_sync(&ptp->update_sec);
 	ptp->update_sec_jiffies = 0;
 	ptp->ops->acquire(ptp);
 	ptp->reg->write(ptp, ADDR_16, REG_RESET_CTRL,
@@ -1703,7 +1794,9 @@ static int ptp_stop(struct ptp_info *ptp)
 	sw->cached.ptp_clk_ctrl = ptp->reg->read(ptp, ADDR_16, PTP_CLK_CTRL);
 	ptp->ptp_synt = false;
 	ptp->started = false;
-	ptp->first_drift = ptp->drift_set = ptp->drift = 0;
+	ptp->first_drift = ptp->drift = 0;
+	ptp->reg->write(ptp, ADDR_16, TRIG_INT_ENABLE, 0);
+	ptp->reg->write(ptp, ADDR_16, TS_INT_ENABLE, 0);
 	ptp->ops->release(ptp);
 	return false;
 }  /* ptp_stop */
@@ -1782,6 +1875,8 @@ static void ptp_init_state(struct ptp_info *ptp)
 
 	ptp->adjust_offset = 0;
 	ptp->offset_changed = 0;
+	memset(&ptp->last_rx_ts, 0, sizeof(struct ptp_ts));
+	memset(&ptp->last_tx_ts, 0, sizeof(struct ptp_ts));
 
 	if (!ptp->ptp_synt) {
 		syntonize_clk(ptp);
@@ -1807,6 +1902,9 @@ static void ptp_exit_state(struct ptp_info *ptp)
 	}
 	ptp->adjust_offset = 0;
 	ptp->offset_changed = 0;
+
+	/* Indicate drift is not being set by PTP stack. */
+	ptp->drift_set = 0;
 }  /* ptp_exit_state */
 
 static struct ptp_msg *check_ptp_msg(u8 *data, u16 **udp_check_ptr)
@@ -2190,27 +2288,6 @@ static int ptp_hwtstamp_ioctl(struct ptp_info *ptp, struct ifreq *ifr)
 		-EFAULT : 0;
 }
 
-#ifdef CONFIG_KSZ_STP_
-static int check_ptp_bcast_msg(u8 *data, u8 port, u16 tx_ports)
-{
-	u8 dst;
-	struct ptp_msg *msg;
-
-	msg = check_ptp_msg(data, NULL);
-	if (msg) {
-		dst = msg->hdr.reserved2;
-		if (3 == dst || 0 == dst)
-			return dst;
-		--dst;
-		if (dst + 1 != port && (tx_ports & (1 << dst)))
-			return 2;
-		else
-			return 1;
-	}
-	return 0;
-}  /* check_ptp_bcast_msg */
-#endif
-
 static int ptp_drop_pkt(struct ptp_info *ptp, struct sk_buff *skb, u32 vlan_id,
 	int *tag, int *ptp_tag)
 {
@@ -2240,6 +2317,21 @@ static int ptp_drop_pkt(struct ptp_info *ptp, struct sk_buff *skb, u32 vlan_id,
 		if (msg) {
 			/* Indicate this is a PTP message. */
 			*ptp_tag = msg->hdr.reserved2;
+
+			if (ptp->overrides & PTP_CHECK_PATH_DELAY) {
+				struct ptp_ts ts;
+
+				ts.timestamp = ntohl(msg->hdr.reserved3);
+				update_ts(&ts, ptp->cur_time.sec);
+				if (ptp->last_tx_ts.t.sec) {
+					struct ksz_ptp_time diff;
+
+					calc_udiff(&ptp->last_tx_ts.t, &ts.t,
+						&diff);
+					dbg_msg("pd: %d\n", diff.nsec);
+				} else
+					ptp->last_rx_ts = ts;
+			}
 
 			/*
 			 * Tag is already updated to reflect VLAN forwarding if
@@ -3561,7 +3653,7 @@ static void proc_ptp_work(struct work_struct *work)
 		switch (parent->subcmd) {
 		case DEV_INFO_INIT:
 			ptp_init_state(ptp);
-			parent->output = ptp->drift_set;
+			parent->output = ptp->drift;
 			break;
 		case DEV_INFO_EXIT:
 			ptp_exit_state(ptp);
@@ -3714,6 +3806,19 @@ hw_access_end:
 	return ret;
 }  /* proc_ptp_hw_access */
 
+static void exit_ptp_work(struct ptp_info *ptp)
+{
+	struct ptp_access *access;
+	struct ptp_work *work;
+	int i;
+
+	access = &ptp->hw_access;
+	for (i = 0; i < PTP_WORK_NUM; i++) {
+		work = &access->works[i];
+		flush_work(&work->work);
+	}
+}  /* exit_ptp_work */
+
 static void init_ptp_work(struct ptp_info *ptp)
 {
 	struct ptp_access *access;
@@ -3827,7 +3932,7 @@ static void set_ptp_drift(struct ptp_info *ptp, int drift)
 	drift /= 100;
 	drift *= 100;
 	drift = -drift;
-	ptp->first_drift = ptp->drift_set = ptp->drift = drift;
+	ptp->first_drift = ptp->drift = drift;
 	ptp->first_sec = 0;
 	ptp->adjust = clk_adjust_val(drift, NANOSEC_IN_SEC);
 	set_ptp_adjust(ptp, ptp->adjust);
@@ -4105,6 +4210,24 @@ proc_ptp_intr_done:
 	return;
 }  /* proc_ptp_intr */
 
+static int ptp_get_ts_info(struct ptp_info *ptp, struct net_device *dev,
+	struct ethtool_ts_info *info)
+{
+	int ptp_clock = false;
+	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
+	int ret = -1;
+
+#ifdef CONFIG_PTP_1588_CLOCK
+	ptp_clock = true;
+#endif
+	if (!(sw->features & PTP_HW) || !ptp_clock)
+		return ethtool_op_get_ts_info(dev, info);
+#ifdef CONFIG_PTP_1588_CLOCK
+	ret = micrel_ptp_get_ts_info(ptp, info);
+#endif
+	return ret;
+}  /* ptp_get_ts_info */
+
 #define PTP_ENABLE_TXTS		SIOCDEVPRIVATE
 #define PTP_DISABLE_TXTS	(SIOCDEVPRIVATE + 1)
 #define PTP_ENABLE_RXTS		(SIOCDEVPRIVATE + 2)
@@ -4271,7 +4394,7 @@ static int ixxat_ptp_ioctl(struct ptp_info *ptp, unsigned int cmd,
 			true);
 		break;
 	case PTP_GET_ADJ:
-		drift = ptp->drift_set;
+		drift = ptp->drift;
 		err = copy_to_user(ifr->ifr_data, &drift, sizeof(drift));
 		break;
 	case PTP_CLEANUP_TS:
@@ -4284,7 +4407,7 @@ static int ixxat_ptp_ioctl(struct ptp_info *ptp, unsigned int cmd,
 	return err;
 }
 
-static int ptp_dev_req(struct ptp_info *ptp, char *arg,
+static int ptp_dev_req(struct ptp_info *ptp, int start, char *arg,
 	struct ptp_dev_info *info)
 {
 	struct ksz_request *req = (struct ksz_request *) arg;
@@ -4336,7 +4459,7 @@ static int ptp_dev_req(struct ptp_info *ptp, char *arg,
 					maincmd, subcmd, 0,
 					data, 6, info, &output,
 					true);
-				__put_user(ptp->drift_set, &req->output);
+				__put_user(ptp->drift, &req->output);
 			} else
 				result = DEV_IOC_INVALID_LEN;
 			break;
@@ -4664,7 +4787,7 @@ static int ptp_dev_ioctl(struct inode *inode, struct file *filp,
 	if (down_interruptible(&info->sem))
 		return -ERESTARTSYS;
 
-	err = ptp_dev_req(ptp, (char *) arg, info);
+	err = ptp_dev_req(ptp, 0, (char *) arg, info);
 	up(&info->sem);
 	return err;
 }  /* ptp_dev_ioctl */
@@ -4802,7 +4925,6 @@ static int init_ptp_device(int dev_major, char *dev_name, char *minor_name)
 {
 	int result;
 
-	printk(KERN_INFO "  PTP driver %s %s\n", __DATE__, __TIME__);
 	result = register_chrdev(dev_major, dev_name, &ptp_dev_fops);
 	if (result < 0) {
 		printk(KERN_WARNING "%s: can't get major %d\n", dev_name,
@@ -4829,65 +4951,6 @@ static void exit_ptp_device(int dev_major, char *dev_name)
 	unregister_chrdev(dev_major, dev_name);
 }  /* exit_ptp_device */
 
-static void ptp_check(struct ptp_info *ptp)
-{
-	struct ptp_utime cur;
-	struct ptp_utime now;
-	struct ksz_sw *sw = container_of(ptp, struct ksz_sw, ptp_hw);
-
-	ptp->features |= PTP_ADJ_HACK;
-	ptp->ops->acquire(ptp);
-	sw->cached.ptp_clk_ctrl = ptp->reg->read(ptp, ADDR_16, PTP_CLK_CTRL);
-	ptp->reg->get_time(ptp, &cur);
-	ptp->reg->adjust_time(ptp, true, 10, 0, true);
-	ptp->reg->get_time(ptp, &now);
-	if (now.sec - cur.sec >= 10) {
-		ptp->features &= ~PTP_ADJ_HACK;
-		ptp->features |= PTP_ADJ_SEC;
-		ptp->features |= PTP_PDELAY_HACK;
-		ptp->reg->adjust_time(ptp, false, 10, 0, true);
-		ptp->version = 1;
-	}
-/*
- * THa  2013/01/08
- * The Rev. D chip has a problem of decrementing nanosecond that is bigger than
- * the current nanosecond when continual clock adjustment is enabled.  The
- * workaround is to use the PTP_ADJ_HACK code although the actual problem
- * avoided is now different.
- */
-	if (!(ptp->features & PTP_ADJ_HACK)) {
-		u16 data;
-
-		data = sw->cached.ptp_clk_ctrl;
-		sw->cached.ptp_clk_ctrl |= PTP_CLK_ADJ_ENABLE;
-		ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL,
-			sw->cached.ptp_clk_ctrl);
-		if (cur.sec < 1)
-			cur.sec = 1;
-		cur.nsec = 0;
-		ptp->reg->set_time(ptp, &cur);
-		ptp->reg->adjust_time(ptp, false, 0, 800000000, false);
-		ptp->reg->get_time(ptp, &now);
-		dbg_msg("%x:%u %x:%u\n", cur.sec, cur.nsec, now.sec, now.nsec);
-		if (abs(now.sec - cur.sec) > 2) {
-			ptp->reg->get_time(ptp, &now);
-			dbg_msg("! %x:%u\n", now.sec, now.nsec);
-			ptp->features |= PTP_ADJ_HACK;
-			ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL, data);
-
-			ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL,
-				data | PTP_CLK_ADJ_ENABLE);
-			ptp->reg->set_time(ptp, &cur);
-			ptp->reg->adjust_time(ptp, false, 0, 800000000, true);
-			ptp->reg->get_time(ptp, &now);
-			dbg_msg("ok %x:%u\n", now.sec, now.nsec);
-		}
-		sw->cached.ptp_clk_ctrl = data;
-		ptp->reg->write(ptp, ADDR_16, PTP_CLK_CTRL, data);
-	}
-	ptp->ops->release(ptp);
-}  /* ptp_check */
-
 static void ptp_set_identity(struct ptp_info *ptp, u8 *addr)
 {
 	memcpy(&ptp->clockIdentity.addr[0], &addr[0], 3);
@@ -4900,6 +4963,7 @@ static void ptp_init(struct ptp_info *ptp, u8 *mac_addr)
 {
 	int i;
 
+	ptp->utc_offset = CURRENT_UTC_OFFSET;
 	ptp->get_delay = 100000;
 	ptp->set_delay = 100000;
 	ptp->delay_ticks = 1;
@@ -4917,13 +4981,10 @@ static void ptp_init(struct ptp_info *ptp, u8 *mac_addr)
 	ptp_set_identity(ptp, mac_addr);
 
 	ptp->ports = MAX_PTP_PORT;
-	ptp_check(ptp);
 	if (!ptp->get_clk_cnt)
 		ptp->get_clk_cnt = _get_clk_cnt;
 	if (!ptp->test_access_time)
 		ptp->test_access_time = _test_access_time;
-	if (ptp->test_access_time)
-		ptp->test_access_time(ptp);
 
 	ptp->mode = PTP_ENABLE |
 		PTP_IPV4_UDP_ENABLE |
@@ -4968,11 +5029,7 @@ static void ptp_init(struct ptp_info *ptp, u8 *mac_addr)
 
 static void ptp_exit(struct ptp_info *ptp)
 {
-	ptp->ops->acquire(ptp);
-	ptp->reg->write(ptp, ADDR_16, TRIG_INT_ENABLE, 0);
-	ptp->reg->write(ptp, ADDR_16, TS_INT_ENABLE, 0);
-	ptp->ops->release(ptp);
-
+	exit_ptp_work(ptp);
 #ifdef PTP_SPI
 	if (ptp->access) {
 		destroy_workqueue(ptp->access);
@@ -5120,6 +5177,7 @@ static struct ptp_ops ptp_ops = {
 	.ixxat_ioctl		= ixxat_ptp_ioctl,
 	.dev_req		= ptp_dev_req,
 	.proc_intr		= proc_ptp_intr,
+	.get_ts_info		= ptp_get_ts_info,
 
 	.sysfs_read		= sysfs_ptp_read,
 	.sysfs_write		= sysfs_ptp_write,

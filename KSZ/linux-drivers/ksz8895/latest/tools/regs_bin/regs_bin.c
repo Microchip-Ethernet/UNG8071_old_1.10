@@ -221,7 +221,8 @@ void get_cmd(FILE *fp)
 					if (fixed_boundary) {
 						if (num[0] & 1)
 							size = 1;
-						else if (num[0] & 2)
+						else if ((num[0] & 2) &&
+							 size > 2)
 							size = 2;
 					}
 				}
@@ -256,7 +257,8 @@ void get_cmd(FILE *fp)
 					if (fixed_boundary) {
 						if (num[0] & 1)
 							size = 1;
-						else if (num[0] & 2)
+						else if ((num[0] & 2) &&
+							 size > 2)
 							size = 2;
 					}
 				}

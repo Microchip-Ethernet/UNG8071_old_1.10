@@ -1,5 +1,5 @@
 /**
- * Micrel KSZ8462 HLI Ethernet driver
+ * Microchip KSZ8462 HLI Ethernet driver
  *
  * Copyright (c) 2015-2016 Microchip Technology Inc.
  * Copyright (c) 2010-2015 Micrel, Inc.
@@ -57,21 +57,9 @@
 #include "ksz8463.h"
 #include "ksz8462.h"
 
-#ifdef CONFIG_KSZ8462_HLI_STP
-#define CONFIG_KSZ_STP
-#endif
 
-#ifdef CONFIG_KSZ_STP
-#include <../net/bridge/br_private.h>
-#endif
-
-#ifdef CONFIG_KSZ8462_HLI_PTP
+#ifdef CONFIG_KSZ_PTP
 #define CONFIG_1588_PTP
-#endif
-
-/* For experiment. */
-#if 0
-#define KSZ_DLR
 #endif
 
 #ifdef DEBUG
@@ -120,7 +108,8 @@
 #endif
 
 #define DRV_NAME			"ksz8462_hli"
-#define DRV_VERSION			"1.0.0"
+#define DRV_VERSION			"1.1.0"
+#define DRV_RELDATE			"Feb 8, 2017"
 
 #define MAX_RECV_FRAMES			180 /* 32 */
 #define MAX_BUF_SIZE			2048
@@ -366,7 +355,6 @@ struct dev_info {
 
 	struct delayed_work link_read;
 	struct work_struct mib_read;
-	struct delayed_work stp_monitor;
 	struct ksz_timer_info mib_timer_info;
 	struct ksz_timer_info monitor_timer_info;
 	struct ksz_counter_info counter[TOTAL_PORT_NUM];
@@ -735,6 +723,7 @@ static inline void copy_old_skb(struct sk_buff *old, struct sk_buff *skb)
 	dev_kfree_skb(old);
 }  /* copy_old_skb */
 
+#define USE_SHOW_HELP
 #include "ksz_common.c"
 
 static inline int sw_is_switch(struct ksz_sw *sw)
@@ -810,40 +799,23 @@ static int ks_start_xmit(struct sk_buff *skb, struct net_device *dev);
 #define BANK_PTP			3
 #endif
 
-#ifdef CONFIG_KSZ_STP
-static u8 get_port_state(struct net_device *dev, struct net_device **br_dev)
-{
-	struct net_bridge_port *p;
-	u8 state;
-
-	/* This state is not defined in kernel. */
-	state = STP_STATE_SIMPLE;
-	if (br_port_exists(dev)) {
-		p = br_port_get_rcu(dev);
-		state = p->state;
-
-		/* Port is under bridge. */
-		*br_dev = p->br->dev;
-	}
-	return state;
-}  /* get_port_state */
-#endif
-
 static void link_update_work(struct work_struct *work)
 {
-#ifdef KSZ_DLR
+#ifdef CONFIG_KSZ_STP
 	struct ksz_port *port =
 		container_of(work, struct ksz_port, link_update);
 	struct ksz_sw *sw = port->sw;
-	struct ksz_dlr_info *dlr = &sw->info->dlr;
 
-	dlr->ops->link_change(dlr,
-		sw->port_info[0].state == media_connected,
-		sw->port_info[1].state == media_connected);
+	if (sw->features & STP_SUPPORT) {
+		struct ksz_stp_info *stp = &sw->info->rstp;
+
+		stp->ops->link_change(stp, true);
+	}
 #endif
 }
 
 #define USE_DIFF_PORT_PRIORITY
+#define NO_PHYDEV
 #include "ksz_sw.c"
 
 static void sw_disable(struct ksz_sw *sw)
@@ -1206,7 +1178,7 @@ static u32 get_clk_cnt(void)
 
 /* -------------------------------------------------------------------------- */
 
-static void get_private_data(struct device *d, struct semaphore **proc_sem,
+static void get_private_data_(struct device *d, struct semaphore **proc_sem,
 	struct ksz_sw **sw, struct ksz_port **port)
 {
 	struct net_device *dev = to_net_dev(d);
@@ -1219,13 +1191,12 @@ static void get_private_data(struct device *d, struct semaphore **proc_sem,
 		*port = &priv->port;
 }
 
+#define get_private_data		get_private_data_
+
 #include "ksz_sw_sysfs.c"
 
 #ifdef CONFIG_1588_PTP
 #include "ksz_ptp_sysfs.c"
-#endif
-#ifdef KSZ_DLR
-#include "ksz_dlr_sysfs.c"
 #endif
 
 /* -------------------------------------------------------------------------- */
@@ -1339,18 +1310,6 @@ static void link_read_work(struct work_struct *work)
 #endif
 }  /* link_read_work */
 
-static void stp_work(struct work_struct *work)
-{
-#ifdef CONFIG_KSZ_STP
-	struct delayed_work *dwork = to_delayed_work(work);
-	struct dev_info *hw_priv =
-		container_of(dwork, struct dev_info, stp_monitor);
-	struct ksz_sw *sw = &hw_priv->sw;
-
-	sw->net_ops->monitor_ports(sw);
-#endif
-}  /* stp_work */
-
 /*
  * Hardware monitoring
  */
@@ -1371,8 +1330,6 @@ static void dev_monitor(unsigned long ptr)
 
 	if (!(hw_priv->sw.features & STP_SUPPORT))
 		return;
-	if (hw_priv->sw.features & STP_SUPPORT)
-		schedule_delayed_work(&hw_priv->stp_monitor, 0);
 
 	ksz_update_timer(&hw_priv->monitor_timer_info);
 }  /* dev_monitor */
@@ -1635,9 +1592,23 @@ static void ks_phy_write(struct net_device *netdev, int phy, int reg,
 
 	ksreg = ks_phy_reg(reg);
 	if (ksreg) {
-		ksreg += port->linked->port_id * 0xC;
+		int i;
+		int first;
+		int last;
+		int reg;
+
+		if (0 == phy) {
+			first = port->first_port;
+			last = port->port_cnt;
+		} else {
+			first = phy - 1;
+			last = phy;
+		}
 		mutex_lock(&hw_priv->lock);
-		ks_wrreg16(ks, ksreg, value);
+		for (i = first; i < last; i++) {
+			reg = ksreg + i * 0xC;
+			ks_wrreg16(ks, reg, value);
+		}
 		mutex_unlock(&hw_priv->lock);
 	}
 }
@@ -2125,6 +2096,7 @@ static int rx_proc(struct dev_info *hw_priv, struct sk_buff *skb,
 	ks_read_qmu(hw, skb->data, len);
 #endif
 	spin_unlock_irqrestore(&priv->statelock, flags);
+	len -= 4;
 
 	/* vlan_get_tag requires network device in socket buffer. */
 	skb->dev = dev;
@@ -2143,7 +2115,6 @@ static int rx_proc(struct dev_info *hw_priv, struct sk_buff *skb,
 		ks_dbg_dumpkkt(priv, skb->data, len, 0);
 	}
 
-	len -= 4;
 	skb_put(skb, len);
 	if (sw_is_switch(sw) && !sw->net_ops->match_pkt(sw, &dev,
 			(void **) &priv, priv_promiscuous, priv_match_multi,
@@ -2151,23 +2122,12 @@ static int rx_proc(struct dev_info *hw_priv, struct sk_buff *skb,
 		dev_kfree_skb_irq(skb);
 		return 0;
 	}
+	if (sw_is_switch(sw)) {
 
-#ifdef CONFIG_KSZ_STP
-	if (sw_is_switch(sw) && sw->net_ops->stp_rx(sw, dev, skb, rx_port,
-			&forward)) {
-		if (!forward) {
-			if (!sw->net_ops->blocked_rx(sw, skb->data))
-				dbg_msg(
-					"rxd%d=%02x:%02x:%02x:%02x:%02x:%02x\n",
-					rx_port,
-					skb->data[0], skb->data[1],
-					skb->data[2], skb->data[3],
-					skb->data[4], skb->data[5]);
-			dev_kfree_skb_irq(skb);
+		/* Internal packets handled by the switch. */
+		if (!sw->net_ops->drv_rx(sw, skb, rx_port))
 			return 0;
-		}
 	}
-#endif
 
 #ifdef CONFIG_1588_PTP
 	ptr = ptp;
@@ -2193,12 +2153,6 @@ static int rx_proc(struct dev_info *hw_priv, struct sk_buff *skb,
 	priv->stats.rx_packets++;
 	priv->stats.rx_bytes += len;
 
-#ifdef KSZ_DLR
-	if (sw_is_switch(sw)) {
-		if (!sw->net_ops->drv_rx(sw, skb, rx_port))
-			return 0;
-	}
-#endif
 	if (sw_is_switch(sw))
 		extra_skb |= sw->net_ops->port_vlan_rx(sw, dev, parent_dev,
 			skb, forward, tag, ptr, rx_tstamp);
@@ -3134,10 +3088,8 @@ static void ks_set_rx_mode(struct net_device *dev)
 
 	/* Turn on/off all mcast mode. */
 	if (sw->dev_count > 1) {
-#ifdef CONFIG_KSZ_STP
 		if ((flags & IFF_MULTICAST) && !netdev_mc_empty(dev))
 			sw->net_ops->set_multi(sw, dev, &priv->port);
-#endif
 		priv->multi_list_size = 0;
 
 		/* Do not update multi_list_size. */
@@ -3347,7 +3299,7 @@ static int ks_net_ioctl(struct net_device *dev, struct ifreq *req, int cmd)
 	case SIOCDEVPRIVATE + 15:
 		result = -EOPNOTSUPP;
 		if (sw->features & PTP_HW)
-			result = ptp->ops->dev_req(ptp, req->ifr_data,
+			result = ptp->ops->dev_req(ptp, 0, req->ifr_data,
 				NULL);
 		break;
 #endif
@@ -3761,6 +3713,19 @@ static int ks_get_eeprom_len(struct net_device *dev)
 	return hw->rc_ccr & CCR_EEPROM ? 128 : 0;
 }
 
+#ifdef CONFIG_1588_PTP
+static int netdev_get_ts_info(struct net_device *dev,
+	struct ethtool_ts_info *info)
+{
+	struct dev_priv *priv = netdev_priv(dev);
+	struct dev_info *hw_priv = priv->adapter;
+	struct ksz_sw *sw = &hw_priv->sw;
+	struct ptp_info *ptp = &sw->ptp_hw;
+
+	return ptp->ops->get_ts_info(ptp, dev, info);
+}  /* netdev_get_ts_info */
+#endif
+
 static const struct ethtool_ops ks_ethtool_ops = {
 	.get_drvinfo		= ks_get_drvinfo,
 	.get_regs_len		= ks_get_regs_len,
@@ -3779,6 +3744,9 @@ static const struct ethtool_ops ks_ethtool_ops = {
 	.get_eeprom_len		= ks_get_eeprom_len,
 	.get_eeprom		= ks_get_eeprom,
 	.set_eeprom		= ks_set_eeprom,
+#ifdef CONFIG_1588_PTP
+	.get_ts_info		= netdev_get_ts_info,
+#endif
 };
 
 /**
@@ -3848,9 +3816,7 @@ static int netdev_init(struct net_device *netdev)
 
 	/* setup mii state */
 	ks->mii_if.dev		= netdev;
-	ks->mii_if.phy_id	= ks->port.first_port + 1;
-	if (sw->dev_count > 1 && sw->dev_offset && ks->port.port_cnt != 1)
-		ks->mii_if.phy_id = 0;
+	ks->mii_if.phy_id	= ks->phy_addr;
 	ks->mii_if.phy_id_mask	= (1 << SWITCH_PORT_NUM) - 1;
 	ks->mii_if.reg_num_mask	= 0xf;
 	ks->mii_if.mdio_read	= ks_phy_read;
@@ -4027,6 +3993,7 @@ static int ks846x_probe(struct platform_device *pdev)
 	sw->multi_dev |= multi_dev;
 	sw->stp |= stp;
 	sw->fast_aging |= fast_aging;
+	sw_setup_zone(sw);
 
 	sw->reg = &sw_reg_ops;
 	sw->net_ops = &sw_net_ops;
@@ -4047,7 +4014,7 @@ static int ks846x_probe(struct platform_device *pdev)
 			goto err_frame_head;
 		}
 	}
-	sw->port_cnt = sw->mib_port_cnt;
+	sw->port_cnt = cnt;
 	sw->PORT_MASK = (1 << TOTAL_PORT_NUM) - 1;
 	sw->HOST_PORT = SWITCH_PORT_NUM;
 	sw->HOST_MASK = (1 << sw->HOST_PORT);
@@ -4055,12 +4022,10 @@ static int ks846x_probe(struct platform_device *pdev)
 	init_waitqueue_head(&sw->queue);
 
 	INIT_DELAYED_WORK(&ks->link_read, link_read_work);
-	INIT_DELAYED_WORK(&ks->stp_monitor, stp_work);
 
 	sw->counter = ks->counter;
 	sw->monitor_timer_info = &ks->monitor_timer_info;
 	sw->link_read = &ks->link_read;
-	sw->stp_monitor = &ks->stp_monitor;
 
 	sw_init_mib(sw);
 
@@ -4085,6 +4050,7 @@ static int ks846x_probe(struct platform_device *pdev)
 	if (sw->info) {
 		sw_init(sw);
 		sw_setup(sw);
+		sw_enable(sw);
 	} else
 		sw_disable(sw);
 	sw->ops->release(sw);
@@ -4106,8 +4072,8 @@ static int ks846x_probe(struct platform_device *pdev)
 		priv->adapter = ks;
 		priv->id = net_device_present;
 
-		sw->net_ops->setup_dev(sw, netdev, dev_name, &priv->port, i,
-			port_count, mib_port_count);
+		priv->phy_addr = sw->net_ops->setup_dev(sw, netdev, dev_name,
+			&priv->port, i, port_count, mib_port_count);
 
 		netdev->mem_start = (unsigned long) hw->hw_addr;
 		netdev->mem_end = netdev->mem_start + 0x20 - 1;
@@ -4131,9 +4097,14 @@ static int ks846x_probe(struct platform_device *pdev)
 	}
 	sema_init(&ks->proc_sem, 1);
 	if (TOTAL_PORT_NUM == sw->mib_port_cnt) {
+		sw->ops->init(sw);
 		err = init_sw_sysfs(sw, &ks->sysfs, &info->netdev[0]->dev);
 		if (err)
 			goto err_register;
+
+#ifdef CONFIG_KSZ_STP
+		ksz_stp_init(&sw->info->rstp, sw);
+#endif
 	}
 	netdev = info->netdev[0];
 
@@ -4163,19 +4134,6 @@ static int ks846x_probe(struct platform_device *pdev)
 		ptp->ports = ptp_ports;
 		if (ptp->version < 1)
 			sw->features &= ~VLAN_PORT_REMOVE_TAG;
-	}
-#endif
-#ifdef KSZ_DLR
-	ksz_dlr_init(&sw->info->dlr, sw);
-	err = init_dlr_sysfs(&info->netdev[0]->dev);
-	hw->mcast_lst_reserved = 5;
-	for (i = 0; i < hw->mcast_lst_reserved; i++) {
-		hw->mcast_lst[i][0] = 0x01;
-		hw->mcast_lst[i][1] = 0x21;
-		hw->mcast_lst[i][2] = 0x6C;
-		hw->mcast_lst[i][3] = 0x00;
-		hw->mcast_lst[i][4] = 0x00;
-		hw->mcast_lst[i][5] = i + 1;
 	}
 #endif
 
@@ -4245,10 +4203,6 @@ static int ks846x_remove(struct platform_device *pdev)
 		ptp->ops->exit(ptp);
 	}
 #endif
-#ifdef KSZ_DLR
-	exit_dlr_sysfs(&info->netdev[0]->dev);
-	ksz_dlr_exit(&sw->info->dlr);
-#endif
 
 	ksz_stop_timer(&ks->mib_timer_info);
 	flush_work(&ks->mib_read);
@@ -4257,8 +4211,14 @@ static int ks846x_remove(struct platform_device *pdev)
 	release_mem_region(iomem->start, resource_size(iomem));
 	iomem = platform_get_resource(pdev, IORESOURCE_MEM, 1);
 	release_mem_region(iomem->start, resource_size(iomem));
-	if (TOTAL_PORT_NUM == sw->mib_port_cnt)
+	if (TOTAL_PORT_NUM == sw->mib_port_cnt) {
+		sw->ops->exit(sw);
 		exit_sw_sysfs(sw, &ks->sysfs, &info->netdev[0]->dev);
+
+#ifdef CONFIG_KSZ_STP
+		ksz_stp_exit(&sw->info->rstp);
+#endif
+	}
 	for (i = 0; i < sw->dev_count + sw->dev_offset; i++) {
 		if (info->netdev[i])
 			netdev_free(info->netdev[i]);
@@ -4361,7 +4321,7 @@ static void __exit ksz8462_hli_exit(void)
 module_init(ksz8462_hli_init);
 module_exit(ksz8462_hli_exit);
 
-MODULE_DESCRIPTION("Micrel KSZ8462 HLI Network Driver");
+MODULE_DESCRIPTION("Microchip KSZ8462 HLI Network Driver");
 MODULE_AUTHOR("Tristram Ha <tristram.ha@microchip.com>");
 MODULE_LICENSE("GPL");
 

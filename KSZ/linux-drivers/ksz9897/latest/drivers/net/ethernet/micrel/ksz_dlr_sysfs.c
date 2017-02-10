@@ -1,7 +1,7 @@
 /**
- * Micrel DLR common sysfs code
+ * Microchip DLR common sysfs code
  *
- * Copyright (c) 2015-2016 Microchip Technology Inc.
+ * Copyright (c) 2015-2017 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -95,6 +95,7 @@ DLR_WR_ENTRY(prec);
 DLR_WR_ENTRY(interval);
 DLR_WR_ENTRY(timeout);
 DLR_WR_ENTRY(vid);
+DLR_WR_ENTRY(cfg);
 DLR_WR_ENTRY(state);
 DLR_WR_ENTRY(port);
 DLR_WR_ENTRY(test);
@@ -131,6 +132,7 @@ static struct attribute *dlr_attrs[] = {
 	&dlr_attr_interval.attr,
 	&dlr_attr_timeout.attr,
 	&dlr_attr_vid.attr,
+	&dlr_attr_cfg.attr,
 	&dlr_attr_state.attr,
 	&dlr_attr_port.attr,
 	&dlr_attr_test.attr,

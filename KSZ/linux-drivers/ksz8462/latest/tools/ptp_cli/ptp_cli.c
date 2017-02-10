@@ -1386,6 +1386,7 @@ void get_cmd(FILE *fp)
 	printf("access delay = %u\n", ptp_access_delay);
 	if (!ptp_started)
 		printf("PTP not started!  Some operations may not work.\n");
+	clear_rx_event();
 	do {
 		printf("> ");
 		if (fgets(line, 80, fp) == NULL)

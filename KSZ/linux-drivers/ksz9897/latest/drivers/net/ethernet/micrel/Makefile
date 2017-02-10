@@ -1,5 +1,5 @@
 #
-# Makefile for the Micrel network device drivers.
+# Makefile for the Microchip/Micrel network device drivers.
 #
 
 obj-$(CONFIG_I2C_KSZ9897) += i2c-ksz9897.o

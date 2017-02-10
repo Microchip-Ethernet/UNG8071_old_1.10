@@ -1,5 +1,5 @@
 /**
- * Micrel KSZ8462 Register Definitions.
+ * Microchip KSZ8462 Register Definitions.
  *
  * Copyright (C) 2015 Microchip Technology Inc.
  * Copyright (C) 2010-2015 Micrel, Inc.

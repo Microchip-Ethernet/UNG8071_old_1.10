@@ -1,7 +1,7 @@
 /**
- * Micrel KSZ8862 Register Definitions.
+ * Microchip KSZ8862 Register Definitions.
  *
- * Copyright (C) 2015 Microchip Technology Inc.
+ * Copyright (C) 2015-2016 Microchip Technology Inc.
  * Copyright (C) 2010-2015 Micrel, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -736,6 +736,7 @@
 #define   PORT_DROP_TAG_PKT          (1 << 9)
 /* enable split port tx queue to two queues */
 #define   PORT_SPLIT_2QUEUE          (1 << 8)
+#define   PORT_2_QUEUES_ENABLE       (1 << 8)
 /* enable broadcast storm protection */
 #define   PORT_BROADCAST_STORM       (1 << 7)
 /* enable Diffserv QoS */
@@ -760,6 +761,7 @@
 #define   PORT_REMOVE_TAG            (1 << 1)
 /* enable split port tx queue to four queues */
 #define   PORT_PRIORITY_ENABLE       (1 << 0)
+#define   PORT_4_QUEUES_ENABLE       (1 << 0)
 
 #define REG_PORT1_CTRL2            0x6E        /* P1CR2 */
 /* remote loopback */

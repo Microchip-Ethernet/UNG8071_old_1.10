@@ -1,7 +1,7 @@
 /**
- * Micrel KSZ9897 definition file
+ * Microchip KSZ9897 definition file
  *
- * Copyright (c) 2015 Microchip Technology Inc.
+ * Copyright (c) 2015-2016 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2013-2015 Micrel, Inc.
@@ -62,9 +62,30 @@
 
 #define REG_GLOBAL_OPTIONS		0x000F
 
+/* For KSZ9897 */
 #define SW_GIGABIT_ABLE			(1 << 6)
 #define SW_REDUNDANCY_ABLE		(1 << 5)
 #define SW_AVB_ABLE			(1 << 4)
+#define SW_9567_RL_5_2			0xC
+#define SW_9477_SL_5_2			0xD
+
+#define SW_9896_GL_5_1			0xB
+#define SW_9896_RL_5_1			0x8
+#define SW_9896_SL_5_1			0x9
+
+#define SW_9895_GL_4_1			0x7
+#define SW_9895_RL_4_1			0x4
+#define SW_9895_SL_4_1			0x5
+
+#define SW_9896_RL_4_2			0x6
+
+#define SW_9893_RL_2_1			0x0
+#define SW_9893_SL_2_1			0x1
+#define SW_9893_GL_2_1			0x3
+
+/* For KSZ9893 */
+#define SW_QW_ABLE			(1 << 5)
+#define SW_9893_RN_2_1			0xC
 
 #define REG_SW_INT_STATUS__4		0x0010
 #define REG_SW_INT_MASK__4		0x0014
@@ -81,16 +102,28 @@
 #define REG_SW_PHY_INT_STATUS		0x0020
 #define REG_SW_PHY_INT_ENABLE		0x0024
 
-/* 1 - */
+/* 1 - Global */
+#define REG_SW_GLOBAL_SERIAL_CTRL_0	0x0100
+#define SW_SPARE_REG_2			(1 << 7)
+#define SW_SPARE_REG_1			(1 << 6)
+#define SW_SPARE_REG_0			(1 << 5)
+#define SW_BIG_ENDIAN			(1 << 4)
+#define SPI_AUTO_EDGE_DETECTION		(1 << 1)
+#define SPI_CLOCK_OUT_RISING_EDGE	(1 << 0)
+
+#define REG_SW_GLOBAL_OUTPUT_CTRL__1	0x0103
+#define SW_ENABLE_REFCLKO		(1 << 1)
+#define SW_REFCLKO_IS_125MHZ		(1 << 0)
+
 #define REG_SW_IBA__4			0x0104
 
 #define SW_IBA_ENABLE			(1 << 31)
 #define SW_IBA_DA_MATCH			(1 << 30)
 #define SW_IBA_INIT			(1 << 29)
-#define SW_IBA_QID_S			22
 #define SW_IBA_QID_M			0xF
-#define SW_IBA_PORT_S			16
+#define SW_IBA_QID_S			22
 #define SW_IBA_PORT_M			0x2F
+#define SW_IBA_PORT_S			16
 #define SW_IBA_FRAME_TPID_M		0xFFFF
 
 #define REG_SW_APB_TIMEOUT_ADDR__4	0x0108
@@ -100,6 +133,17 @@
 #define REG_SW_IBA_SYNC__1		0x010C
 
 #define REG_SW_IO_STRENGTH__1		0x010D
+#define SW_DRIVE_STRENGTH_M		0x7
+#define SW_DRIVE_STRENGTH_2MA		0
+#define SW_DRIVE_STRENGTH_4MA		1
+#define SW_DRIVE_STRENGTH_8MA		2
+#define SW_DRIVE_STRENGTH_12MA		3
+#define SW_DRIVE_STRENGTH_16MA		4
+#define SW_DRIVE_STRENGTH_20MA		5
+#define SW_DRIVE_STRENGTH_24MA		6
+#define SW_DRIVE_STRENGTH_28MA		7
+#define SW_HI_SPEED_DRIVE_STRENGTH_S	4
+#define SW_LO_SPEED_DRIVE_STRENGTH_S	0
 
 #define REG_SW_IBA_STATUS__4		0x0110
 
@@ -117,8 +161,8 @@
 #define SW_IBA_CMD_STATE_S		28
 #define SW_IBA_RESP_STATE_S		26
 #define SW_IBA_STATE_M			0x3
-#define SW_IBA_PACKET_SIZE_S		16
 #define SW_IBA_PACKET_SIZE_M		0x7F
+#define SW_IBA_PACKET_SIZE_S		16
 #define SW_IBA_FMT_ID_M			0xFFFF
 
 #define REG_SW_IBA_RESULT__4		0x0118
@@ -222,11 +266,11 @@
 
 #define REG_SW_LUE_UNK_UCAST_CTRL__4	0x0320
 
-#define SW_UNK_UNICAST_ENABLE		(1 << 31)
+#define SW_UNK_UCAST_ENABLE		(1 << 31)
 
 #define REG_SW_LUE_UNK_MCAST_CTRL__4	0x0324
 
-#define SW_UNK_MULTICAST_ENABLE		(1 << 31)
+#define SW_UNK_MCAST_ENABLE		(1 << 31)
 
 #define REG_SW_LUE_UNK_VID_CTRL__4	0x0328
 
@@ -236,6 +280,7 @@
 
 #define SW_NEW_BACKOFF			(1 << 7)
 #define SW_CHECK_LENGTH			(1 << 3)
+#define SW_PAUSE_UNH_MODE		(1 << 1)
 #define SW_AGGR_BACKOFF			(1 << 0)
 
 #define REG_SW_MAC_CTRL_1		0x0331
@@ -263,6 +308,8 @@
 #define SW_PASS_PAUSE			(1 << 3)
 
 #define REG_SW_MAC_CTRL_5		0x0335
+
+#define SW_OUT_RATE_LIMIT_QUEUE_BASED	(1 << 3)
 
 #define REG_SW_MAC_CTRL_6		0x0336
 
@@ -339,10 +386,13 @@
 #define SW_GREEN_COLOR_S		0
 #define SW_COLOR_M			0x3
 
-#define REG_SW_QM_CTRL			0x0390
+#define REG_SW_QM_CTRL__4		0x0390
 
-#define PRIO_SCHEME_SELECT_M		0x3
-#define PRIO_SCHEME_SELECT_S		2
+#define PRIO_SCHEME_SELECT_M		KS_PRIO_M
+#define PRIO_SCHEME_SELECT_S		6
+#define PRIO_MAP_3_HI			0
+#define PRIO_MAP_2_HI			2
+#define PRIO_MAP_0_LO			3
 #define UNICAST_VLAN_BOUNDARY		(1 << 1)
 
 #define REG_SW_EEE_QM_CTRL__2		0x03C0
@@ -354,10 +404,10 @@
 
 #define VLAN_VALID			(1 << 31)
 #define VLAN_FORWARD_OPTION		(1 << 27)
+#define VLAN_PRIO_M			KS_PRIO_M
 #define VLAN_PRIO_S			24
-#define VLAN_PRIO_M			0x3
+#define VLAN_MSTP_M			0x7
 #define VLAN_MSTP_S			12
-#define VLAN_MSTP_M			0x3
 #define VLAN_FID_M			0x7F
 
 #define REG_SW_VLAN_ENTRY_UNTAG__4	0x0404
@@ -386,8 +436,8 @@
 
 #define REG_SW_ALU_CTRL__4		0x0418
 
-#define ALU_VALID_CNT_S			16
 #define ALU_VALID_CNT_M			((1 << 14) - 1)
+#define ALU_VALID_CNT_S			16
 #define ALU_START			(1 << 7)
 #define ALU_VALID			(1 << 6)
 #define ALU_DIRECT			(1 << 2)
@@ -398,8 +448,8 @@
 
 #define REG_SW_ALU_STAT_CTRL__4		0x041C
 
-#define ALU_STAT_INDEX_S		16
 #define ALU_STAT_INDEX_M		((1 << 4) - 1)
+#define ALU_STAT_INDEX_S		16
 #define ALU_RESV_MCAST_INDEX_M		((1 << 6) - 1)
 #define ALU_STAT_START			(1 << 7)
 #define ALU_RESV_MCAST_ADDR		(1 << 1)
@@ -410,8 +460,8 @@
 #define ALU_V_STATIC_VALID		(1 << 31)
 #define ALU_V_SRC_FILTER		(1 << 30)
 #define ALU_V_DST_FILTER		(1 << 29)
-#define ALU_V_PRIO_AGE_CNT_S		26
 #define ALU_V_PRIO_AGE_CNT_M		((1 << 3) - 1)
+#define ALU_V_PRIO_AGE_CNT_S		26
 #define ALU_V_MSTP_M			0x7
 
 #define REG_SW_ALU_VAL_B		0x0424
@@ -422,11 +472,74 @@
 
 #define REG_SW_ALU_VAL_C		0x0428
 
-#define ALU_V_FID_S			16
 #define ALU_V_FID_M			((1 << 16) - 1)
+#define ALU_V_FID_S			16
 #define ALU_V_MAC_ADDR_HI		0xFFFF
 
 #define REG_SW_ALU_VAL_D		0x042C
+
+#define REG_HSR_ALU_INDEX_0		0x0440
+
+#define REG_HSR_ALU_INDEX_1		0x0444
+
+#define HSR_DST_MAC_INDEX_LO_S		16
+#define HSR_SRC_MAC_INDEX_HI		0xFFFF
+
+#define REG_HSR_ALU_INDEX_2		0x0448
+
+#define HSR_INDEX_MAX			(1 << 9)
+#define HSR_DIRECT_INDEX_M		(HSR_INDEX_MAX - 1)
+
+#define REG_HSR_ALU_INDEX_3		0x044C
+
+#define HSR_PATH_INDEX_M		((1 << 4) - 1)
+
+#define REG_HSR_ALU_CTRL__4		0x0450
+
+#define HSR_VALID_CNT_M			((1 << 14) - 1)
+#define HSR_VALID_CNT_S			16
+#define HSR_START			(1 << 7)
+#define HSR_VALID			(1 << 6)
+#define HSR_SEARCH_END			(1 << 5)
+#define HSR_DIRECT			(1 << 2)
+#define HSR_ACTION			0x3
+#define HSR_WRITE			1
+#define HSR_READ			2
+#define HSR_SEARCH			3
+
+#define REG_HSR_ALU_VAL_A		0x0454
+
+#define HSR_V_STATIC_VALID		(1 << 31)
+#define HSR_V_AGE_CNT_M			((1 << 3) - 1)
+#define HSR_V_AGE_CNT_S			26
+#define HSR_V_PATH_ID_M			((1 << 4) - 1)
+
+#define REG_HSR_ALU_VAL_B		0x0458
+
+#define REG_HSR_ALU_VAL_C		0x045C
+
+#define HSR_V_DST_MAC_ADDR_LO_S		16
+#define HSR_V_SRC_MAC_ADDR_HI		0xFFFF
+
+#define REG_HSR_ALU_VAL_D		0x0460
+
+#define REG_HSR_ALU_VAL_E		0x0464
+
+#define HSR_V_START_SEQ_1_S		16
+#define HSR_V_START_SEQ_2_S		0
+
+#define REG_HSR_ALU_VAL_F		0x0468
+
+#define HSR_V_EXP_SEQ_1_S		16
+#define HSR_V_EXP_SEQ_2_S		0
+
+#define REG_HSR_ALU_VAL_G		0x046C
+
+#define HSR_V_SEQ_CNT_1_S		16
+#define HSR_V_SEQ_CNT_2_S		0
+
+#define HSR_V_SEQ_M			((1 << 16) - 1)
+
 
 /* 5 - PTP Clock */
 #define REG_PTP_CLK_CTRL		0x0500
@@ -539,8 +652,8 @@
 
 #define TRIG_CASCADE_ENABLE		(1 << 31)
 #define TRIG_CASCADE_TAIL		(1 << 30)
-#define TRIG_CASCADE_UPS_S		26
 #define TRIG_CASCADE_UPS_M		0xF
+#define TRIG_CASCADE_UPS_S		26
 #define TRIG_NOW			(1 << 25)
 #define TRIG_NOTIFY			(1 << 24)
 #define TRIG_EDGE			(1 << 23)
@@ -561,8 +674,8 @@
 
 #define REG_TRIG_CYCLE_CNT		0x0540
 
-#define TRIG_CYCLE_CNT_S		16
 #define TRIG_CYCLE_CNT_M		0xFFFF
+#define TRIG_CYCLE_CNT_S		16
 #define TRIG_BIT_PATTERN_M		0xFFFF
 
 #define REG_TRIG_ITERATE_TIME		0x0544
@@ -573,17 +686,17 @@
 
 #define REG_TS_CTRL_STAT__4		0x0550
 
-#define TS_EVENT_DETECT_S		17
 #define TS_EVENT_DETECT_M		0xF
+#define TS_EVENT_DETECT_S		17
 #define TS_EVENT_OVERFLOW		(1 << 16)
-#define TS_GPI_S			8
 #define TS_GPI_M			0xF
+#define TS_GPI_S			8
 #define TS_DETECT_RISE			(1 << 7)
 #define TS_DETECT_FALL			(1 << 6)
 #define TS_DETECT_S			6
 #define TS_CASCADE_TAIL			(1 << 5)
-#define TS_CASCADE_UPS_S		1
 #define TS_CASCADE_UPS_M		0xF
+#define TS_CASCADE_UPS_S		1
 #define TS_CASCADE_ENABLE		(1 << 0)
 
 #define DETECT_RISE			(TS_DETECT_RISE >> TS_DETECT_S)
@@ -621,8 +734,8 @@
 #define REG_TS_EVENT_7_SEC		0x05AC
 #define REG_TS_EVENT_7_SUB_NANOSEC	0x05B0
 
-#define TS_EVENT_EDGE_S			30
 #define TS_EVENT_EDGE_M			0x1
+#define TS_EVENT_EDGE_S			30
 #define TS_EVENT_NANOSEC_M		((1 << 30) - 1)
 
 #define TS_EVENT_SUB_NANOSEC_M		0x7
@@ -758,12 +871,13 @@
 #define REG_PORT_INT_STATUS		0x001B
 #define REG_PORT_INT_MASK		0x001F
 
+#define PORT_SGMII_INT			(1 << 3)
 #define PORT_PTP_INT			(1 << 2)
 #define PORT_PHY_INT			(1 << 1)
 #define PORT_ACL_INT			(1 << 0)
 
 #define PORT_INT_MASK			\
-	(PORT_PTP_INT | PORT_PHY_INT | PORT_ACL_INT)
+	(PORT_SGMII_INT | PORT_PTP_INT | PORT_PHY_INT | PORT_ACL_INT)
 
 #define REG_PORT_CTRL_0			0x0020
 
@@ -802,10 +916,7 @@
 #define PORT_SPEED_1000MBIT		(1 << 6)
 #if 0
 #define PHY_HP_MDIX			(1 << 5)
-#define PHY_FORCE_MDIX			(1 << 4)
-#define PHY_AUTO_MDIX_DISABLE		(1 << 3)
 #define PHY_REMOTE_FAULT_DISABLE	(1 << 2)
-#define PHY_TRANSMIT_DISABLE		(1 << 1)
 #define PHY_LED_DISABLE			(1 << 0)
 #endif
 
@@ -886,8 +997,8 @@
 
 #define REG_PORT_PHY_MMD_SETUP		0x011A
 
-#define PORT_MMD_OP_MODE_S		14
 #define PORT_MMD_OP_MODE_M		0x3
+#define PORT_MMD_OP_MODE_S		14
 #define PORT_MMD_OP_INDEX		0
 #define PORT_MMD_OP_DATA_NO_INCR	1
 #define PORT_MMD_OP_DATA_INCR_RW	2
@@ -900,6 +1011,15 @@
 #define REG_PORT_PHY_MMD_INDEX_DATA	0x011C
 
 #define MMD_DEVICE_ID_DSP		1
+
+#define MMD_DSP_SQI_CHAN_A		0xAC
+#define MMD_DSP_SQI_CHAN_B		0xAD
+#define MMD_DSP_SQI_CHAN_C		0xAE
+#define MMD_DSP_SQI_CHAN_D		0xAF
+
+#define DSP_SQI_ERR_DETECTED		(1 << 15)
+#define DSP_SQI_AVG_ERR			0x7FFF
+
 #define MMD_DEVICE_ID_COMMON		2
 
 #define MMD_DEVICE_ID_EEE_ADV		7
@@ -920,6 +1040,107 @@
 #define PORT_10BT_FD_ABLE		(1 << 13)
 #define PORT_10BT_ABLE			(1 << 12)
 
+#define REG_PORT_SGMII_ADDR__4		0x0200
+#define PORT_SGMII_AUTO_INCR		(1 << 23)
+#define PORT_SGMII_DEVICE_ID_M		0x1F
+#define PORT_SGMII_DEVICE_ID_S		16
+#define PORT_SGMII_ADDR_M		((1 << 21) - 1)
+
+#define REG_PORT_SGMII_DATA__4		0x0204
+#define PORT_SGMII_DATA_M		((1 << 16) - 1)
+
+#define MMD_DEVICE_ID_PMA		0x01
+#define MMD_DEVICE_ID_PCS		0x03
+#define MMD_DEVICE_ID_PHY_XS		0x04
+#define MMD_DEVICE_ID_DTE_XS		0x05
+#define MMD_DEVICE_ID_AN		0x07
+#define MMD_DEVICE_ID_VENDOR_CTRL	0x1E
+#define MMD_DEVICE_ID_VENDOR_MII	0x1F
+
+#define SR_MII				MMD_DEVICE_ID_VENDOR_MII
+
+#define MMD_SR_MII_CTRL			0x0000
+
+#define SR_MII_RESET			(1 << 15)
+#define SR_MII_LOOPBACK			(1 << 14)
+#define SR_MII_SPEED_100MBIT		(1 << 13)
+#define SR_MII_AUTO_NEG_ENABLE		(1 << 12)
+#define SR_MII_POWER_DOWN		(1 << 11)
+#define SR_MII_AUTO_NEG_RESTART		(1 << 9)
+#define SR_MII_FULL_DUPLEX		(1 << 8)
+#define SR_MII_SPEED_1000MBIT		(1 << 6)
+
+#define MMD_SR_MII_STATUS		0x0001
+#define MMD_SR_MII_ID_1			0x0002
+#define MMD_SR_MII_ID_2			0x0003
+#define MMD_SR_MII_AUTO_NEGOTIATION	0x0004
+
+#define SR_MII_AUTO_NEG_NEXT_PAGE	(1 << 15)
+#define SR_MII_AUTO_NEG_REMOTE_FAULT_M	0x3
+#define SR_MII_AUTO_NEG_REMOTE_FAULT_S	12
+#define SR_MII_AUTO_NEG_NO_ERROR	0
+#define SR_MII_AUTO_NEG_OFFLINE		1
+#define SR_MII_AUTO_NEG_LINK_FAILURE	2
+#define SR_MII_AUTO_NEG_ERROR		3
+#define SR_MII_AUTO_NEG_PAUSE_M		0x3
+#define SR_MII_AUTO_NEG_PAUSE_S		7
+#define SR_MII_AUTO_NEG_NO_PAUSE	0
+#define SR_MII_AUTO_NEG_ASYM_PAUSE_TX	1
+#define SR_MII_AUTO_NEG_SYM_PAUSE	2
+#define SR_MII_AUTO_NEG_ASYM_PAUSE_RX	3
+#define SR_MII_AUTO_NEG_HALF_DUPLEX	(1 << 6)
+#define SR_MII_AUTO_NEG_FULL_DUPLEX	(1 << 5)
+
+#define MMD_SR_MII_REMOTE_CAPABILITY	0x0005
+#define MMD_SR_MII_AUTO_NEG_EXP		0x0006
+#define MMD_SR_MII_AUTO_NEG_EXT		0x000F
+
+#define MMD_SR_MII_DIGITAL_CTRL_1	0x8000
+
+
+#define MMD_SR_MII_AUTO_NEG_CTRL	0x8001
+
+#define SR_MII_8_BIT			(1 << 8)
+#define SR_MII_SGMII_LINK_UP		(1 << 4)
+#define SR_MII_TX_CFG_PHY_MASTER	(1 << 3)
+#define SR_MII_PCS_MODE_M		0x3
+#define SR_MII_PCS_MODE_S		1
+#define SR_MII_PCS_SGMII		2
+#define SR_MII_AUTO_NEG_COMPLETE_INTR	(1 << 0)
+
+#define MMD_SR_MII_AUTO_NEG_STATUS	0x8002
+
+#define SR_MII_STAT_LINK_UP		(1 << 4)
+#define SR_MII_STAT_M			0x3
+#define SR_MII_STAT_S			2
+#define SR_MII_STAT_10_MBPS		0
+#define SR_MII_STAT_100_MBPS		1
+#define SR_MII_STAT_1000_MBPS		2
+#define SR_MII_STAT_FULL_DUPLEX		(1 << 1)
+
+#define MMD_SR_MII_PHY_CTRL		0x80A0
+
+#define SR_MII_PHY_LANE_SEL_M		0xF
+#define SR_MII_PHY_LANE_SEL_S		8
+#define SR_MII_PHY_WRITE		(1 << 1)
+#define SR_MII_PHY_START_BUSY		(1 << 0)
+
+#define MMD_SR_MII_PHY_ADDR		0x80A1
+
+#define SR_MII_PHY_ADDR_M		((1 << 16) - 1)
+
+#define MMD_SR_MII_PHY_DATA		0x80A2
+
+#define SR_MII_PHY_DATA_M		((1 << 16) - 1)
+
+#define SR_MII_PHY_JTAG_CHIP_ID_HI	0x000C
+#define SR_MII_PHY_JTAG_CHIP_ID_LO	0x000D
+
+
+/*
+ * 2016-05-31
+ * PHY registers greater than 15 needs to be written in 32-bit.
+ */
 #define REG_PORT_PHY_REMOTE_LB_LED	0x0122
 
 #define PORT_REMOTE_LOOPBACK		(1 << 8)
@@ -934,17 +1155,19 @@
 
 #define PORT_START_CABLE_DIAG		(1 << 15)
 #define PORT_TX_DISABLE			(1 << 14)
-#define PORT_CABLE_DIAG_PAIR_S		12
 #define PORT_CABLE_DIAG_PAIR_M		0x3
-#define PORT_CABLE_DIAG_SELECT_S	10
+#define PORT_CABLE_DIAG_PAIR_S		12
 #define PORT_CABLE_DIAG_SELECT_M	0x3
-#define PORT_CABLE_DIAG_RESULT_S	8
+#define PORT_CABLE_DIAG_SELECT_S	10
 #define PORT_CABLE_DIAG_RESULT_M	0x3
+#define PORT_CABLE_DIAG_RESULT_S	8
 #define PORT_CABLE_STAT_NORMAL		0
 #define PORT_CABLE_STAT_OPEN		1
 #define PORT_CABLE_STAT_SHORT		2
 #define PORT_CABLE_STAT_FAILED		3
+#if 0
 #define PORT_CABLE_10M_SHORT		(1 << 12)
+#endif
 #define PORT_CABLE_FAULT_COUNTER	0x00FF
 
 #define REG_PORT_PHY_PMA_STATUS		0x0126
@@ -955,14 +1178,9 @@
 #define REG_PORT_PHY_DIGITAL_STATUS	0x0128
 
 #define PORT_LINK_DETECT		(1 << 14)
-
-#define REG_PORT_PHY__CTRL		30
-
-#define PHY_STAT_REVERSED_POLARITY	(1 << 5)
-#define PHY_STAT_MDIX			(1 << 4)
-#define PHY_FORCE_LINK			(1 << 3)
-#define PHY_POWER_SAVING_DISABLE	(1 << 2)
-#define PHY_REMOTE_LOOPBACK		(1 << 1)
+#define PORT_SIGNAL_DETECT		(1 << 13)
+#define PORT_PHY_STAT_MDI		(1 << 12)
+#define PORT_PHY_STAT_MASTER		(1 << 11)
 
 #define REG_PORT_PHY_RXER_COUNTER	0x012A
 
@@ -981,6 +1199,11 @@
 #define REG_PORT_PHY_DIGITAL_DEBUG_1	0x0138
 
 #define PORT_REG_CLK_SPEED_25_MHZ	(1 << 14)
+#define PORT_PHY_FORCE_MDI		(1 << 7)
+#define PORT_PHY_AUTO_MDIX_DISABLE	(1 << 6)
+
+/* Same as PORT_PHY_LOOPBACK */
+#define PORT_PHY_PCS_LOOPBACK		(1 << 0)
 
 #define REG_PORT_PHY_DIGITAL_DEBUG_2	0x013A
 
@@ -996,6 +1219,8 @@
 #define PORT_STAT_SPEED_100MBIT		(1 << 5)
 #define PORT_STAT_SPEED_10MBIT		(1 << 4)
 #define PORT_STAT_FULL_DUPLEX		(1 << 3)
+
+/* Same as PORT_PHY_STAT_MASTER */
 #define PORT_STAT_MASTER		(1 << 2)
 #define PORT_RESET			(1 << 1)
 #define PORT_LINK_STATUS_FAIL		(1 << 0)
@@ -1050,7 +1275,7 @@
 #define REG_PORT_MAC_IN_RATE_LIMIT	0x0403
 
 #define PORT_IN_PORT_BASED_S		6
-#define PORT_IN_PACKET_BASED_S		5
+#define PORT_RATE_PACKET_BASED_S	5
 #define PORT_IN_FLOW_CTRL_S		4
 #define PORT_COUNT_IFG_S		1
 #define PORT_COUNT_PREAMBLE_S		0
@@ -1204,10 +1429,12 @@
 #define ACL_ACTION_LEN			4
 #define ACL_INTR_CNT_START		0xD
 #define ACL_RULESET_START		0xE
+#define ACL_RULESET_LEN			2
 #define ACL_TABLE_LEN			16
 
 #define ACL_ACTION_ENABLE		0x003C
-#define ACL_MATCH_ENABLE		0xFFC3
+#define ACL_MATCH_ENABLE		0x7FC0
+#define ACL_RULESET_ENABLE		0x8003
 #define ACL_BYTE_ENABLE			0xFFFF
 
 #define REG_PORT_ACL_CTRL_0		0x0612
@@ -1441,7 +1668,7 @@
 
 #define KS_PRIO_IN_REG			2
 
-#define SWITCH_PORT_NUM			6
+#define TOTAL_PORT_NUM			7
 
 #define KSZ9897_COUNTER_NUM		0x20
 #define TOTAL_KSZ9897_COUNTER_NUM	(KSZ9897_COUNTER_NUM + 2 + 2)

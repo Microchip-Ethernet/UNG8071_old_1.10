@@ -1,5 +1,5 @@
 /**
- * Micrel KSZ8895 definition file
+ * Microchip KSZ8895 definition file
  *
  * Copyright (c) 2015-2016 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
@@ -410,7 +410,7 @@
 #define SW_IN_RATE_LIMIT_16_MS		0
 #define SW_IN_RATE_LIMIT_64_MS		1
 #define SW_IN_RATE_LIMIT_256_MS		2
-#define SW_QUEUE_BASED_OUT_RATE_LIMIT	(1 << 3)
+#define SW_OUT_RATE_LIMIT_QUEUE_BASED	(1 << 3)
 #define SW_INS_TAG_ENABLE		(1 << 2)
 
 #define REG_TOS_PRIO_CTRL_0		0x90
@@ -680,7 +680,7 @@
 
 #define KS_PRIO_IN_REG			4
 
-#define SWITCH_PORT_NUM			4
+#define TOTAL_PORT_NUM			5
 
 #define KSZ8895_COUNTER_NUM		0x20
 #define TOTAL_KSZ8895_COUNTER_NUM	(KSZ8895_COUNTER_NUM + 2)

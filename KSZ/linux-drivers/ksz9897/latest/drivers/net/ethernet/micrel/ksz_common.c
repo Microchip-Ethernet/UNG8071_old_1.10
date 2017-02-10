@@ -1,7 +1,7 @@
 /**
- * Micrel Ethernet driver common code
+ * Microchip Ethernet driver common code
  *
- * Copyright (c) 2015 Microchip Technology Inc.
+ * Copyright (c) 2015-2016 Microchip Technology Inc.
  *	Tristram Ha <Tristram.Ha@microchip.com>
  *
  * Copyright (c) 2009-2011 Micrel, Inc.
@@ -144,6 +144,7 @@ static void dbg_print_work(struct work_struct *work)
 		printk(KERN_INFO "---\n");
 		print_buf(db.int_buf, &db.int_msg, &db.int_cnt,
 			&db.last_int_line);
+		printk(KERN_INFO "+++\n");
 	}
 }  /* dbg_print_work */
 
@@ -272,25 +273,53 @@ static inline void dbp_pkt(struct sk_buff *skb, char first, char *msg, int hdr)
 	}
 }  /* dbp_pkt */
 
-static int get_num_val(const char *buf)
+
+#ifdef USE_SHOW_HELP
+enum {
+	SHOW_HELP_NONE,
+	SHOW_HELP_ON_OFF,
+	SHOW_HELP_NUM,
+	SHOW_HELP_HEX,
+	SHOW_HELP_HEX_2,
+	SHOW_HELP_HEX_4,
+	SHOW_HELP_HEX_8,
+	SHOW_HELP_SPECIAL,
+};
+
+static char *help_formats[] = {
+	"",
+	"%d%s\n",
+	"%u%s\n",
+	"0x%x%s\n",
+	"0x%02x%s\n",
+	"0x%04x%s\n",
+	"0x%08x%s\n",
+	"%d%s\n",
+};
+
+static char *display_strs[] = {
+	" (off)",
+	" (on)",
+};
+
+static char *show_on_off(uint on)
 {
-	int num = -1;
+	if (on <= 1)
+		return display_strs[on];
+	return NULL;
+}  /* show_on_off */
 
-	if ('0' == buf[0] && 'x' == buf[1])
-		sscanf(&buf[2], "%x", (unsigned int *) &num);
-	else if ('0' == buf[0] && 'b' == buf[1]) {
-		int i = 2;
-
-		num = 0;
-		while (buf[i]) {
-			num <<= 1;
-			num |= buf[i] - '0';
-			i++;
+static ssize_t sysfs_show(ssize_t len, char *buf, int type, int chk, char *ptr,
+	int verbose)
+{
+	if (type) {
+		if (verbose) {
+			if (SHOW_HELP_ON_OFF == type)
+				ptr = show_on_off(chk);
 		}
-	} else if ('0' == buf[0] && 'd' == buf[1])
-		sscanf(&buf[2], "%u", &num);
-	else
-		sscanf(buf, "%d", &num);
-	return num;
-}  /* get_num_val */
+		len += sprintf(buf + len, help_formats[type], chk, ptr);
+	}
+	return len;
+}  /* sysfs_show */
+#endif
 

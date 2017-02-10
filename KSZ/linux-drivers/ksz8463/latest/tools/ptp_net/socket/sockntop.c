@@ -12,7 +12,7 @@ char *sock_ntop_(const struct sockaddr *sa, socklen_t salen, char *str,
 	switch (sa->sa_family) {
 	case AF_INET:
 		sin = (struct sockaddr_in *) sa;
-		if (inet_ntop(AF_INET, &sin->sin_addr, str, len) == NULL)
+		if (_inet_ntop(AF_INET, &sin->sin_addr, str, len) == NULL)
 			return NULL;
 		port = ntohs(sin->sin_port);
 		if (doport && port != 0) {
@@ -22,7 +22,7 @@ char *sock_ntop_(const struct sockaddr *sa, socklen_t salen, char *str,
 		return str;
 	case AF_INET6:
 		sin6 = (struct sockaddr_in6 *) sa;
-		if (inet_ntop(AF_INET6, &sin6->sin6_addr, str, len) == NULL)
+		if (_inet_ntop(AF_INET6, &sin6->sin6_addr, str, len) == NULL)
 			return NULL;
 		port = ntohs(sin6->sin6_port);
 		if (doport && port != 0) {

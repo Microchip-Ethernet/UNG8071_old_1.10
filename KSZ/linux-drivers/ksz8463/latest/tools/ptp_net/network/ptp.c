@@ -723,6 +723,7 @@ void prepare_msg(struct ptp_msg *msg, int message)
 		}
 		break;
 	default:
+		len = 0;
 		seqid = 0;
 		break;
 	}
@@ -949,7 +950,11 @@ int disp_tlv(void *msg, int left)
 			struct IEEE_802_1AS_data_1 *data =
 				(struct IEEE_802_1AS_data_1 *) org->dataField;
 
+#if (__BITS_PER_LONG == 64)
+			printf("%d %u %d,%ld %d",
+#else
 			printf("%d %u %d,%lld %d",
+#endif
 				ntohl(data->cumulativeScaledRateOffset),
 				ntohs(data->gmTimeBaseIndicator),
 				data->lastGmPhaseChange.hi,
@@ -968,7 +973,11 @@ int disp_tlv(void *msg, int left)
 		sec = ntohs(alt->timeOfNextJump.hi);
 		sec <<= 32;
 		sec |= ntohl(alt->timeOfNextJump.lo);
+#if (__BITS_PER_LONG == 64)
+		printf("\n%u:%d %d %lu ", alt->keyField,
+#else
 		printf("\n%u:%d %d %llu ", alt->keyField,
+#endif
 			ntohl(alt->currentOffset),
 			ntohl(alt->jumpSeconds), sec);
 		for (i = 0; i < alt->displayName.lengthField; i++)
@@ -1227,7 +1236,11 @@ void disp_msg(struct ptp_msg *req, int len)
 	printf("f=%04x", htons(req->hdr.flagField.data));
 	printf("  ");
 	printf("c=%08x%08x", nsec_hi, nsec_lo);
+#if (__BITS_PER_LONG == 64)
+	printf("=%8ld", nsec);
+#else
 	printf("=%8lld", nsec);
+#endif
 	printf("  ");
 	printf("s=%04x", seqid);
 	printf("  ");
@@ -1301,7 +1314,7 @@ void resp_msg(struct ptp_msg *req, int family)
 	struct ptp_msg_pdelay_resp *pdelay_resp;
 	struct ptp_msg_pdelay_resp_follow_up *pdelay_follow_up;
 
-	if ((int) req & 3) {
+	if ((long) req & 3) {
 		memmove(data, req, sizeof(struct ptp_msg));
 		req = (struct ptp_msg *) data;
 	}
@@ -2109,8 +2122,8 @@ int get_hw_cmd(FILE *fp)
 	return 0;
 }  /* get_hw_cmd */
 
-static SOCKET create_sock(char *ptp_ip, char *p2p_ip, char *local_ip, int port,
-	int multi_loop)
+static SOCKET create_sock(char *devname, char *ptp_ip, char *p2p_ip,
+	char *local_ip, int port, int multi_loop)
 {
 	SOCKET sockfd;
 	struct sockaddr_in servaddr;
@@ -2271,6 +2284,11 @@ static SOCKET create_sock(char *ptp_ip, char *p2p_ip, char *local_ip, int port,
 		if (setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_LOOP, sockopt,
 				sizeof(loop)) < 0) {
 			err_ret("loop");
+			return -1;
+		}
+		if (setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE,
+		    devname, strlen(devname))) {
+			err_ret("bindtodev");
 			return -1;
 		}
 	}
@@ -2593,6 +2611,7 @@ int get_dev_info(char *devname, struct ip_info *info)
 	FILE *f;
 	int dad_status;
 	int count;
+	int rc;
 	char addr6[40];
 	char addr6p[8][5];
 
@@ -2653,14 +2672,14 @@ get_dev_raw:
 	f = fopen(path, "r");
 	if (!f)
 		goto get_dev_done;
-	fscanf(f, "%x", &num[0]);
+	rc = fscanf(f, "%x", &num[0]);
 	fclose(f);
 
 	sprintf(path, "%s%s/%s", _PATH_SYSNET_DEV, devname, NETDEV_OPERSTATE);
 	f = fopen(path, "r");
 	if (!f)
 		goto get_dev_addr;
-	fscanf(f, "%s", file);
+	rc = fscanf(f, "%s", file);
 	fclose(f);
 	if ((!strcmp(file, "up") && !(num[0] & IFF_UP)) ||
 	    (!strcmp(file, "down") && (num[0] & IFF_UP)))
@@ -2670,13 +2689,11 @@ get_dev_raw:
 	if (!(num[0] & IFF_UP))
 		goto get_dev_done;
 
-	found = TRUE;
-
 get_dev_addr:
 	sprintf(path, "%s%s/%s", _PATH_SYSNET_DEV, devname, NETDEV_IFINDEX);
 	f = fopen(path, "r");
 	if (f) {
-		fscanf(f, "%u", &num[0]);
+		rc = fscanf(f, "%u", &num[0]);
 		fclose(f);
 		if (!found)
 			info->if_idx = num[0];
@@ -2684,11 +2701,13 @@ get_dev_addr:
 			printf(" ? %d %d\n", info->if_idx, num[0]);
 	}
 
+	found = TRUE;
+
 	sprintf(path, "%s%s/%s", _PATH_SYSNET_DEV, devname, NETDEV_ADDRESS);
 	f = fopen(path, "r");
 	if (!f)
 		goto get_dev_done;
-	fscanf(f, "%x:%x:%x:%x:%x:%x",
+	rc = fscanf(f, "%x:%x:%x:%x:%x:%x",
 		&num[0], &num[1], &num[2], &num[3], &num[4], &num[5]);
 	fclose(f);
 	for (count = 0; count < 6; count++)
@@ -2955,7 +2974,15 @@ int main(int argc, char *argv[])
 		selfClockIdentity.addr[3] = 0xFF;
 		selfClockIdentity.addr[4] = 0xFE;
 		memcpy(&selfClockIdentity.addr[5], &info.hwaddr[3], 3);
-		if (AF_INET == family)
+		if (strcmp(devname, argv[1])) {
+			struct ip_info parent_info;
+
+			get_host_info(devname, &parent_info);
+			memcpy(host_addr, &parent_info.addr.sin_addr, 4);
+			inet_ntop(AF_INET, &parent_info.addr.sin_addr,
+				host_ip4, sizeof(host_ip4));
+			printf("use %s\n", host_ip4);
+		} else if (AF_INET == family)
 			family = AF_PACKET;
 #endif
 	} else {
@@ -3029,13 +3056,14 @@ int main(int argc, char *argv[])
 	management_addr6.sin6_port = htons(PTP_GENERAL_PORT);
 	inet_pton(AF_INET6, PTP_ip_addr6, &management_addr6.sin6_addr);
 
-	event_fd = create_sock(ptp_ip, p2p_ip, host_ip, PTP_EVENT_PORT, 0);
+	event_fd = create_sock(argv[1], ptp_ip, p2p_ip, host_ip,
+		PTP_EVENT_PORT, 0);
 	if (event_fd < 0) {
 		printf("Cannot create socket\n");
 		return 1;
 	}
-	general_fd = create_sock(ptp_ip, p2p_ip, host_ip, PTP_GENERAL_PORT,
-		multi_loop);
+	general_fd = create_sock(argv[1], ptp_ip, p2p_ip, host_ip,
+		PTP_GENERAL_PORT, multi_loop);
 	if (general_fd < 0) {
 		printf("Cannot create socket\n");
 		return 1;
@@ -3046,13 +3074,13 @@ int main(int argc, char *argv[])
 	if (!unicast_sock)
 		ptp_ip = NULL;
 	if (ptp_ip) {
-		uni_event_fd = create_sock(NULL, NULL, host_ip,
+		uni_event_fd = create_sock(argv[1], NULL, NULL, host_ip,
 			PTP_EVENT_PORT, 0);
 		if (uni_event_fd < 0) {
 			printf("Cannot create socket\n");
 			return 1;
 		}
-		uni_general_fd = create_sock(NULL, NULL, host_ip,
+		uni_general_fd = create_sock(argv[1], NULL, NULL, host_ip,
 			PTP_GENERAL_PORT, 0);
 		if (uni_general_fd < 0) {
 			printf("Cannot create socket\n");
@@ -3061,7 +3089,7 @@ int main(int argc, char *argv[])
 	}
 	management4_fd = general_fd;
 	if (AF_INET6 == ip_family) {
-		management4_fd = create_sock(PTP_ip_addr, P2P_ip_addr,
+		management4_fd = create_sock(argv[1], PTP_ip_addr, P2P_ip_addr,
 			host_ip4, PTP_GENERAL_PORT, multi_loop);
 		if (management4_fd < 0) {
 			printf("Cannot create socket\n");
