@@ -55,14 +55,14 @@ config NET_PEGASUS_PASSTHRU
 	  Enable WAN and LAN port passthrough.
 
 config KSZ8462_HLI
-	tristate "Microchip KSZ8462 HLI support"
+	tristate "Microchip KSZ8462/KSZ8441/KSZ8852 HLI support"
 	select KSZ8462_HLI_EXT if ARCH_MICREL_PEGASUS
 	select MII
 	select CRC32
 	select EEPROM_93CX6
 	help
-	  This platform driver is for Microchip KSZ8462 address/data bus
-	  multiplexed network chip.
+	  This platform driver is for Microchip KSZ8462/KSZ8441/KSZ8852
+	  address/data bus multiplexed network chip.
 
 config KS8842
 	tristate "Micrel KSZ8841/42 with generic bus interface"
@@ -159,7 +159,7 @@ config KSZ8463_EMBEDDED
 	select KSZ_SWITCH_EMBEDDED
 	select HAVE_SPI_KSZ8463
 	---help---
-	  Supports the Microchip KSZ8463 switch used within a network controller .
+	  Supports the Microchip KSZ8463 switch used within a network controller.
 
 config HAVE_KSZ8863
 	bool
@@ -188,7 +188,7 @@ config SPI_KSZ8863
 
 config KSZ8863_EMBEDDED
 	bool "Microchip KSZ8863 switch support in network controller"
-	depends on SPI_KSZ8863 = n && !NET_DSA_TAG_TAIL
+	depends on I2C_KSZ8863 = n && SPI_KSZ8863 = n && !NET_DSA_TAG_TAIL
 	select KSZ_SWITCH_EMBEDDED
 	select HAVE_SPI_KSZ8863
 	---help---
