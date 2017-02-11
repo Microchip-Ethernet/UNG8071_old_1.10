@@ -363,12 +363,28 @@ out:
 int clock_master_lost(struct clock *c)
 {
 	int i;
+	enum port_state state;
+
 	for (i = 0; i < c->nports; i++) {
-		if (PS_SLAVE == port_state(c->port[i]) ||
-				PS_UNCALIBRATED == port_state(c->port[i]))
+		state = port_state(c->port[i]);
+		if (PS_SLAVE == state ||
+		    PS_UNCALIBRATED == state)
 			return 0;
 	}
 	return 1;
+}
+
+int clock_master_selected(struct clock *c)
+{
+	int i;
+	enum port_state state;
+
+	for (i = 0; i < c->nports; i++) {
+		state = port_state(c->port[i]);
+		if (PS_MASTER == state)
+			return 1;
+	}
+	return 0;
 }
 #endif
 
@@ -1044,7 +1060,10 @@ int clock_poll(struct clock *c)
 				if (EV_STATE_DECISION_EVENT == event)
 					sde = 1;
 #ifdef MICREL_1588_PTP
-				if (clock_master_lost(c))
+				/* Only needed for state decision. */
+				if (transparent_clock(c) &&
+				    clock_master_lost(c) &&
+				    !clock_master_selected(c))
 #endif
 				if (EV_ANNOUNCE_RECEIPT_TIMEOUT_EXPIRES == event)
 					sde = 1;
@@ -1116,6 +1135,8 @@ void clock_path_delay(struct clock *c, struct timespec req, struct timestamp rx,
 		pr_warning("c3 %10lld", c3);
 #ifdef MICREL_1588_PTP
 		pd = 0;
+		c->servo_state = SERVO_UNLOCKED;
+		servo_reset(c->servo);
 #endif
 	}
 
