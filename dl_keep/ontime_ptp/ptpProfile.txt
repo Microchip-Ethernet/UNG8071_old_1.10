@@ -1,0 +1,93 @@
+INVENTORY_ID: 001;
+USER_DESCRIPTION: Micrel;
+PRODUCT_DESCRIPTION: KSZ8463MLI;
+PROFILE_ID: 00-1B-19-00-01-00
+//PROFILE_ID: 00-1B-19-00-02-00
+//PROFILE_ID: 1C-12-9D-00-00-00
+//PROFILE_ID: 00-19-A7-00-01-00
+
+TSM_CFG_TC_ENABLE: 1;	//0=disable, 1=enable
+TSM_CFG_MC_FILTER: 0;  //0=disable, 1=enable
+TSM_CFG_TSM_ENABLE: 0;
+//0=enable, 1=disable, 2=enable but no SYNC/DELAY_REQ forwarding
+KP: 0.4;
+//Proportional gain multiplied with the offset error in PI controller
+KI: 0.1;
+//Integration gain multiplied with the offset error in PI controller
+
+//minimum 1 every 32 sync, max 1 every sync. Master only.
+DEFAULT_DEVICE: eth0;
+//NIC IP address to send multicast packets
+LOG_TO_FILE: 0;	//Will log PTP measurements to log file in the current folder
+PRINT_TO_STDOUT: 0;	//Prints debug messages to standard out if 1
+PATH_DELAY_AVERAGING: 0;
+//1=ON, 0=OFF
+
+TSM_CLOCK_THRESHOLD1:	300;	//calibration error in ns
+TSM_CLOCK_THRESHOLD2:	500;	//calibration error in ns
+TSM_CLOCK_THRESHOLD3:	100000000;	//calibration error in ns
+
+// Default data set static value
+DDS_SLAVE_ONLY: 0;
+DDS_TWO_STEP_FLAG: 0;
+//1 if running two-step, 0 if running one-step
+// Default data set configurable values
+DDS_PRIORITY1: 128;
+//Used to priority order of a set of clocks
+DDS_PRIORITY2: 128;
+//Used to to get a finer grained priority order of a set of clocks
+DDS_DOMAIN_NUMBER: 0;
+//0 is default domain. Domains are defined in 1588 STD, 7.1
+
+// Port data set
+PDS_PORT_NUMBER: 1;	//Port number of ordinary clock is 1
+PDS_ANNOUNCE_INTERVAL: 1;
+//The announce transmission rate will be 2^INTERVAL
+PDS_ANNOUNCE_TIMEOUT: 3;
+//number of announceInterval that has to pass without receipt of an Announce
+//message before timeout
+PDS_SYNC_INTERVAL: 0;
+//The sync transmission rate will be 2^INTERVAL
+DELAY_REQ_INTERVAL: 0;
+PDS_DELAY_MECHANISM: 1;
+//0x01=E2E, 0x02=P2P
+PDS_MIN_PDEL_INTERVAL: 1;
+//The path delay transmission rate will be 2^INTERVAL
+
+RX_LATENCY0: 415;
+TX_LATENCY0: 45;
+ASYM_DELAY0: 0;
+RX_LATENCY1: 415;
+TX_LATENCY1: 45;
+ASYM_DELAY1: 0;
+
+// Transparent Clock default data set
+TCDDS_NUMBER_OF_PORTS: 2;
+//Number of physical PTP ports on the transparent clock
+
+NETWORK_PROTOCOL: 1;
+// Supported protocol: 1, 2, 3
+
+MULTICAST_ENABLE: 1;
+
+// Unicast setup
+UNICAST_NEGOTIATION_ENABLE: 0;
+//Enable = 1, disable = 0
+UNICAST_SYNC: 1;
+//Ask master to send SYNC as unicast if 1
+UNICAST_ANNOUNCE: 1;
+//Ask master to send ANNOUNCE as unicast if 1
+UNICAST_DELAY_REQ: 1;
+//Ask master to do DELAY_REQ/DELAY_RESP mechanism as unicast if 1
+UNICAST_PDELAY_REQ: 0;
+//Ask next node to send PDELAY_REQ/PDELAY_RESP as unicast if 1
+SYNC_LOG_INTER_MESSAGE_PERIOD: 0;
+DELAY_REQ_LOG_INTER_MESSAGE_PERIOD: 0;
+UNICAST_MASTER_TABLE_LOG_QUERY_INTERVAL: 3;
+UNICAST_MASTER_TABLE_PORTADDRESS_0:192.168.49.180
+'UNICAST_MASTER_TABLE_PORTADDRESS_1:10.32.2.7
+'UNICAST_MASTER_TABLE_PORTADDRESS_2:192.0.2.53
+'UNICAST_MASTER_TABLE_PORTADDRESS_1:bad:beef::86:4301
+'UNICAST_MASTER_TABLE_PORTADDRESS_2:fe80::210:a1ff:fe86:4301
+'UNICAST_MASTER_TABLE_PORTADDRESS_3:192.0.2.190
+'UNICAST_MASTER_TABLE_PORTADDRESS_3:00:10:A1:86:43:01
